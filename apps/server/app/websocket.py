@@ -65,6 +65,12 @@ async def chat_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
 
+    # Set when relay_events() hits an unrecoverable failure, so the receive
+    # loop below (which owns the only calls to websocket.close()) can stop
+    # and actually close the connection instead of leaving a dead socket
+    # that silently swallows every later message the client sends.
+    relay_failed = asyncio.Event()
+
     async def relay_events() -> None:
         try:
             async for event in session.run():
@@ -89,11 +95,26 @@ async def chat_ws(websocket: WebSocket) -> None:
                         "is_error": True,
                     }
                 )
+            relay_failed.set()
 
     relay_task = asyncio.create_task(relay_events())
     try:
         while True:
-            data = await websocket.receive_text()
+            receive_task = asyncio.ensure_future(websocket.receive_text())
+            failure_task = asyncio.ensure_future(relay_failed.wait())
+            done, pending = await asyncio.wait(
+                {receive_task, failure_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if failure_task in done:
+                # relay_events() already sent an error frame; now actually
+                # close so the client sees the connection drop instead of
+                # silently queuing messages nobody will ever answer.
+                with contextlib.suppress(Exception):
+                    await websocket.close(code=1011)
+                break
+            data = await receive_task
             await session.send(data)
     except WebSocketDisconnect:
         pass
