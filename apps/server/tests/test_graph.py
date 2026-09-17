@@ -130,3 +130,114 @@ async def test_graph_state_survives_a_fresh_checkpointer_instance(db_pool):
     graph_b = build_graph(shared_checkpointer)
     state = await graph_b.aget_state(config)
     assert state.values["session_id"] == "cli-sid-1"
+
+
+class ErrorOnlyAdapter(AgentAdapter):
+    """Yields only a type="error" AdapterEvent (no result) — simulates a
+    non-zero CLI exit. Unlike RaisingAdapter below, this is a well-formed
+    event, not a raised exception."""
+
+    async def run_stream(
+        self, prompt: str, session_id: Optional[str] = None
+    ) -> AsyncIterator[AdapterEvent]:
+        yield AdapterEvent(
+            type="error", text="claude: command not found", session_id="poisoned-sid", is_error=True
+        )
+
+    async def terminate(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_error_only_turn_still_reaches_transcript_and_does_not_poison_session_id(db_pool):
+    """Carries forward test_session_manager.py's two error-path guarantees
+    (I1: a turn that ends in an error must still reach the transcript; I2:
+    session_id is never adopted from anything but a "result" event) into
+    graph.py's call_lead_agent, which has zero coverage of either despite
+    reimplementing both."""
+    embedding_model = EmbeddingModel()
+    graph = build_graph(InMemorySaver())
+    transcript = Mock()
+    config = {
+        "configurable": {
+            "thread_id": "thread-error-only",
+            "adapter": ErrorOnlyAdapter(),
+            "pool": db_pool,
+            "embedding_model": embedding_model,
+            "transcript": transcript,
+        }
+    }
+
+    async for _ in graph.astream(
+        {"prompt": "hello error", "session_id": None, "response_text": ""},
+        config=config,
+        stream_mode="custom",
+    ):
+        pass
+
+    # (a) transcript.append was called with the error's text as the response
+    transcript.append.assert_called_once()
+    _, kwargs = transcript.append.call_args
+    assert kwargs["response"] == "claude: command not found"
+    assert kwargs["prompt"] == "hello error"
+
+    # (b) a row was stored for that turn
+    stored = await search_similar_turns(db_pool, embedding_model, "hello error", limit=1)
+    assert stored[0]["prompt"] == "hello error"
+    assert stored[0]["response"] == "claude: command not found"
+
+    # (c) session_id is NOT poisoned by the error event's session_id
+    state = await graph.aget_state(config)
+    assert state.values["session_id"] is None
+
+
+class RaisingAdapter(AgentAdapter):
+    """run_stream raises immediately instead of yielding a well-formed
+    type="error" event — the scenario the websocket layer's own
+    RaisingAdapter test exercises one layer up."""
+
+    async def run_stream(
+        self, prompt: str, session_id: Optional[str] = None
+    ) -> AsyncIterator[AdapterEvent]:
+        raise RuntimeError("boom: adapter exploded")
+        yield  # pragma: no cover
+
+    async def terminate(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_exception_still_reaches_transcript_before_propagating(db_pool):
+    """A raised exception from adapter.run_stream (as opposed to a
+    type="error" event) must still produce a transcript/turns record before
+    propagating -- previously the append/store_turn calls sat after the
+    async-for loop entirely, so an exception lost both records."""
+    embedding_model = EmbeddingModel()
+    graph = build_graph(InMemorySaver())
+    transcript = Mock()
+    config = {
+        "configurable": {
+            "thread_id": "thread-raises",
+            "adapter": RaisingAdapter(),
+            "pool": db_pool,
+            "embedding_model": embedding_model,
+            "transcript": transcript,
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async for _ in graph.astream(
+            {"prompt": "hello raises", "session_id": None, "response_text": ""},
+            config=config,
+            stream_mode="custom",
+        ):
+            pass
+
+    transcript.append.assert_called_once()
+    _, kwargs = transcript.append.call_args
+    assert "boom" in kwargs["response"]
+    assert kwargs["prompt"] == "hello raises"
+
+    stored = await search_similar_turns(db_pool, embedding_model, "hello raises", limit=1)
+    assert stored[0]["prompt"] == "hello raises"
+    assert "boom" in stored[0]["response"]

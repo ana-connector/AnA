@@ -1,10 +1,10 @@
 import asyncio
 import contextlib
 import os
+import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from apps.server.app.session_manager import ChatSession
 from packages.adapters.claude_code import ClaudeCodeAdapter
 from packages.adapters.env_builder import (
     EnvBuilder,
@@ -27,17 +27,15 @@ def _allowed_origins() -> set[str]:
     return {origin.strip() for origin in raw.split(",") if origin.strip()}
 
 
-def build_session() -> ChatSession:
+def build_adapter():
     mode = default_mode_from_settings()
     env = EnvBuilder(mode).build()
-    adapter = ClaudeCodeAdapter(
+    return ClaudeCodeAdapter(
         workspace_dir=WORKSPACE_DIR,
         env=env,
         model=default_model_from_settings(),
         effort=default_effort_from_settings(),
     )
-    transcript = TranscriptLogger(WORKSPACE_DIR)
-    return ChatSession(adapter=adapter, transcript=transcript)
 
 
 @router.websocket("/ws/chat")
@@ -55,16 +53,32 @@ async def chat_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    try:
-        session = build_session()
-    except Exception as exc:
-        with contextlib.suppress(Exception):
-            await websocket.send_json(
-                {"type": "error", "text": str(exc), "session_id": None, "is_error": True}
-            )
-        await websocket.close(code=1011)
-        return
+    thread_id = websocket.query_params.get("thread_id") or str(uuid.uuid4())
+    await websocket.send_json(
+        {"type": "thread_id", "text": thread_id, "session_id": None, "is_error": False}
+    )
 
+    adapter = build_adapter()
+    transcript = TranscriptLogger(WORKSPACE_DIR)
+    graph = websocket.app.state.graph
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "adapter": adapter,
+            "pool": websocket.app.state.pool,
+            "embedding_model": websocket.app.state.embedding_model,
+            "transcript": transcript,
+        }
+    }
+
+    # The queue lives here, in the websocket handler, not inside a
+    # ChatSession object: graph.astream() is called once per turn (not once
+    # forever like the old ChatSession.run() loop), so the queueing that
+    # ChatSession used to provide internally is now explicit here —
+    # relay_events() loops pulling one prompt at a time off `queue`, keeping
+    # concurrent user messages processed in order instead of interrupting an
+    # in-flight turn (see roadmap doc, "동시 메시지 처리: 큐잉").
+    queue: "asyncio.Queue[str]" = asyncio.Queue()
     # Set when relay_events() hits an unrecoverable failure, so the receive
     # loop below (which owns the only calls to websocket.close()) can stop
     # and actually close the connection instead of leaving a dead socket
@@ -73,27 +87,27 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     async def relay_events() -> None:
         try:
-            async for event in session.run():
-                await websocket.send_json(
-                    {
-                        "type": event.type,
-                        "text": event.text,
-                        "session_id": event.session_id,
-                        "is_error": event.is_error,
-                    }
-                )
+            while True:
+                prompt = await queue.get()
+                # Session id continuity across turns now comes from
+                # graph.aget_state(config) (Postgres-backed via the
+                # checkpointer) instead of an in-memory ChatSession
+                # attribute — this is the whole point of this subproject.
+                snapshot = await graph.aget_state(config)
+                session_id = (snapshot.values or {}).get("session_id")
+                async for event in graph.astream(
+                    {"prompt": prompt, "session_id": session_id, "response_text": ""},
+                    config=config,
+                    stream_mode="custom",
+                ):
+                    await websocket.send_json(event)
         except Exception as exc:
             # Best-effort: the socket may already be closing/closed by the
             # time a mid-turn failure happens, so swallow send errors here —
             # the point is to try, not to guarantee delivery.
             with contextlib.suppress(Exception):
                 await websocket.send_json(
-                    {
-                        "type": "error",
-                        "text": str(exc),
-                        "session_id": session.session_id,
-                        "is_error": True,
-                    }
+                    {"type": "error", "text": str(exc), "session_id": None, "is_error": True}
                 )
             relay_failed.set()
 
@@ -115,11 +129,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                     await websocket.close(code=1011)
                 break
             data = await receive_task
-            await session.send(data)
+            await queue.put(data)
     except WebSocketDisconnect:
         pass
     finally:
         relay_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await relay_task
-        await session.close()
+        await adapter.terminate()
