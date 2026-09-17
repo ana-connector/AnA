@@ -27,8 +27,17 @@ class ChatSession:
             prompt = await self._queue.get()
             response_text = ""
             cost_usd = None
+            logged = False
             async for event in self.adapter.run_stream(prompt, session_id=self.session_id):
-                if event.session_id:
+                # Only adopt a session_id from a successful "result" event.
+                # text/usage/error events carry the locally generated UUID
+                # regardless of whether the CLI process actually reached
+                # that point (ClaudeCodeAdapter stamps it on unconditionally)
+                # — adopting it from e.g. an error event on the first turn
+                # would poison self.session_id with a session that was never
+                # created on disk, and every later turn's --resume would
+                # fail forever.
+                if event.type == "result" and event.session_id:
                     self.session_id = event.session_id
                 if event.type == "text":
                     response_text += event.text
@@ -45,6 +54,20 @@ class ChatSession:
                         response=response_text,
                         cost_usd=cost_usd,
                     )
+                    logged = True
+                if event.type == "error" and not logged:
+                    # A turn that ends in an error (non-zero CLI exit) or is
+                    # cut short must still reach the transcript — that's the
+                    # exact failure case the transcript exists to cover (see
+                    # roadmap doc, "대화 기록 보관"). Fall back to the
+                    # error's own text if no assistant text streamed first.
+                    self.transcript.append(
+                        session_id=self.session_id or "",
+                        prompt=prompt,
+                        response=response_text or event.text,
+                        cost_usd=cost_usd,
+                    )
+                    logged = True
                 yield event
 
     async def close(self) -> None:
