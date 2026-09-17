@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type ChatEvent = {
-  type: "text" | "result" | "usage" | "error";
+  type: "text" | "result" | "usage" | "error" | "thread_id";
   text: string;
   session_id: string | null;
   is_error: boolean;
@@ -36,7 +36,13 @@ export function useChatSocket() {
   const agentMessageIndexRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const socket = new WebSocket(WS_URL);
+    const storedThreadId =
+      typeof window !== "undefined" ? window.localStorage.getItem("ana_thread_id") : null;
+    const url = storedThreadId
+      ? `${WS_URL}${WS_URL.includes("?") ? "&" : "?"}thread_id=${encodeURIComponent(storedThreadId)}`
+      : WS_URL;
+
+    const socket = new WebSocket(url);
     socketRef.current = socket;
 
     socket.onopen = () => setConnected(true);
@@ -44,6 +50,11 @@ export function useChatSocket() {
 
     socket.onmessage = (raw) => {
       const event = JSON.parse(raw.data) as ChatEvent;
+
+      if (event.type === "thread_id") {
+        window.localStorage.setItem("ana_thread_id", event.text);
+        return;
+      }
 
       if (event.type === "text") {
         if (agentMessageIndexRef.current === null) {
