@@ -6,6 +6,7 @@ httpx==0.28.1
 pytest==8.3.4
 pytest-asyncio==0.25.2
 langgraph==1.2.11
+langchain-core==1.6.3
 langgraph-checkpoint-postgres==3.1.2
 psycopg[binary,pool]==3.3.5
 pgvector==0.5.0
