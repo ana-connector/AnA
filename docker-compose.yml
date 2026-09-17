@@ -9,16 +9,18 @@ services:
       - .env
     volumes:
       - /home/hello/workspace:/home/hello/workspace
-      - ${HOME}/.claude:/root/.claude:ro
+      # read-write: the CLI persists session state here (what --session-id
+      # creates and --resume reads); read-only breaks conversation continuity
+      - ${HOME}/.claude:/root/.claude
     environment:
       - ANA_WORKSPACE_DIR=/home/hello/workspace
 
   web:
     build:
       context: apps/web
+      args:
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws/chat}
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws/chat
     depends_on:
       - server
