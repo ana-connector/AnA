@@ -14,7 +14,7 @@
 - **CLI 인증 모드**: `~/.bashrc`에 정의된 두 모드를 그대로 활용.
   - `use-claude-pro`: 구독 모드, 환경 변수 없이 로컬 로그인 세션 사용.
   - `use-claude-api`: API 빌링 모드, `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`(`panel.tapie.kr/api/claude-code` 경유)을 주입.
-  - `env_builder` 모듈이 세션 시작 시 둘 중 하나를 선택해 서브프로세스 환경에 주입. 기본값은 `.env` 파일에 지정하고, 웹 UI에서 세션별로 override 가능(간단한 토글). `.env`는 1번 단계에서 파일 기반으로 최소 구현하고, 프로젝트별/글로벌 범위를 가진 정식 시크릿 관리 UI는 3번 단계(Governance)에서 확장.
+  - `env_builder` 모듈이 세션 시작 시 둘 중 하나를 선택해 서브프로세스 환경에 주입. 기본값은 `.env` 파일에 지정. `.env`는 1번 단계에서 파일 기반으로 최소 구현. **웹 UI에서 세션별로 override(간단한 토글)하는 기능은 1번 단계 구현 계획에 태스크로 반영되지 못해 실제로 만들어지지 않았다 — Core Loop 최종 리뷰에서 발견됨.** 이 기능은 별도로 만들지 않고, 프로젝트별/글로벌 범위를 가진 정식 시크릿 관리 UI(3번 단계, Governance)에 합쳐서 그때 함께 구현한다. 그 전까지는 `.env` 수정 + 서버 재시작으로 모드를 바꾼다.
 - **작업 디렉토리**: 고정된 테스트용 워크스페이스 폴더 `/home/hello/workspace` 하나로 시작(신규 생성, ANA 프로젝트 자체와 분리). 세션별 격리 워크스페이스는 3번 단계(Sandbox & Governance)에서 구축.
 - **권한 승인**: CLI 자체 자동 승인 플래그(`--dangerously-skip-permissions` 류)로 시작해 기본 흐름부터 완성. Human-in-the-loop 승인은 3번 단계에서 웹 UI로 대체.
 - **에이전트 어댑터**: 확장 가능한 추상 인터페이스(`run_stream()`, `terminate()`)로 설계. Core Loop 단계에서는 Claude Code CLI 어댑터만 구현하고, Codex CLI 어댑터는 5번 단계(Multi-Agent Orchestration)에서 같은 인터페이스에 얹어 추가. 어댑터는 `model`/`effort`를 생성자 파라미터로 받아 CLI의 `--model`/`--effort` 플래그로 그대로 전달한다(기본값은 `.env`의 `CLAUDE_MODEL`/`CLAUDE_EFFORT`) — 하드코딩하지 않는 이유는 2번 단계(Memory & State)의 failover 로직이 코드 변경 없이 다른 모델/effort로 바로 재시도할 수 있어야 하기 때문.
