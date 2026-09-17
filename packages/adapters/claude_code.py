@@ -56,6 +56,11 @@ class ClaudeCodeAdapter(AgentAdapter):
             env=self.env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=10 * 1024 * 1024,  # 10 MiB; default 64KiB is exceeded by
+            # this machine's global Claude Code hooks, which inject large
+            # hook_response payloads into every stream-json line (see plan's
+            # "Empirically Verified CLI Behavior"), and by long assistant
+            # replies / result events independently.
         )
 
         assert self._process.stdout is not None

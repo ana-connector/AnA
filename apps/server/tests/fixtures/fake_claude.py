@@ -6,33 +6,48 @@ If the FAKE_CLAUDE_BIG_STDERR env var is set, writes well over one OS pipe
 buffer's worth (~64KiB on Linux) of stderr output in between stdout events,
 to exercise the case where a real `claude` CLI's noisy hooks fill the stderr
 pipe while stdout is still open — a regression test for the stdout/stderr
-deadlock in ClaudeCodeAdapter.run_stream()."""
+deadlock in ClaudeCodeAdapter.run_stream().
+
+If the FAKE_CLAUDE_BIG_STDOUT_LINE env var is set, the "assistant" event's
+text field is inflated to well over 64KiB (asyncio's default StreamReader
+line-length limit) on a single stdout line, matching how this machine's
+global Claude Code hooks inject large hook_response payloads into every real
+stream-json line — a regression test for the "Separator is not found, and
+chunk exceed the limit" crash in ClaudeCodeAdapter.run_stream()."""
 import json
 import os
 import sys
 
 SESSION_ID = "test-session-id"
 
-EVENTS = [
-    {"type": "system", "subtype": "init", "session_id": SESSION_ID},
-    {
-        "type": "assistant",
-        "message": {"content": [{"type": "text", "text": "pong"}]},
-        "session_id": SESSION_ID,
-    },
-    {
-        "type": "rate_limit_event",
-        "rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": 0.11}}},
-        "session_id": SESSION_ID,
-    },
-    {
-        "type": "result",
-        "result": "pong",
-        "session_id": SESSION_ID,
-        "total_cost_usd": 0.07,
-        "is_error": False,
-    },
-]
+
+def _build_events() -> list[dict]:
+    text = "pong"
+    if os.environ.get("FAKE_CLAUDE_BIG_STDOUT_LINE"):
+        text = "p" * 200_000 + "ong"  # well over the default 64KiB limit
+    return [
+        {"type": "system", "subtype": "init", "session_id": SESSION_ID},
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": text}]},
+            "session_id": SESSION_ID,
+        },
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": 0.11}}},
+            "session_id": SESSION_ID,
+        },
+        {
+            "type": "result",
+            "result": "pong",
+            "session_id": SESSION_ID,
+            "total_cost_usd": 0.07,
+            "is_error": False,
+        },
+    ]
+
+
+EVENTS = _build_events()
 
 
 def main() -> None:

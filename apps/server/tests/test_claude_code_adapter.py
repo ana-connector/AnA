@@ -103,6 +103,32 @@ async def test_run_stream_drains_stderr_concurrently_without_deadlock():
 
 
 @pytest.mark.asyncio
+async def test_run_stream_handles_stdout_line_over_64kib():
+    # Regression test: asyncio.create_subprocess_exec defaults to a 64KiB
+    # StreamReader line limit. This machine's global Claude Code hooks (and,
+    # independently, a long assistant reply or result event) can produce a
+    # single stream-json line well over that, which previously crashed
+    # run_stream() with "ValueError: Separator is not found, and chunk
+    # exceed the limit" instead of yielding the event.
+    adapter = ClaudeCodeAdapter(
+        workspace_dir="/home/hello/workspace",
+        env={"PATH": "/usr/bin:/bin", "FAKE_CLAUDE_BIG_STDOUT_LINE": "1"},
+        executable=sys.executable,
+    )
+    adapter._extra_args_prefix = [FAKE_CLI]
+
+    events = await asyncio.wait_for(_collect(adapter.run_stream("ping")), timeout=10)
+
+    text_events = [e for e in events if e.type == "text"]
+    result_events = [e for e in events if e.type == "result"]
+
+    assert len(text_events) == 1
+    assert len(text_events[0].text) > 64 * 1024
+    assert text_events[0].text.endswith("ong")
+    assert len(result_events) == 1
+
+
+@pytest.mark.asyncio
 async def test_terminate_without_running_process_is_a_noop():
     adapter = ClaudeCodeAdapter(workspace_dir="/home/hello/workspace", env={})
     await adapter.terminate()  # must not raise
