@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 
-# Must run before any route/module reads env vars (e.g. build_session()'s
+# Must run before any route/module reads env vars (e.g. build_adapter()'s
 # EnvBuilder / ANA_ALLOWED_ORIGINS): without this, a developer's local .env
 # (per the plan's dev-verification instructions: `cp .env.example .env` then
 # run uvicorn directly, not via docker-compose) is silently ignored — only

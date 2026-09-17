@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type ChatEvent = {
-  type: "text" | "result" | "usage" | "error" | "thread_id";
-  text: string;
-  session_id: string | null;
-  is_error: boolean;
-};
+export type ChatEvent =
+  // The backend's call_lead_agent (apps/server/app/graph.py) only writes
+  // the full session_id/is_error payload for non-"text" events — a "text"
+  // chunk (a content delta appended as-is) is always just {type, text}.
+  | { type: "text"; text: string }
+  | { type: "result" | "usage" | "error" | "thread_id"; text: string; session_id: string | null; is_error: boolean };
 
 export type ChatMessage = {
   role: "user" | "agent";

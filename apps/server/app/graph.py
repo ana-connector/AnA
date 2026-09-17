@@ -42,39 +42,57 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     session_id = state.get("session_id")
     cost_usd = None
     for_error_text = ""
+    caught_exc: Optional[BaseException] = None
 
-    async for event in adapter.run_stream(augmented_prompt, session_id=session_id):
-        # "text" chunks are content deltas the frontend appends as-is (see
-        # useChatSocket.ts) and never inspects session_id/is_error for — so
-        # only "result"/"error"/"usage" events, which carry turn-level
-        # metadata, get the full payload.
-        if event.type == "text":
-            writer({"type": event.type, "text": event.text})
-        else:
-            writer(
-                {
-                    "type": event.type,
-                    "text": event.text,
-                    "session_id": event.session_id,
-                    "is_error": event.is_error,
-                }
-            )
-        if event.type == "result" and event.session_id:
-            session_id = event.session_id
-        if event.type == "text":
-            response_text += event.text
-        if event.type == "result":
-            cost_usd = event.cost_usd
-        if event.type == "error":
-            for_error_text = event.text
+    try:
+        async for event in adapter.run_stream(augmented_prompt, session_id=session_id):
+            # "text" chunks are content deltas the frontend appends as-is (see
+            # useChatSocket.ts) and never inspects session_id/is_error for — so
+            # only "result"/"error"/"usage" events, which carry turn-level
+            # metadata, get the full payload.
+            if event.type == "text":
+                writer({"type": event.type, "text": event.text})
+            else:
+                writer(
+                    {
+                        "type": event.type,
+                        "text": event.text,
+                        "session_id": event.session_id,
+                        "is_error": event.is_error,
+                    }
+                )
+            if event.type == "result" and event.session_id:
+                session_id = event.session_id
+            if event.type == "text":
+                response_text += event.text
+            if event.type == "result":
+                cost_usd = event.cost_usd
+            if event.type == "error":
+                for_error_text = event.text
+    except Exception as exc:  # noqa: BLE001 - deliberately broad: any failure
+        # mid-stream (a raised exception from adapter.run_stream, as opposed
+        # to a well-formed type="error" AdapterEvent) must still reach the
+        # transcript/turns table before propagating, exactly like a turn
+        # that ends in a type="error" event does below. Caught here rather
+        # than left to an outer try/finally so the fallback response text
+        # can be computed and logged, then the original exception re-raised
+        # unchanged for the websocket layer to turn into an error frame.
+        caught_exc = exc
+    finally:
+        final_response = response_text or for_error_text or (
+            f"[error: {caught_exc}]" if caught_exc is not None else ""
+        )
+        transcript.append(
+            session_id=session_id or "", prompt=state["prompt"], response=final_response, cost_usd=cost_usd
+        )
+        await store_turn(
+            pool, embedding_model,
+            thread_id=thread_id, session_id=session_id,
+            prompt=state["prompt"], response=final_response, cost_usd=cost_usd,
+        )
 
-    final_response = response_text or for_error_text
-    transcript.append(session_id=session_id or "", prompt=state["prompt"], response=final_response, cost_usd=cost_usd)
-    await store_turn(
-        pool, embedding_model,
-        thread_id=thread_id, session_id=session_id,
-        prompt=state["prompt"], response=final_response, cost_usd=cost_usd,
-    )
+    if caught_exc is not None:
+        raise caught_exc
 
     return {"session_id": session_id, "response_text": final_response}
 
