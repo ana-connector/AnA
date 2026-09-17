@@ -27,6 +27,8 @@
 ### 1. Core Loop
 FastAPI + Claude Code CLI 어댑터 + Next.js 기본 챗 UI. 프롬프트를 넣으면 CLI가 서브프로세스로 실행되고 stdout이 WebSocket을 통해 실시간으로 웹 UI에 스트리밍되는 최소 동작 흐름을 완성한다. UI 쪽 세션 상태(브라우저 탭 상태 등)는 메모리에만 유지되며 새로고침하면 사라진다. 단, 대화 자체는 `--resume`/`--continue`로 CLI가 이어가고, 턴별 프롬프트/응답은 transcript 로그 파일로 별도 보관된다(DB는 아직 없음). 이 단계가 나머지 모든 서브프로젝트의 기반이 된다.
 
+**명시적으로 받아들인 갭(2번 단계 최종 리뷰에서 재확인)**: 2번 단계(Memory & State)에서 서버 쪽 대화는 재연결·재시작에도 살아남게 됐지만, 브라우저 쪽 채팅 화면(React state)은 여전히 새로고침하면 사라진다 — 사용자에게는 "대화가 이어진다"고 보이지만 화면은 비어있는 상태로 보일 수 있음. `turns` 테이블에 필요한 데이터는 이미 다 있으니, 새로고침 시 최근 턴들을 다시 그려주는 기능은 향후(3번 단계 UI 작업 등과 묶어서) 추가할 수 있음 — 지금은 의도적으로 스코프 밖.
+
 **구성 요소**: `packages/adapters/base.py`(추상 인터페이스), `packages/adapters/claude_code.py`, `env_builder`(인증 모드 주입), FastAPI WebSocket 엔드포인트, Next.js(+Tailwind CSS +shadcn/ui) 챗 페이지 1개.
 
 **동시 메시지 처리**: 대장 Agent가 응답 생성 중에 사용자가 새 메시지를 보내면 큐에 쌓아두고 순서대로 처리한다(진행 중인 CLI 프로세스를 중단시키지 않음).
