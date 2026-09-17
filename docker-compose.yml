@@ -1,4 +1,14 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ana_dev_password}
+      - POSTGRES_DB=ana
+    ports:
+      - "5432:5432"
+    volumes:
+      - ana_postgres_data:/var/lib/postgresql/data
+
   server:
     build:
       context: .
@@ -14,6 +24,9 @@ services:
       - ${HOME}/.claude:/root/.claude
     environment:
       - ANA_WORKSPACE_DIR=/home/hello/workspace
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-ana_dev_password}@postgres:5432/ana
+    depends_on:
+      - postgres
 
   web:
     build:
@@ -24,3 +37,6 @@ services:
       - "3000:3000"
     depends_on:
       - server
+
+volumes:
+  ana_postgres_data:
