@@ -1,3 +1,4 @@
+import asyncio
 from typing import AsyncIterator, Optional
 from unittest.mock import Mock
 
@@ -241,3 +242,60 @@ async def test_mid_turn_exception_still_reaches_transcript_before_propagating(db
     stored = await search_similar_turns(db_pool, embedding_model, "hello raises", limit=1)
     assert stored[0]["prompt"] == "hello raises"
     assert "boom" in stored[0]["response"]
+
+
+class NeverYieldsAdapter(AgentAdapter):
+    """Simulates a client disconnect: the adapter is mid-await (e.g. waiting
+    on the next chunk from the CLI subprocess) when the task is cancelled,
+    before it has ever yielded an event."""
+
+    async def run_stream(
+        self, prompt: str, session_id: Optional[str] = None
+    ) -> AsyncIterator[AdapterEvent]:
+        await asyncio.sleep(10)
+        yield AdapterEvent(type="text", text="never", session_id="sid-never")  # pragma: no cover
+
+    async def terminate(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_before_any_output_does_not_log_empty_row(db_pool):
+    """asyncio.CancelledError is a BaseException, not an Exception, so it
+    is not caught by call_lead_agent's `except Exception` -- it passes
+    straight into the `finally` block instead, exactly like every normal
+    client-disconnect teardown does (websocket.py's relay_task.cancel()).
+    Without a guard there, a turn cancelled before it produced any output
+    would still write an empty-response row to the transcript/turns table,
+    which -- since search_similar_turns has no relevance threshold --
+    becomes retrievable "context" for later unrelated prompts."""
+    embedding_model = EmbeddingModel()
+    graph = build_graph(InMemorySaver())
+    transcript = Mock()
+    config = {
+        "configurable": {
+            "thread_id": "thread-cancelled",
+            "adapter": NeverYieldsAdapter(),
+            "pool": db_pool,
+            "embedding_model": embedding_model,
+            "transcript": transcript,
+        }
+    }
+
+    async def consume():
+        async for _ in graph.astream(
+            {"prompt": "hello cancel", "session_id": None, "response_text": ""},
+            config=config,
+            stream_mode="custom",
+        ):
+            pass  # pragma: no cover
+
+    task = asyncio.ensure_future(consume())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    transcript.append.assert_not_called()
+    stored = await search_similar_turns(db_pool, embedding_model, "hello cancel", limit=1)
+    assert stored == []

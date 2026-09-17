@@ -82,14 +82,27 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         final_response = response_text or for_error_text or (
             f"[error: {caught_exc}]" if caught_exc is not None else ""
         )
-        transcript.append(
-            session_id=session_id or "", prompt=state["prompt"], response=final_response, cost_usd=cost_usd
-        )
-        await store_turn(
-            pool, embedding_model,
-            thread_id=thread_id, session_id=session_id,
-            prompt=state["prompt"], response=final_response, cost_usd=cost_usd,
-        )
+        # asyncio.CancelledError is a BaseException (not Exception, since
+        # Python 3.8), so it is NOT caught by `except Exception` above — it
+        # passes straight through to this `finally` block instead, exactly
+        # like every normal client-disconnect teardown does (websocket.py's
+        # `relay_task.cancel()`). Without this guard, a turn cancelled
+        # before it produced any output (caught_exc is None and no text/
+        # error text accumulated yet) would still write an empty-response
+        # row to the transcript/turns table — and since search_similar_turns
+        # has no relevance threshold, that empty row becomes retrievable
+        # "context" for later unrelated prompts. Only skip logging in that
+        # specific nothing-happened case; an exception (caught_exc set) or
+        # an error/partial-text turn still logs as before.
+        if caught_exc is not None or final_response:
+            transcript.append(
+                session_id=session_id or "", prompt=state["prompt"], response=final_response, cost_usd=cost_usd
+            )
+            await store_turn(
+                pool, embedding_model,
+                thread_id=thread_id, session_id=session_id,
+                prompt=state["prompt"], response=final_response, cost_usd=cost_usd,
+            )
 
     if caught_exc is not None:
         raise caught_exc
