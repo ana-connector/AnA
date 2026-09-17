@@ -32,12 +32,13 @@ FastAPI + Claude Code CLI 어댑터 + Next.js 기본 챗 UI. 프롬프트를 넣
 **동시 메시지 처리**: 대장 Agent가 응답 생성 중에 사용자가 새 메시지를 보내면 큐에 쌓아두고 순서대로 처리한다(진행 중인 CLI 프로세스를 중단시키지 않음).
 
 ### 2. Memory & State
-PostgreSQL(pgvector) + Redis 도입. 이 시점부터 LangGraph 기반 상태 그래프와 체크포인팅이 필요해진다. 세션이 끊겨도 대화가 이어지고, 과거 결정 근거를 RAG로 검색할 수 있도록 한다.
+PostgreSQL(pgvector) 도입. **LangGraph를 지금 실제로 도입**해서 1번 단계의 `ChatSession` 큐잉 구조를 LangGraph `StateGraph` + Postgres 체크포인터로 교체한다(당초 "5번 단계서 진짜 분기 필요할 때 도입" 안이 있었으나, 사용자가 지금 도입 쪽으로 확정). 세션이 끊기거나 서버가 재시작돼도 대화(정확히는 우리 쪽 애플리케이션 상태 — `session_id`, 누적 비용 등)가 이어지고, 과거 턴을 RAG로 검색할 수 있도록 한다.
 
-- **임베딩 모델**: 로컬 임베딩 모델(예: sentence-transformers) 사용. 외부 API 호출 없이 오프라인 동작, 비용 없음. 내부망 전용 운영 방침과도 일치.
-- **Redis 용도**: 세션 단기 캐시(대화 컨텍스트) + 3번 단계 서킷 브레이커의 상태/락 관리까지 함께 담당.
-
-- **Failover 로직**: 대장 Agent가 토큰/사용량 한도로 죽으면 ① 같은 Claude Code CLI의 인증모드 전환(`use-claude-pro` ↔ `use-claude-api`)을 먼저 시도하고, ② 그래도 안 되면 Codex CLI로 전환한다. 1번 단계에서 쌓아둔 transcript 로그를 기반으로 대화 맥락을 재구성해 넘겨준다. 원래 쓰던 모드/모델의 사용량이 회복되면 자동으로 원래대로 되돌린다. 이 로직은 3번 단계(Sandbox & Governance)의 서킷 브레이커가 CLI verbose/stats 출력으로 사용량 임계치 초과를 감지했을 때 호출하는 것과 같은 파이프라인이다(서킷 브레이커가 트리거 감지 담당, 이 failover 로직이 실제 전환 담당).
+- **LangGraph 아키텍처**: 대장 Agent는 아직 단일 노드다(sub-agent 분기는 5번 단계에서 추가). `StateGraph`에 노드 하나(`call_lead_agent`)만 두고 `START → call_lead_agent → END`로 컴파일하며, `checkpointer`로 `AsyncPostgresSaver`를 붙인다. 브라우저 연결(웹소켓 세션) 하나당 LangGraph `thread_id` 하나를 부여하고, `config={"configurable": {"thread_id": ...}}`로 매 턴 호출한다. 노드 내부에서 `langgraph.config.get_stream_writer()`로 `ClaudeCodeAdapter.run_stream()`의 각 `AdapterEvent`를 실시간으로 흘려보내고(`stream_mode="custom"`), 턴이 끝나면 최종 상태(`session_id`, 응답 텍스트, 비용)를 반환해 체크포인터가 Postgres에 저장한다. 이 방식은 CLI가 자기 자신의 대화 맥락은 `--resume`으로 들고 있고, LangGraph/Postgres는 "우리 애플리케이션이 그 CLI 세션을 어떻게 다시 찾아가는지"만 영속화하는 역할 분리다. **1번 단계에서 만든 `ChatSession`(`apps/server/app/session_manager.py`)은 이 그래프 기반 구조로 완전히 대체된다.**
+- **임베딩 모델**: 원래 계획한 `sentence-transformers`는 이 머신의 사용자 디스크 쿼터(약 31~32GB, 실제 디스크는 여유 있음에도 쿼터로 막힘)를 넘겨 설치 자체가 실패함(실측 확인됨: `pip install`이 `OSError: Disk quota exceeded`로 중단). **`fastembed`(ONNX 기반, PyTorch 의존성 없음)로 대체.** 기본 모델 `BAAI/bge-small-en-v1.5`(384차원) 실측 확인, `.venv` 전체가 328MB로 유지됨. 오프라인/무비용이라는 원래 결정 취지는 동일하게 만족.
+- **RAG 코퍼스**: 1번 단계의 `.ana_transcript.jsonl`과 동일한 수준 — 턴별 prompt+response를 그대로 임베딩해 저장(별도 요약 단계 없음). 최소 통합으로, 새 턴을 CLI에 보내기 전에 과거 턴 중 유사도 상위 k개를 검색해 프롬프트에 "관련 과거 대화" 컨텍스트로 덧붙인다.
+- **Redis**: 이번 단계에서는 도입하지 않는다(YAGNI). 원래 "세션 단기 캐시" 용도로 기대했던 역할은 LangGraph의 Postgres 체크포인터가 이미 더 튼튼한 형태로 담당한다. 서킷 브레이커용 락/상태는 실제로 서킷 브레이커를 만드는 3번 단계에서, 그때 가서 Redis를 들여온다.
+- **Failover 로직**: 대장 Agent가 토큰/사용량 한도로 죽으면 ① 같은 Claude Code CLI의 인증모드 전환(`use-claude-pro` ↔ `use-claude-api`)을 먼저 시도하고, ② 그래도 안 되면 Codex CLI로 전환한다. 1번 단계에서 쌓아둔 transcript 로그 + 이번 단계의 Postgres 체크포인트 상태를 기반으로 대화 맥락을 재구성해 넘겨준다. 원래 쓰던 모드/모델의 사용량이 회복되면 자동으로 원래대로 되돌린다. 이 로직은 3번 단계(Sandbox & Governance)의 서킷 브레이커가 CLI verbose/stats 출력으로 사용량 임계치 초과를 감지했을 때 호출하는 것과 같은 파이프라인이다(서킷 브레이커가 트리거 감지 담당, 이 failover 로직이 실제 전환 담당).
 
 ### 3. Sandbox & Governance (통합, 로컬 단일 사용자 기준으로 축소)
 샌드박스 격리와 보안 거버넌스를 하나로 묶어 진행한다. 단, 로컬/내부망 단일 사용자 운영이 확정되었으므로 엔터프라이즈 멀티테넌시용 항목(RBAC, Kubernetes, API Gateway)은 제외하거나 아래처럼 축소한다.
@@ -86,7 +87,7 @@ Core Loop에서 만들어둔 어댑터 인터페이스에 Codex CLI 어댑터를
 
 ## 운영(실행 방식)
 
-전체 스택(FastAPI, Next.js, PostgreSQL, Redis, Langfuse, Docker 샌드박스 등)은 **docker-compose 하나로 통합** 관리한다. `docker-compose up`으로 전체 기동, `down`으로 종료. 1번 단계(Core Loop)는 아직 Postgres/Redis/Langfuse가 없어 FastAPI + Next.js만으로 구성되지만, docker-compose 골격은 1번 단계부터 만들어두고 2번 단계 이후 서비스가 추가될 때마다 compose 파일에 얹는다.
+전체 스택(FastAPI, Next.js, PostgreSQL, Redis, Langfuse, Docker 샌드박스 등)은 **docker-compose 하나로 통합** 관리한다. `docker-compose up`으로 전체 기동, `down`으로 종료. 1번 단계(Core Loop)는 FastAPI + Next.js만으로 구성됐고, 2번 단계(Memory & State)에서 PostgreSQL(pgvector)이 compose 파일에 추가된다. Redis는 2번 단계에서 도입하지 않기로 했으므로(YAGNI, 위 참고) 3번 단계(Sandbox & Governance)에서 서킷 브레이커와 함께 추가된다.
 
 ## 현재 상태
 
