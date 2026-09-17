@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -6,6 +7,10 @@ import pytest
 from packages.adapters.claude_code import ClaudeCodeAdapter
 
 FAKE_CLI = str(Path(__file__).parent / "fixtures" / "fake_claude.py")
+
+
+async def _collect(stream):
+    return [event async for event in stream]
 
 
 def test_parse_event_assistant_text():
@@ -70,6 +75,31 @@ async def test_run_stream_yields_text_then_result():
     assert len(result_events) == 1
     assert result_events[0].cost_usd == 0.07
     assert len(usage_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_stream_drains_stderr_concurrently_without_deadlock():
+    # Regression test: fake_claude.py writes >64KiB to stderr in between
+    # stdout events. If run_stream() only read stderr after the stdout loop
+    # finished, the child would block writing stderr (pipe full) and never
+    # reach the remaining stdout events, hanging this test forever. The
+    # bounded wait_for ensures a regression fails fast instead of hanging
+    # the whole suite.
+    adapter = ClaudeCodeAdapter(
+        workspace_dir="/home/hello/workspace",
+        env={"PATH": "/usr/bin:/bin", "FAKE_CLAUDE_BIG_STDERR": "1"},
+        executable=sys.executable,
+    )
+    adapter._extra_args_prefix = [FAKE_CLI]
+
+    events = await asyncio.wait_for(_collect(adapter.run_stream("ping")), timeout=10)
+
+    text_events = [e for e in events if e.type == "text"]
+    result_events = [e for e in events if e.type == "result"]
+
+    assert [e.text for e in text_events] == ["pong"]
+    assert len(result_events) == 1
+    assert result_events[0].cost_usd == 0.07
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,18 @@ class ClaudeCodeAdapter(AgentAdapter):
         )
 
         assert self._process.stdout is not None
+        # Drain stderr concurrently with stdout: both streams are piped, and
+        # if the child writes more than one OS pipe buffer's worth to stderr
+        # (~64KiB on Linux) while stdout is still open, it blocks on that
+        # write. Reading stderr only after the stdout loop finishes would
+        # then deadlock forever, since the child can't reach stdout EOF while
+        # stuck writing stderr that nobody is draining.
+        stderr_task = (
+            asyncio.create_task(self._process.stderr.read())
+            if self._process.stderr is not None
+            else None
+        )
+
         async for raw_line in self._process.stdout:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
@@ -71,7 +83,7 @@ class ClaudeCodeAdapter(AgentAdapter):
             if parsed is not None:
                 yield parsed
 
-        stderr_bytes = await self._process.stderr.read() if self._process.stderr else b""
+        stderr_bytes = await stderr_task if stderr_task is not None else b""
         return_code = await self._process.wait()
         if return_code != 0:
             yield AdapterEvent(
