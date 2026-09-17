@@ -38,6 +38,16 @@ def build_adapter():
     )
 
 
+def build_transcript() -> TranscriptLogger:
+    """Factory mirroring build_adapter(), rather than constructing
+    TranscriptLogger(WORKSPACE_DIR) inline in chat_ws(): WORKSPACE_DIR is
+    read once at import time, so a test's monkeypatch.setenv("ANA_WORKSPACE_DIR",
+    ...) can never reach an inline construction — only patching this factory
+    lets tests redirect transcript writes to a tmp_path instead of polluting
+    the real workspace's .ana_transcript.jsonl."""
+    return TranscriptLogger(WORKSPACE_DIR)
+
+
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -58,8 +68,24 @@ async def chat_ws(websocket: WebSocket) -> None:
         {"type": "thread_id", "text": thread_id, "session_id": None, "is_error": False}
     )
 
-    adapter = build_adapter()
-    transcript = TranscriptLogger(WORKSPACE_DIR)
+    # build_adapter() defaults to "api" mode (default_mode_from_settings()),
+    # where EnvBuilder.build() raises RuntimeError if ANTHROPIC_API_KEY_SAVED
+    # isn't set — a real misconfiguration, not a hypothetical. This must be
+    # guarded the same way the old build_session() was: send an error frame
+    # and close(1011) instead of letting the exception propagate unhandled,
+    # which would otherwise leave the client with the thread_id frame and
+    # then a dead socket (no error frame, no close).
+    try:
+        adapter = build_adapter()
+        transcript = build_transcript()
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            await websocket.send_json(
+                {"type": "error", "text": str(exc), "session_id": None, "is_error": True}
+            )
+        await websocket.close(code=1011)
+        return
+
     graph = websocket.app.state.graph
     config = {
         "configurable": {
