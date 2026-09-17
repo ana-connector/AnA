@@ -61,11 +61,11 @@ def main() -> None:
             # would leave the child blocked here — never reaching the
             # remaining stdout events. Must comfortably exceed the OS pipe
             # buffer (~64KiB) *and* asyncio's internal StreamReader
-            # backpressure threshold (2x its 64KiB default limit) so a
-            # reader that only drains stderr after stdout EOF reliably
-            # deadlocks instead of racing asyncio's own background pipe
-            # draining.
-            sys.stderr.write("x" * 5_000_000)
+            # backpressure threshold (2x ClaudeCodeAdapter's stream `limit`,
+            # currently 10MiB -> 20MiB) so a reader that only drains stderr
+            # after stdout EOF reliably deadlocks instead of racing
+            # asyncio's own background pipe draining. 25MB clears 20MiB.
+            sys.stderr.write("x" * 25_000_000)
             sys.stderr.flush()
 
 

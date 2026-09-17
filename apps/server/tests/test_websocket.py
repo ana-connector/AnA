@@ -116,6 +116,29 @@ def test_websocket_relays_error_when_run_stream_raises():
     assert event["is_error"] is True
 
 
+def test_websocket_closes_connection_after_relay_failure():
+    """A mid-turn adapter failure must not leave a dead-but-open socket:
+    after the error frame, the server must actually close the connection
+    (code 1011) instead of silently queuing every later message the client
+    sends with nobody left to answer them."""
+    with patch(
+        "apps.server.app.websocket.build_session",
+        return_value=ChatSession(adapter=RaisingAdapter(), transcript=Mock()),
+    ):
+        client = TestClient(app)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect("/ws/chat") as ws:
+                ws.send_text("hello")
+                event = ws.receive_json()
+                assert event["type"] == "error"
+                # Second receive must observe the server-initiated close
+                # rather than hanging or returning another (nonexistent)
+                # frame.
+                ws.receive_text()
+
+    assert exc_info.value.code == 1011
+
+
 def test_websocket_sends_error_frame_when_build_session_raises():
     with patch(
         "apps.server.app.websocket.build_session",
