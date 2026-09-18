@@ -12,13 +12,32 @@ class GraphState(TypedDict):
     prompt: str
     session_id: Optional[str]
     response_text: str
+    total_cost_usd: float
+
+
+# Bound on each matched turn's prompt/response before interpolation into the
+# augmented prompt. turns.response is an unbounded TEXT column holding a full
+# agent reply (this project already needed a 10MiB stdout reader limit for
+# real long lines -- see ClaudeCodeAdapter -- so a large stored response is a
+# real, not hypothetical, occurrence). The augmented prompt is passed to the
+# `claude` CLI as a single argv element, and Linux caps a single argv string
+# at MAX_ARG_STRLEN (131072 bytes); truncating every match's fields keeps
+# even multiple matches nowhere near that limit.
+_MAX_MATCH_FIELD_CHARS = 300
+
+
+def _truncate(text: str, limit: int = _MAX_MATCH_FIELD_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
 
 
 def _build_augmented_prompt(prompt: str, matches: list[dict]) -> str:
     if not matches:
         return prompt
     context_lines = "\n".join(
-        f"{i + 1}. Q: {m['prompt']}\n   A: {m['response']}" for i, m in enumerate(matches)
+        f"{i + 1}. Q: {_truncate(m['prompt'])}\n   A: {_truncate(m['response'])}"
+        for i, m in enumerate(matches)
     )
     return (
         f"관련 과거 대화:\n{context_lines}\n\n현재 질문: {prompt}"
@@ -40,6 +59,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
 
     response_text = ""
     session_id = state.get("session_id")
+    total_cost_usd = state.get("total_cost_usd", 0.0)
     cost_usd = None
     for_error_text = ""
     caught_exc: Optional[BaseException] = None
@@ -107,7 +127,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     if caught_exc is not None:
         raise caught_exc
 
-    return {"session_id": session_id, "response_text": final_response}
+    if cost_usd is not None:
+        total_cost_usd += cost_usd
+
+    return {
+        "session_id": session_id,
+        "response_text": final_response,
+        "total_cost_usd": total_cost_usd,
+    }
 
 
 def build_graph(checkpointer) -> CompiledStateGraph:

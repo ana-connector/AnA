@@ -96,6 +96,66 @@ async def test_graph_prepends_similar_past_turns_to_the_prompt(db_pool):
     assert "Paris" in prompts_seen[0]
     assert "What city is France's capital?" in prompts_seen[0]
 
+    # Regression pin (finding #6): the row stored for THIS turn must carry
+    # the original prompt, not the "관련 과거 대화..."-prefixed augmented one
+    # that was sent to the adapter above.
+    async with db_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT prompt FROM turns WHERE thread_id = %s ORDER BY id DESC LIMIT 1",
+            ("thread-2",),
+        )
+        row = await cur.fetchone()
+    assert row[0] == "What city is France's capital?"
+    assert "관련 과거 대화" not in row[0]
+
+
+@pytest.mark.asyncio
+async def test_augmented_prompt_stays_bounded_even_with_a_huge_stored_response(db_pool):
+    """Regression test for the RAG-augmented-prompt-exceeds-argv-limit bug:
+    a matched past turn's `response` column is unbounded TEXT (a full agent
+    reply can be huge -- this project already needed a 10MiB stdout reader
+    limit for real long lines, see ClaudeCodeAdapter). Interpolating a
+    match's full prompt/response with no cap risked exceeding Linux's
+    MAX_ARG_STRLEN (131072 bytes) when the augmented prompt is passed to the
+    `claude` CLI as a single argv element -- and since the oversized row
+    would stay the nearest neighbor for future similar prompts, the failure
+    was self-perpetuating. Mirrors this codebase's existing
+    FAKE_CLAUDE_BIG_STDOUT_LINE pattern (apps/server/tests/fixtures/
+    fake_claude.py) for proving a size cap actually works."""
+    embedding_model = EmbeddingModel()
+    huge_response = "x" * 200_000
+    await store_turn(
+        db_pool, embedding_model,
+        thread_id="huge-thread", session_id=None,
+        prompt="What's the capital of France?", response=huge_response,
+        cost_usd=None,
+    )
+
+    graph = build_graph(InMemorySaver())
+    prompts_seen: list[str] = []
+    adapter = FakeAdapter(prompts_seen)
+    config = {
+        "configurable": {
+            "thread_id": "thread-huge-query",
+            "adapter": adapter,
+            "pool": db_pool,
+            "embedding_model": embedding_model,
+            "transcript": Mock(),
+        }
+    }
+
+    async for _ in graph.astream(
+        {"prompt": "What city is France's capital?", "session_id": None, "response_text": ""},
+        config=config,
+        stream_mode="custom",
+    ):
+        pass
+
+    assert len(prompts_seen) == 1
+    # Well under Linux's MAX_ARG_STRLEN (131072 bytes) for a single argv
+    # element, with generous headroom for multiple matches.
+    assert len(prompts_seen[0]) < 5_000
+
 
 @pytest.mark.asyncio
 async def test_graph_state_survives_a_fresh_checkpointer_instance(db_pool):
@@ -299,3 +359,43 @@ async def test_cancelled_turn_before_any_output_does_not_log_empty_row(db_pool):
     transcript.append.assert_not_called()
     stored = await search_similar_turns(db_pool, embedding_model, "hello cancel", limit=1)
     assert stored == []
+
+
+@pytest.mark.asyncio
+async def test_total_cost_usd_accumulates_across_turns_in_the_same_thread(db_pool):
+    """Finding #5: the roadmap doc and this plan's own Architecture section
+    both specify that checkpointed graph state carries accumulated cost
+    alongside session_id (relevant to the future circuit breaker's cost
+    threshold), but GraphState never had the field. Two turns in the same
+    thread, each costing 0.01 (FakeAdapter's hard-coded cost_usd), must sum
+    to 0.02 in the persisted state -- not just reflect the latest turn."""
+    embedding_model = EmbeddingModel()
+    checkpointer = InMemorySaver()
+    graph = build_graph(checkpointer)
+    adapter = FakeAdapter([])
+    config = {
+        "configurable": {
+            "thread_id": "thread-cost",
+            "adapter": adapter,
+            "pool": db_pool,
+            "embedding_model": embedding_model,
+            "transcript": Mock(),
+        }
+    }
+
+    async for _ in graph.astream(
+        {"prompt": "turn one", "session_id": None, "response_text": ""},
+        config=config,
+        stream_mode="custom",
+    ):
+        pass
+
+    async for _ in graph.astream(
+        {"prompt": "turn two", "session_id": None, "response_text": ""},
+        config=config,
+        stream_mode="custom",
+    ):
+        pass
+
+    state = await graph.aget_state(config)
+    assert state.values["total_cost_usd"] == pytest.approx(0.02)
