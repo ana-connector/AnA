@@ -25,6 +25,13 @@ class EnvBuilder:
             env["ANTHROPIC_API_KEY"] = api_key
             env["ANTHROPIC_AUTH_TOKEN"] = api_key
             env["ANTHROPIC_BASE_URL"] = "https://panel.tapie.kr/api/claude-code"
+        # The auto-approved agent subprocess (run with
+        # --dangerously-skip-permissions) has no legitimate need for direct
+        # database access; leaving DATABASE_URL in its environment would
+        # hand it working credentials to ANA's own memory database (turns/
+        # checkpoint tables), which it could drop or corrupt if it chose to
+        # or was tricked into it.
+        env.pop("DATABASE_URL", None)
         return env
 
 
