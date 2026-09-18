@@ -68,3 +68,26 @@ def test_default_effort_from_settings_reads_env_var(monkeypatch):
 def test_default_effort_from_settings_returns_none_when_unset(monkeypatch):
     monkeypatch.delenv("CLAUDE_EFFORT", raising=False)
     assert default_effort_from_settings() is None
+
+
+def test_database_url_is_stripped_from_pro_mode_env():
+    """Finding #3: the auto-approved agent subprocess (--dangerously-skip-
+    permissions) has no legitimate need for direct DB access; leaving
+    DATABASE_URL in its environment would hand it working credentials to
+    ANA's own memory database."""
+    base_env = {
+        "PATH": "/usr/bin",
+        "DATABASE_URL": "postgresql://postgres:secret@postgres:5432/ana",
+    }
+    env = EnvBuilder("pro").build(base_env)
+    assert "DATABASE_URL" not in env
+
+
+def test_database_url_is_stripped_from_api_mode_env():
+    base_env = {
+        "PATH": "/usr/bin",
+        "ANTHROPIC_API_KEY_SAVED": "test-key-value",
+        "DATABASE_URL": "postgresql://postgres:secret@postgres:5432/ana",
+    }
+    env = EnvBuilder("api").build(base_env)
+    assert "DATABASE_URL" not in env
