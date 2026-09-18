@@ -32,7 +32,18 @@ async def search_similar_turns(
     query: str,
     *,
     limit: int = 3,
+    max_distance: float = 0.4,
 ) -> list[dict]:
+    """Returns up to `limit` past turns whose cosine distance to `query` is
+    strictly less than `max_distance`. Without this cutoff, this function
+    always returned the top-`limit` nearest rows regardless of how (un)related
+    they actually were -- on a small/early corpus that means truly unrelated
+    turns get returned as "relevant" context, and since an oversized returned
+    row stays the nearest neighbor for every future semantically-similar
+    prompt, an irrelevant match is a self-perpetuating problem, not a one-off.
+    0.4 is a reasonable default for bge-small-en-v1.5 (empirically: paired
+    Q/A on the same topic lands around 0.15-0.25 cosine distance, unrelated
+    topics land around 0.45-0.65 -- see apps/server/tests/test_memory_rag.py)."""
     embedding = embedding_model.embed_one(query)
     async with pool.connection() as conn:
         # The turns_embedding_idx ivfflat index (packages/memory/db.py) is
@@ -50,10 +61,11 @@ async def search_similar_turns(
             """
             SELECT prompt, response, embedding <=> %s::vector AS distance
             FROM turns
+            WHERE embedding <=> %s::vector < %s
             ORDER BY distance
             LIMIT %s
             """,
-            (embedding, limit),
+            (embedding, embedding, max_distance, limit),
         )
         rows = await cur.fetchall()
     return [{"prompt": r[0], "response": r[1], "distance": r[2]} for r in rows]
