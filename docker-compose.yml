@@ -5,9 +5,18 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ana_dev_password}
       - POSTGRES_DB=ana
     ports:
-      - "5432:5432"
+      # Bound to localhost only: this DB holds ANA's own memory/checkpoint
+      # state and has no auth layer beyond the password, which is a
+      # documented dev-only placeholder (see .env.example) -- publishing on
+      # 0.0.0.0 would make it reachable by anyone on the internal network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - ana_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ana"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
 
   server:
     build:
@@ -26,7 +35,8 @@ services:
       - ANA_WORKSPACE_DIR=/home/hello/workspace
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-ana_dev_password}@postgres:5432/ana
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   web:
     build:
