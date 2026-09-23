@@ -33,7 +33,8 @@ PLAN_INSTRUCTIONS = """\
 ]}
 
 규칙:
-- agent는 "claude" 또는 "codex"만. 코드 생성/리팩터링/구현은 codex, 설명/리뷰/조사/기획은 claude.
+- agent는 "claude", "codex", "kimi" 중 하나. 코드 생성/리팩터링/구현은 codex,
+  설명/리뷰/조사/기획은 claude, 긴 파일·대용량 맥락을 통째로 훑는 작업은 kimi.
 - scope는 그 하위 에이전트에게 줄 권한이다(생략 가능, 기본은 전체 쓰기).
   - mode: "read"면 파일 수정·명령 실행이 차단된다. 조사/리뷰/설명 작업은 read로 줘라.
   - paths: 워크스페이스 기준 상대 경로 목록. 적으면 그 안에서만 작업할 수 있다.

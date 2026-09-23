@@ -171,7 +171,10 @@ def test_usage_endpoint_reports_windows(client):
     assert [w["label"] for w in payload["codex"]["windows"]] == ["5시간", "7일"]
 
 
-def test_usage_endpoint_is_empty_before_any_turn(client, tmp_path, monkeypatch):
+def test_usage_endpoint_lists_every_agent_before_any_turn(client, tmp_path, monkeypatch):
+    """Every CLI ANA can route to has a row from the start: a bar that shows
+    only the agents with data makes "nothing here" and "nothing spent" look
+    the same."""
     # CODEX_HOME points at an empty directory: /usage re-reads Codex's rollout
     # log on every call, so the machine's real one would otherwise make this
     # test depend on whether anyone has run Codex here.
@@ -179,7 +182,14 @@ def test_usage_endpoint_is_empty_before_any_turn(client, tmp_path, monkeypatch):
     client.app.state.usage_tracker._samples.clear()
     client.app.state.usage_tracker._reported.clear()
 
-    assert client.get("/usage").json()["agents"] == {}
+    agents = client.get("/usage").json()["agents"]
+
+    assert set(agents) == {"claude", "codex", "kimi"}
+    for windows in agents.values():
+        assert [w["key"] for w in windows["windows"]] == ["five_hour", "seven_day"]
+        # Nothing spent and nothing reported: the bar says "estimated 0%",
+        # not "unknown".
+        assert all(w["source"] == "estimated" for w in windows["windows"])
 
 
 def test_settings_round_trip(client, tmp_path, monkeypatch):

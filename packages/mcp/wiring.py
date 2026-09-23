@@ -7,7 +7,11 @@ of registry handling in a file that is busy with other things.
 import os
 from typing import Optional
 
-from packages.mcp.config_writer import codex_mcp_args, write_claude_mcp_config
+from packages.mcp.config_writer import (
+    codex_mcp_args,
+    write_claude_mcp_config,
+    write_kimi_mcp_config,
+)
 from packages.mcp.registry import (
     LEAD,
     WORKER,
@@ -127,6 +131,33 @@ def codex_mcp(
     # Codex has no --strict-mcp-config, so its built-in app server still shows
     # up; the gate denies it as unregistered (verified in the audit log).
     return codex_mcp_args(servers, state_dir or state_dir_default()), names
+
+
+def kimi_mcp(
+    role: str,
+    kimi_home: str,
+    *,
+    env: Optional[dict] = None,
+    workspace_dir: str = "",
+    state_dir: Optional[str] = None,
+    check_command: bool = True,
+) -> set[str]:
+    """Writes this role's servers into the prepared Kimi home and returns
+    their names. Always written — an empty `mcpServers` is how ANA says "no
+    servers", and leaving the file from a previous session in place would say
+    something else."""
+    if not mcp_enabled():
+        write_kimi_mcp_config([], state_dir or state_dir_default(), kimi_home)
+        return set()
+    servers, _ = resolve_for_role(
+        process_role(role),
+        env=env,
+        workspace_dir=workspace_dir,
+        state_dir=state_dir,
+        check_command=check_command,
+    )
+    write_kimi_mcp_config(servers, state_dir or state_dir_default(), kimi_home)
+    return {server.name for server in servers}
 
 
 def describe(

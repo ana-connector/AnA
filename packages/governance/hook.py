@@ -110,12 +110,20 @@ def main() -> None:
         payload = json.load(sys.stdin)
     except Exception:  # noqa: BLE001 - unreadable payload is not a free pass
         print(json.dumps(_decision("deny", "ANA gate could not read the hook payload")))
-        return
+        sys.exit(2)
     if payload.get("hook_event_name") in ("SubagentStart", "SubagentStop"):
         report_subagent(payload)
         print("{}")
         return
-    print(json.dumps(ask_gate(payload)))
+    decision = ask_gate(payload)
+    print(json.dumps(decision))
+    if decision["hookSpecificOutput"]["permissionDecision"] == "deny":
+        # Belt and braces for Kimi, whose hook contract reads the *exit code*
+        # first: 2 blocks, and "any other non-zero" is treated as a script
+        # error and allowed (fail-open). Claude and Codex read the JSON and
+        # also treat exit 2 as a block, so one exit path serves all three —
+        # and a denial can never be downgraded to an allow by the runner.
+        sys.exit(2)
 
 
 if __name__ == "__main__":

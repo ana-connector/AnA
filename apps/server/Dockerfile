@@ -16,6 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     # straight from PyPI, and without uvx on PATH they are skipped as
     # unavailable rather than failing loudly.
     && curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
+    # Kimi Code CLI: a single binary from the vendor's installer (there is no
+    # npm package), pinned like the other two. KIMI_INSTALL_DIR puts it on the
+    # system PATH instead of a user home that the service never sources.
+    && curl -fsSL https://code.kimi.com/kimi-code/install.sh \
+       | env KIMI_INSTALL_DIR=/usr/local KIMI_VERSION=2.0.2 bash \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

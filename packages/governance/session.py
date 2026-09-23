@@ -20,6 +20,44 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 
 
 @dataclass
+class _Pending:
+    future: asyncio.Future
+    loop: asyncio.AbstractEventLoop
+
+    def resolve(self, value: str) -> None:
+        if self.future.done():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self.loop:
+            self.future.set_result(value)
+        else:
+            self.loop.call_soon_threadsafe(self._set, value)
+
+    def _set(self, value: str) -> None:
+        if not self.future.done():
+            self.future.set_result(value)
+
+    def fail(self, error: BaseException) -> None:
+        if self.future.done():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self.loop:
+            self.future.set_exception(error)
+        else:
+            self.loop.call_soon_threadsafe(self._fail, error)
+
+    def _fail(self, error: BaseException) -> None:
+        if not self.future.done():
+            self.future.set_exception(error)
+
+
+@dataclass
 class GateSession:
     token: str
     thread_id: str
@@ -34,7 +72,11 @@ class GateSession:
     workspace: Optional[str] = None
     # Which model each CLI is actually running, learned from hook payloads.
     models: dict[str, str] = field(default_factory=dict)
-    pending: dict[str, asyncio.Future] = field(default_factory=dict)
+    # request_id -> the future the gate request is waiting on, plus the loop
+    # it belongs to. The loop is kept because the answer does not always
+    # arrive on it: asyncio futures are not thread-safe, and resolving one
+    # from another thread leaves the waiter parked until its timeout.
+    pending: dict[str, "_Pending"] = field(default_factory=dict)
     timeline: Optional[TurnTimeline] = None
     native_agents: dict[str, dict] = field(default_factory=dict)
 
@@ -66,9 +108,8 @@ class GateRegistry:
         # Anything still waiting on this connection can never be answered now;
         # failing those futures makes the gate deny rather than hang until the
         # hook's own timeout.
-        for future in session.pending.values():
-            if not future.done():
-                future.set_exception(ConnectionError("gate session closed"))
+        for pending in session.pending.values():
+            pending.fail(ConnectionError("gate session closed"))
 
     def get(self, token: str) -> Optional[GateSession]:
         return self._sessions.get(token)
@@ -77,8 +118,9 @@ class GateRegistry:
         """Asks the browser and waits. Returns "allow" or "deny"; a timeout,
         a closed connection or a failed send all deny."""
         request_id = str(uuid.uuid4())
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        session.pending[request_id] = future
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        session.pending[request_id] = _Pending(future=future, loop=loop)
         try:
             await session.send({**request, "type": "approval_request", "request_id": request_id})
             return await asyncio.wait_for(future, timeout=self.approval_timeout)
@@ -92,8 +134,8 @@ class GateRegistry:
     def resolve_approval(self, session: GateSession, request_id: str, decision: str) -> bool:
         """Called when the browser answers. Returns False for an unknown or
         already-answered request, so a duplicate click is a no-op."""
-        future = session.pending.get(request_id)
-        if future is None or future.done():
+        pending = session.pending.get(request_id)
+        if pending is None or pending.future.done():
             return False
-        future.set_result("allow" if decision == "allow" else "deny")
+        pending.resolve("allow" if decision == "allow" else "deny")
         return True

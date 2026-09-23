@@ -1,13 +1,14 @@
-"""Context handoff between the two agent CLIs.
+"""Context handoff between the agent CLIs.
 
-Each CLI keeps its own native session (claude --resume / codex exec resume),
+Each CLI keeps its own native session (claude --resume / codex exec resume /
+kimi --session),
 so switching agents mid-thread means the incoming CLI knows nothing about the
 turns the other one just ran. This module builds the brief that closes that
 gap: the thread's own recent turns, attributed by agent, prepended to the
 user's prompt.
 """
 
-AGENTS = ("claude", "codex")
+AGENTS = ("claude", "codex", "kimi")
 DEFAULT_AGENT = "claude"
 
 # Bound on each past turn's prompt/response before interpolation, same

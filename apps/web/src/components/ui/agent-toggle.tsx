@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export const AGENTS = ["claude", "codex"] as const;
+export const AGENTS = ["claude", "codex", "kimi"] as const;
 export type Agent = (typeof AGENTS)[number];
 /** "auto" is not an agent: it hands the choice to the ladder. */
 export type AgentChoice = Agent | "auto";
@@ -20,6 +20,7 @@ export const AGENT_CHOICES = ["auto", ...AGENTS] as const;
 export const AGENT_LABELS: Record<Agent, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  kimi: "Kimi Code",
 };
 
 /** Which model answers the next turn.
@@ -54,7 +55,9 @@ export function AgentToggle({
     <Select
       value={value}
       onValueChange={(next) => {
-        if (next === "auto" || next === "claude" || next === "codex") onChange(next);
+        if (next === "auto" || (next !== null && (AGENTS as readonly string[]).includes(next))) {
+          onChange(next as AgentChoice);
+        }
       }}
       disabled={disabled}
     >

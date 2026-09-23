@@ -27,8 +27,13 @@ def _run(payload: str, env: dict) -> dict:
     result = subprocess.run(
         [sys.executable, HOOK], input=payload, capture_output=True, text=True, env=env, timeout=30
     )
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)["hookSpecificOutput"]
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    # Exit code and decision must agree. 2 is "block" for all three CLIs, and
+    # for Kimi it is the *only* reliable block: its contract reads any other
+    # non-zero code as a script error and allows the call (fail-open).
+    expected = 2 if output["permissionDecision"] == "deny" else 0
+    assert result.returncode == expected, result.stderr
+    return output
 
 
 def test_denies_when_gate_is_not_configured():

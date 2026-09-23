@@ -8,7 +8,7 @@ is to stop hammering the resource that just said no.
 
 Chain, per the roadmap: switch the Claude CLI's auth mode first (a
 subscription limit and an API-billing limit are different buckets), and only
-then hand the work to Codex.
+then hand the work to another CLI — Codex, then Kimi.
 """
 import os
 import re
@@ -18,6 +18,7 @@ from typing import Optional
 
 CLAUDE = "claude"
 CODEX = "codex"
+KIMI = "kimi"
 
 # Substrings seen in a CLI's error output when the provider refuses on usage
 # rather than on the request itself. Deliberately broad: a missed match keeps
@@ -114,14 +115,19 @@ def build_chain(preferred_agent: str, preferred_mode: Optional[str]) -> list[Run
     CLI on the other one. Codex is last because switching CLI costs the
     conversation its native session and needs a handoff brief."""
     if preferred_agent == CODEX:
-        # Nothing to re-auth on the Codex side, so the only rung below it is
-        # the other CLI, starting from its configured mode.
-        return [Rung(CODEX), Rung(CLAUDE, preferred_mode or "pro")]
+        # Nothing to re-auth on the Codex side, so the rungs below it are the
+        # other CLIs, Claude starting from its configured mode.
+        return [Rung(CODEX), Rung(CLAUDE, preferred_mode or "pro"), Rung(KIMI)]
+    if preferred_agent == KIMI:
+        # Same shape: one account, one bucket, so the way out of a Kimi limit
+        # is another CLI entirely.
+        return [Rung(KIMI), Rung(CLAUDE, preferred_mode or "pro"), Rung(CODEX)]
     other_mode = "api" if preferred_mode == "pro" else "pro"
     return [
         Rung(CLAUDE, preferred_mode or "pro"),
         Rung(CLAUDE, other_mode),
         Rung(CODEX),
+        Rung(KIMI),
     ]
 
 
