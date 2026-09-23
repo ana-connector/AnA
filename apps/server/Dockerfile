@@ -7,7 +7,11 @@ FROM python:3.13-slim
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git docker-cli \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code @openai/codex \
+    # Pinned, not floating: a cached layer kept the image on claude 2.1.197
+    # long after the account needed 2.1.280 ("Claude Code 2.1.197 does not
+    # support this model"), and a bare `npm install -g` gives no way to tell
+    # which version an image actually holds. Bump these deliberately.
+    && npm install -g @anthropic-ai/claude-code@2.1.280 @openai/codex@0.156.1 \
     # `uv`, for `uvx`: the MCP servers in config/mcp.yaml are Python ones run
     # straight from PyPI, and without uvx on PATH they are skipped as
     # unavailable rather than failing loudly.
