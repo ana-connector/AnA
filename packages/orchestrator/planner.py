@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from packages.governance.subagent_scope import Scope
 from packages.orchestrator.handoff import AGENTS, DEFAULT_AGENT
 
 DIRECT = "direct"
@@ -27,11 +28,16 @@ PLAN_INSTRUCTIONS = """\
 
 여러 갈래로 나눠 병렬 처리하는 게 확실히 이득인 요청이면:
 {"mode": "delegate", "tasks": [
-  {"title": "짧은 제목", "agent": "codex", "prompt": "그 작업만 수행하도록 쓴 완결된 지시"}
+  {"title": "짧은 제목", "agent": "codex", "prompt": "그 작업만 수행하도록 쓴 완결된 지시",
+   "scope": {"mode": "write", "paths": []}}
 ]}
 
 규칙:
 - agent는 "claude" 또는 "codex"만. 코드 생성/리팩터링/구현은 codex, 설명/리뷰/조사/기획은 claude.
+- scope는 그 하위 에이전트에게 줄 권한이다(생략 가능, 기본은 전체 쓰기).
+  - mode: "read"면 파일 수정·명령 실행이 차단된다. 조사/리뷰/설명 작업은 read로 줘라.
+  - paths: 워크스페이스 기준 상대 경로 목록. 적으면 그 안에서만 작업할 수 있다.
+  - 필요 이상으로 넓게 주지 마라. 좁게 준 스코프는 게이트가 강제한다.
 - 작업은 최대 %(max_tasks)d개. 서로 독립적이어야 한다(동시에 실행된다).
 - 각 prompt는 그 작업만 보고도 수행 가능하도록 자족적으로 써라.
 - 나눌 이유가 없으면 주저 말고 direct를 골라라.
@@ -59,6 +65,9 @@ class PlanTask:
     title: str
     prompt: str
     agent: str = DEFAULT_AGENT
+    # What the lead is willing to let this task do (roadmap stage 3's
+    # "권한 스코프"). Enforced at the gate, not by the CLI.
+    scope: Scope = field(default_factory=Scope)
 
 
 @dataclass(frozen=True)
@@ -147,6 +156,7 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
                 id=f"t{index + 1}",
                 title=str(raw.get("title") or f"작업 {index + 1}")[:80],
                 prompt=task_prompt.strip(),
+                scope=Scope.parse(raw.get("scope")),
                 # Client-of-the-model data: an invented agent name would
                 # otherwise pick a subprocess that does not exist.
                 agent=agent if agent in AGENTS else DEFAULT_AGENT,

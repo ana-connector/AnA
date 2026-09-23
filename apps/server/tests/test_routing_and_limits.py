@@ -450,3 +450,26 @@ def test_estimate_endpoint_rejects_a_reset_time_in_the_past(estimates_client):
     )
 
     assert response.status_code == 422
+
+
+def test_auth_mode_is_an_editable_setting(client, tmp_path, monkeypatch):
+    """Roadmap stage 1 deferred the pro/api switch to the stage 3 settings UI;
+    until it existed, changing mode meant editing .env and restarting."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_AUTH_MODE", "api")
+
+    assert client.get("/settings").json()["auth_mode"] == "api"
+
+    saved = client.put("/settings", json={"auth_mode": "pro"})
+
+    assert saved.status_code == 200
+    assert saved.json()["auth_mode"] == "pro"
+    # Stored in the state directory, so it outlives a restart — the env var is
+    # only the default for a machine that has never set one.
+    assert client.get("/settings").json()["auth_mode"] == "pro"
+
+
+def test_an_unknown_auth_mode_is_refused(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+
+    assert client.put("/settings", json={"auth_mode": "free"}).status_code == 422

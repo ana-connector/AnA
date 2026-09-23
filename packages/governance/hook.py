@@ -53,6 +53,10 @@ def ask_gate(payload: dict) -> dict:
             "role": "worker" if payload.get("agent_id") else os.environ.get("ANA_GATE_ROLE", "worker"),
             "agent_id": payload.get("agent_id"),
             "agent_type": payload.get("agent_type"),
+            # The permission scope this sub-agent's lead gave it, carried in
+            # its environment (packages/governance/subagent_scope.py).
+            "scope_mode": os.environ.get("ANA_GATE_SCOPE_MODE"),
+            "scope_paths": os.environ.get("ANA_GATE_SCOPE_PATHS"),
         }
     ).encode("utf-8")
     request = urllib.request.Request(

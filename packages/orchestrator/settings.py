@@ -14,10 +14,13 @@ from typing import Optional
 
 import yaml
 
+from packages.adapters.env_builder import default_mode_from_settings
 from packages.orchestrator.routing import DEFAULT_RULES_PATH, ModelLadder
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.txt"
 ROUTING_FILENAME = "routing.yaml"
+AUTH_MODE_FILENAME = "claude_auth_mode.txt"
+AUTH_MODES = ("pro", "api")
 
 
 def state_dir() -> Path:
@@ -82,6 +85,33 @@ def _write_temp(text: str) -> Path:
     return path
 
 
+def auth_mode_path() -> Path:
+    return state_dir() / AUTH_MODE_FILENAME
+
+
+def read_auth_mode() -> str:
+    """Which `~/.bashrc` billing mode the Claude CLI runs under —
+    `use-claude-pro` (subscription) or `use-claude-api` (key + base URL).
+
+    The roadmap put this in the UI as part of stage 3's secrets work ("웹 UI에서
+    세션별로 override ... 정식 시크릿 관리 UI에 합쳐서 그때 함께 구현한다");
+    until this existed, changing mode meant editing `.env` and restarting,
+    which is precisely what that note said would stop being true. The file
+    wins over the environment so a UI change outlives a container restart."""
+    path = auth_mode_path()
+    if path.exists():
+        stored = path.read_text(encoding="utf-8").strip()
+        if stored in AUTH_MODES:
+            return stored
+    return default_mode_from_settings()
+
+
+def write_auth_mode(mode: str) -> None:
+    if mode not in AUTH_MODES:
+        raise ValueError(f"unknown auth mode: {mode!r}")
+    auth_mode_path().write_text(mode, encoding="utf-8")
+
+
 def system_prompt_path() -> Path:
     return state_dir() / SYSTEM_PROMPT_FILENAME
 
@@ -106,6 +136,9 @@ LEAD_INSTRUCTIONS = """\
 - 파일 읽기/쓰기/수정, 명령 실행, 검색 도구는 사용할 수 없다.
   이런 작업은 하위 에이전트에게 위임해라. 하위 에이전트 위임/관리 도구와
   현재 시각 확인 도구는 사용할 수 있다.
+- 이 제한은 **너 자신에게만** 적용된다. 네가 띄운 하위 에이전트는 도구를 쓸 수
+  있고, 아래 목록의 MCP 서버와 스킬도 그대로 쓸 수 있다. 하위 에이전트에게
+  "도구를 쓰지 마라"고 전하지 마라.
 - 네 일은 (1) 요청을 이해하고, (2) 필요한 작업을 하위 에이전트가 수행할 수 있는
   형태로 나누고, (3) 그 결과를 종합해 사용자에게 답하는 것이다.
 - 파일 내용이나 실행 결과를 추측해서 말하지 마라. 모르면 그 확인 자체를 작업으로

@@ -25,6 +25,7 @@ from packages.adapters.env_builder import (
 from packages.adapters.transcript import TranscriptLogger
 from packages.governance.cli_config import prepare_codex_home, write_claude_settings
 from packages.governance.secrets import load_secrets
+from packages.governance.subagent_scope import Scope, with_instructions
 from packages.mcp.wiring import claude_mcp, codex_mcp
 from packages.skills.catalog import with_catalog
 from packages.governance.workspace import session_workspace, workspace_root
@@ -40,7 +41,7 @@ from packages.orchestrator.workspaces import ensure_workspace
 from packages.observability.metrics import active_sessions
 from packages.orchestrator.handoff import AGENTS
 from packages.orchestrator.routing import AUTO
-from packages.orchestrator.settings import system_prompt_for
+from packages.orchestrator.settings import read_auth_mode, system_prompt_for
 from packages.orchestrator.timeline import TurnTimeline
 
 router = APIRouter()
@@ -98,8 +99,9 @@ def build_adapter(
     model: Optional[str] = None,
     effort: Optional[str] = None,
     role: str = "lead",
+    scope: Optional[Scope] = None,
 ):
-    mode = auth_mode or default_mode_from_settings()
+    mode = auth_mode or read_auth_mode()
     env = EnvBuilder(mode).build()
     # Registered secrets, injected as environment variables so the agent can
     # use a credential without it ever appearing in a chat message — and so
@@ -108,6 +110,8 @@ def build_adapter(
     # The gate refuses tool calls from the lead: the lead plans and answers,
     # sub-agents do the work (see apps/server/app/gate.py).
     env["ANA_GATE_ROLE"] = role
+    # Empty for an unscoped agent, so the lead's environment is unchanged.
+    env.update((scope or Scope()).to_env())
     settings_path = None
     permission_prompts = None
     if gate_token is not None and gate_enabled():
@@ -138,7 +142,9 @@ def build_adapter(
         settings_path=settings_path,
         permission_prompts=permission_prompts,
         command_prefix=command_prefix,
-        system_prompt=with_catalog(system_prompt_for("claude", role), role, mcp_servers),
+        system_prompt=with_instructions(
+            with_catalog(system_prompt_for("claude", role), role, mcp_servers), scope
+        ),
         mcp_config_path=mcp_config_path,
     )
 
@@ -151,6 +157,7 @@ def build_codex_adapter(
     model: Optional[str] = None,
     effort: Optional[str] = None,
     role: str = "lead",
+    scope: Optional[Scope] = None,
 ) -> CodexAdapter:
     """Factory mirroring build_adapter(), for the `codex` CLI. Constructing
     it spawns nothing -- the subprocess only starts on run_stream() -- so
@@ -159,6 +166,7 @@ def build_codex_adapter(
     env = build_codex_env()
     env.update(extra_env or {})
     env["ANA_GATE_ROLE"] = role
+    env.update((scope or Scope()).to_env())
     sandbox = default_codex_sandbox_from_settings()
     hooks_enabled = False
     if gate_token is not None and gate_enabled():
@@ -184,9 +192,30 @@ def build_codex_adapter(
         sandbox=sandbox,
         hooks_enabled=hooks_enabled,
         command_prefix=command_prefix,
-        system_prompt=with_catalog(system_prompt_for("codex", role), role, mcp_servers),
+        system_prompt=with_instructions(
+            with_catalog(system_prompt_for("codex", role), role, mcp_servers), scope
+        ),
         mcp_args=mcp_args,
     )
+
+
+def _drop_finished_workers(adapters: dict) -> None:
+    """Forgets worker adapters whose subprocess is over.
+
+    They are tracked so a disconnect can terminate them, but a long
+    conversation that plans on every turn would otherwise keep every worker it
+    ever built — each holding a copy of the environment, including the
+    registered secrets — for as long as the socket is open. Only workers are
+    dropped: the lead pair is reused turn after turn."""
+    for key, adapter in list(adapters.items()):
+        if not key.startswith("worker/"):
+            continue
+        process = getattr(adapter, "_process", None)
+        # `None` means "has not started yet", not "is done": workers are built
+        # a moment before they run, and dropping one here would make a
+        # disconnect during the fan-out leave its subprocess alive.
+        if process is not None and process.returncode is not None:
+            adapters.pop(key, None)
 
 
 def build_transcript() -> TranscriptLogger:
@@ -448,7 +477,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             auth mode needs a new adapter, since the mode is baked into the
             subprocess environment. Adapters built here are tracked so a client
             disconnect terminates their subprocesses too."""
-            if agent == "claude" and auth_mode and auth_mode != default_mode_from_settings():
+            if agent == "claude" and auth_mode and auth_mode != read_auth_mode():
                 extra = build_adapter(
                     gate_session.token,
                     auth_mode=auth_mode,
@@ -467,7 +496,10 @@ async def chat_ws(websocket: WebSocket) -> None:
             return adapter
 
         def worker_factory(
-            agent: str, model: Optional[str] = None, effort: Optional[str] = None
+            agent: str,
+            model: Optional[str] = None,
+            effort: Optional[str] = None,
+            scope: Optional[Scope] = None,
         ):
             """A fresh adapter per sub-agent task. The pre-built pair each hold
             one subprocess handle, so several concurrent workers sharing one
@@ -483,6 +515,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                     model=model,
                     effort=effort,
                     role="worker",
+                    scope=scope,
                 )
                 if agent == "codex"
                 else build_adapter(
@@ -492,9 +525,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                     model=model,
                     effort=effort,
                     role="worker",
+                    scope=scope,
                 )
             )
-            adapters[f"worker/{agent}/{len(adapters)}"] = built
+            _drop_finished_workers(adapters)
+            adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built
             return built
 
         config = {
@@ -503,7 +538,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 "adapters": adapters,
                 "adapter_factory": adapter_factory,
                 "worker_factory": worker_factory,
-                "claude_auth_mode": default_mode_from_settings(),
+                "claude_auth_mode": read_auth_mode(),
                 "tracer": websocket.app.state.tracer,
                 "usage_tracker": websocket.app.state.usage_tracker,
                 # Kept alongside "adapters" for callers/tests that still wire a

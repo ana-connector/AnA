@@ -35,6 +35,9 @@ class TaskResult:
             "title": self.task.title,
             "prompt": self.task.prompt,
             "agent": self.task.agent,
+            # Shown in the UI next to the task: which permissions this
+            # sub-agent was given is part of what happened, not a detail.
+            "scope": self.task.scope.as_dict(),
             "status": self.status,
             "output": self.output,
             "error": self.error,
