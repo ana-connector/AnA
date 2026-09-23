@@ -11,6 +11,7 @@ either does not touch the other's file.
 """
 from typing import Optional
 
+from packages.mcp.registry import LEAD, WORKER
 from packages.skills.loader import load_library
 
 HEADER = """\
@@ -20,18 +21,33 @@ HEADER = """\
 스킬이나 MCP 서버를 쓰려고 하지 마라(게이트에서 거부된다).
 """
 
+LEAD_HEADER = """\
+[하위 에이전트가 쓸 수 있는 스킬]
+아래는 네가 띄우는 하위 에이전트가 수행할 수 있는 ANA 스킬 목록이다. 작업을
+나눌 때 해당하는 스킬이 있으면 그 이름을 지시에 적어라. 너 자신이 직접
+실행하지는 마라.
+"""
+
 
 def catalog_text(role: str, available_servers: Optional[set[str]] = None) -> str:
     """The catalog block for one role, or "" when nothing applies.
+
+    The lead gets the *worker* catalog under its own heading: the CLI's native
+    sub-agents run inside the lead's process and inherit its system prompt, so
+    a catalog withheld from the lead is a catalog no sub-agent ever sees —
+    the same reason the lead's process carries the worker MCP servers
+    (packages/mcp/wiring.py).
 
     Empty rather than a header with no entries: an agent told it has a skill
     list and then shown none tends to explain that it has none, which costs
     tokens and helps nobody."""
     library = load_library()
-    skills = library.for_role(role, available_servers)
+    is_lead = role == LEAD
+    skills = library.for_role(WORKER if is_lead else role, available_servers)
     if not skills:
         return ""
-    return HEADER + "\n".join(skill.summary() for skill in skills)
+    header = LEAD_HEADER if is_lead else HEADER
+    return header + "\n".join(skill.summary() for skill in skills)
 
 
 def with_catalog(

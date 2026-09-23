@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.skills.catalog import catalog_text, render_skill, with_catalog
-from packages.skills.loader import load_library
+from packages.skills.loader import SkillLibrary, load_library
 from packages.skills.models import SkillDefinition
 
 VALID = textwrap.dedent(
@@ -98,8 +98,15 @@ def test_catalog_lists_only_skills_whose_mcp_servers_are_present(user_library):
     assert "code-review" in without  # needs no MCP server
 
 
-def test_lead_sees_no_worker_skills(user_library):
-    assert catalog_text("lead", {"git", "postgres", "github"}) == ""
+def test_the_lead_sees_the_catalog_as_its_sub_agents_capabilities(user_library):
+    """The CLI's native sub-agents run inside the lead's process and inherit
+    its system prompt, so a catalog withheld from the lead is one no sub-agent
+    ever sees. It is labeled as theirs, not the lead's own."""
+    catalog = catalog_text("lead", {"git", "postgres", "github"})
+
+    assert "하위 에이전트가 쓸 수 있는 스킬" in catalog
+    assert "git-commit" in catalog
+    assert "직접\n실행하지는 마라" in catalog
 
 
 def test_with_catalog_appends_rather_than_replaces(user_library):
@@ -108,8 +115,12 @@ def test_with_catalog_appends_rather_than_replaces(user_library):
     assert "code-review" in combined
 
 
-def test_with_catalog_is_a_no_op_when_nothing_applies(user_library):
-    assert with_catalog("역할 지시", "lead", set()) == "역할 지시"
+def test_with_catalog_is_a_no_op_when_nothing_applies(user_library, monkeypatch):
+    """No skills in the library at all — an empty catalog is left out rather
+    than added as a header with nothing under it."""
+    monkeypatch.setattr("packages.skills.catalog.load_library", lambda: SkillLibrary())
+
+    assert with_catalog("역할 지시", "worker", set()) == "역할 지시"
 
 
 def test_render_skill_by_name(user_library):

@@ -158,7 +158,14 @@ export async function fetchWorkspaceCapabilities(): Promise<{ containers: boolea
   }
 }
 
-export type AnaSettings = { routing: string; system_prompt: string };
+export type AnaSettings = {
+  routing: string;
+  system_prompt: string;
+  /** Which billing mode the Claude CLI runs under: "pro" (subscription) or
+   *  "api" (key + base URL). Applies to conversations opened after the save. */
+  auth_mode?: string;
+  auth_modes?: string[];
+};
 
 export async function fetchSettings(): Promise<AnaSettings> {
   const response = await fetch(`${apiBase()}/settings`);

@@ -35,6 +35,11 @@ _IGNORED_PREFIXES = (
     "/etc/ssl",
 )
 
+# Public name for the list above: the sub-agent scope check needs the same
+# exemptions, and reaching into a private name across modules is how two
+# copies of a list start to drift.
+IGNORED_PREFIXES = _IGNORED_PREFIXES
+
 # Field names used by file-oriented tools in both CLIs.
 _PATH_FIELDS = ("file_path", "path", "notebook_path", "target_file", "directory")
 

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { PageShell } from "@/components/page-shell";
 import { UsageEstimateEditor } from "@/components/usage-estimate-editor";
+import { CapabilityPanel } from "@/components/capability-panel";
 
 /** Settings the user should be able to change without touching the repo: the
  *  rules that pick a CLI per message, and the instructions appended to every
@@ -18,6 +19,8 @@ import { UsageEstimateEditor } from "@/components/usage-estimate-editor";
 export default function SettingsPage() {
   const [routing, setRouting] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [authMode, setAuthMode] = useState("api");
+  const [authModes, setAuthModes] = useState<string[]>(["pro", "api"]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -26,6 +29,8 @@ export default function SettingsPage() {
       const settings = await fetchSettings();
       setRouting(settings.routing);
       setSystemPrompt(settings.system_prompt);
+      if (settings.auth_mode) setAuthMode(settings.auth_mode);
+      if (settings.auth_modes?.length) setAuthModes(settings.auth_modes);
     } catch (e) {
       setRouting("");
       setError(String(e));
@@ -41,9 +46,11 @@ export default function SettingsPage() {
       const saved = await saveSettings({
         routing: routing ?? "",
         system_prompt: systemPrompt,
+        auth_mode: authMode,
       });
       setRouting(saved.routing);
       setSystemPrompt(saved.system_prompt);
+      if (saved.auth_mode) setAuthMode(saved.auth_mode);
       setError(null);
       setSaved(true);
     } catch (e) {
@@ -110,6 +117,26 @@ export default function SettingsPage() {
             </FieldDescription>
           </Field>
 
+          <Field>
+            <FieldLabel htmlFor="auth-mode">Claude 인증 모드</FieldLabel>
+            <select
+              id="auth-mode"
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              value={authMode}
+              onChange={(event) => { setAuthMode(event.target.value); setSaved(false); }}
+            >
+              {authModes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode === "pro" ? "pro · 구독 세션" : "api · 키 + base URL"}
+                </option>
+              ))}
+            </select>
+            <FieldDescription>
+              ~/.bashrc의 use-claude-pro / use-claude-api에 해당합니다. 저장하면 이후에
+              새로 여는 대화부터 적용됩니다(진행 중인 대화는 시작할 때의 모드를 유지).
+            </FieldDescription>
+          </Field>
+
           <Field orientation="horizontal">
             <Button onClick={save}>저장</Button>
             <Button variant="ghost" onClick={() => void load()}>
@@ -119,6 +146,7 @@ export default function SettingsPage() {
         </FieldGroup>
       )}
       <UsageEstimateEditor />
+      <CapabilityPanel />
     </div></PageShell>
   );
 }

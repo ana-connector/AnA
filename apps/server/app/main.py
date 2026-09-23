@@ -34,8 +34,11 @@ from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports
 from packages.orchestrator.routing import load_routing_table
 from packages.orchestrator.settings import (
+    AUTH_MODES,
+    read_auth_mode,
     read_routing,
     read_system_prompt,
+    write_auth_mode,
     write_routing,
     write_system_prompt,
 )
@@ -239,6 +242,9 @@ async def delete_workspace(
 class SettingsUpdate(BaseModel):
     routing: str | None = None
     system_prompt: str | None = None
+    # "pro" (subscription) or "api" (key + base URL) — the two modes
+    # ~/.bashrc defines. Changing it used to mean editing .env and restarting.
+    auth_mode: str | None = None
 
 
 @app.get("/models")
@@ -257,9 +263,15 @@ async def models() -> dict:
 
 @app.get("/settings")
 async def get_settings() -> dict:
-    """The editable configuration: the routing rules the router actually loads
-    and the system prompt appended to every agent."""
-    return {"routing": read_routing(), "system_prompt": read_system_prompt()}
+    """The editable configuration: the routing rules the router actually loads,
+    the system prompt appended to every agent, and which billing mode the
+    Claude CLI runs under."""
+    return {
+        "routing": read_routing(),
+        "system_prompt": read_system_prompt(),
+        "auth_mode": read_auth_mode(),
+        "auth_modes": list(AUTH_MODES),
+    }
 
 
 @app.put("/settings")
@@ -272,7 +284,19 @@ async def put_settings(body: SettingsUpdate) -> dict:
             raise HTTPException(status_code=422, detail=f"routing rules: {exc}") from exc
     if body.system_prompt is not None:
         write_system_prompt(body.system_prompt)
-    return {"status": "ok", "routing": read_routing(), "system_prompt": read_system_prompt()}
+    if body.auth_mode is not None:
+        try:
+            write_auth_mode(body.auth_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Takes effect on the next WebSocket connection: the adapters for an open
+    # conversation were built with the mode that was current when it started.
+    return {
+        "status": "ok",
+        "routing": read_routing(),
+        "system_prompt": read_system_prompt(),
+        "auth_mode": read_auth_mode(),
+    }
 
 
 @app.get("/usage")

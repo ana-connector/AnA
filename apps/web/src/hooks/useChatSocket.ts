@@ -35,7 +35,13 @@ export type ChatEvent =
       from_rung?: string;
       to_rung?: string;
       mode?: string;
-      tasks?: { id: string; title: string; agent: string; prompt?: string }[];
+      tasks?: {
+        id: string;
+        title: string;
+        agent: string;
+        prompt?: string;
+        scope?: { mode: string; paths: string[] };
+      }[];
       task?: SubagentTask;
       rule_id?: string | null;
       tool?: ToolEvent;
@@ -91,6 +97,9 @@ export type SubagentTask = {
   title: string;
   prompt?: string;
   agent: string;
+  /** The permission scope the lead gave this sub-agent, enforced at the gate
+   *  (packages/governance/subagent_scope.py). Absent means unrestricted. */
+  scope?: { mode: string; paths: string[] };
   status: "running" | "done" | "error" | "timeout" | "unknown";
   error?: string;
   output?: string;

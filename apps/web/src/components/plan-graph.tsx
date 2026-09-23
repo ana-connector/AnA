@@ -23,6 +23,17 @@ const STATUS_LABEL: Record<SubagentTask["status"], string> = {
 
 /** Node colors come from the app's own tokens rather than React Flow's
  *  defaults, which are light-mode constants and turn into dark-on-dark. */
+/** "읽기 전용", "docs/" or both — shown only when the lead actually narrowed
+ *  the scope, so an ordinary task carries no extra badge. */
+function scopeLabel(task: SubagentTask): string | null {
+  const scope = task.scope;
+  if (!scope) return null;
+  const parts: string[] = [];
+  if (scope.mode === "read") parts.push("읽기 전용");
+  if (scope.paths?.length) parts.push(scope.paths.join(", "));
+  return parts.length ? parts.join(" · ") : null;
+}
+
 function nodeStyle(status?: SubagentTask["status"]): React.CSSProperties {
   const base: React.CSSProperties = {
     background: "var(--card)",
@@ -117,6 +128,11 @@ export function PlanGraph({ plan }: { plan: PlanState }) {
         {plan.tasks.map((task) => (
           <li key={task.id} className="flex items-center gap-2 text-xs">
             <Badge variant="outline">{task.agent}</Badge>
+            {scopeLabel(task) && (
+              <Badge variant="outline" title="대장이 이 하위 에이전트에게 준 권한 범위">
+                {scopeLabel(task)}
+              </Badge>
+            )}
             <span className="truncate">{task.title}</span>
             <span className="ml-auto shrink-0 text-muted-foreground">
               {STATUS_LABEL[task.status]}

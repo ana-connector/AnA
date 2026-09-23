@@ -92,7 +92,7 @@ async def test_plan_mode_fans_out_and_synthesizes(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, "최종 종합 답변"])
     workers: list[ScriptedAdapter] = []
 
-    def worker_factory(agent: str, model=None, effort=None):
+    def worker_factory(agent: str, model=None, effort=None, scope=None):
         worker = ScriptedAdapter([f"{agent} 결과"], label=agent)
         workers.append(worker)
         return worker
@@ -115,7 +115,7 @@ async def test_plan_mode_fans_out_and_synthesizes(db_pool):
 async def test_subagent_frames_track_each_task(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, "done"])
 
-    def worker_factory(agent: str, model=None, effort=None):
+    def worker_factory(agent: str, model=None, effort=None, scope=None):
         return ScriptedAdapter([f"{agent} 결과"], label=agent)
 
     graph = build_graph(InMemorySaver())
@@ -138,7 +138,7 @@ async def test_subagent_frames_track_each_task(db_pool):
 async def test_a_failing_worker_still_produces_an_answer(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, "일부 실패를 포함한 답변"])
 
-    def worker_factory(agent: str, model=None, effort=None):
+    def worker_factory(agent: str, model=None, effort=None, scope=None):
         return FailingWorker() if agent == "codex" else ScriptedAdapter(["ok"], label=agent)
 
     graph = build_graph(InMemorySaver())
@@ -156,7 +156,7 @@ async def test_direct_plan_runs_a_single_turn(db_pool):
     lead = ScriptedAdapter(['{"mode": "direct"}', "바로 답변"])
     called = []
 
-    def worker_factory(agent: str, model=None, effort=None):  # pragma: no cover - must not be called
+    def worker_factory(agent: str, model=None, effort=None, scope=None):  # pragma: no cover - must not be called
         called.append(agent)
         raise AssertionError("no delegation expected")
 
@@ -172,7 +172,7 @@ async def test_direct_plan_runs_a_single_turn(db_pool):
 async def test_plan_mode_off_skips_planning_entirely(db_pool):
     lead = ScriptedAdapter(["평범한 답변"])
 
-    def worker_factory(agent: str, model=None, effort=None):  # pragma: no cover - must not be called
+    def worker_factory(agent: str, model=None, effort=None, scope=None):  # pragma: no cover - must not be called
         raise AssertionError("no delegation expected")
 
     graph = build_graph(InMemorySaver())
@@ -190,7 +190,7 @@ async def test_plan_mode_off_skips_planning_entirely(db_pool):
 async def test_worker_costs_are_added_to_the_thread_totals(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, "done"])
 
-    def worker_factory(agent: str, model=None, effort=None):
+    def worker_factory(agent: str, model=None, effort=None, scope=None):
         return ScriptedAdapter(["ok"], label=agent)
 
     graph = build_graph(InMemorySaver())
@@ -207,7 +207,7 @@ async def test_workers_are_terminated_after_the_fan_out(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, "done"])
     workers: list[ScriptedAdapter] = []
 
-    def worker_factory(agent: str, model=None, effort=None):
+    def worker_factory(agent: str, model=None, effort=None, scope=None):
         worker = ScriptedAdapter(["ok"], label=agent)
         workers.append(worker)
         return worker
@@ -222,7 +222,7 @@ async def test_workers_are_terminated_after_the_fan_out(db_pool):
 async def test_subagent_metrics_are_recorded(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, "done"])
 
-    def worker_factory(agent: str, model=None, effort=None):
+    def worker_factory(agent: str, model=None, effort=None, scope=None):
         return ScriptedAdapter(["ok"], label=agent)
 
     before = metrics.subagents_total.labels(agent="codex", status="done")._value.get()

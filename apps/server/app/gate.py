@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from packages.governance import audit
 from packages.observability.metrics import gate_wait_seconds, record_gate_decision
 from packages.governance.rules import ALLOW, ASK, DENY, Verdict, load_ruleset
+from packages.governance.subagent_scope import Scope, violation as scope_violation
 from packages.governance.workspace import escaping_paths
 from packages.mcp.registry import load_registry
 from packages.mcp.scope import scope_denial
@@ -58,6 +59,10 @@ class ToolCallRequest(BaseModel):
     role: str | None = None
     agent_id: str | None = None
     agent_type: str | None = None
+    # The permission scope this sub-agent's lead gave it, as the hook read it
+    # out of the environment (packages/governance/subagent_scope.py).
+    scope_mode: str | None = None
+    scope_paths: str | None = None
 
 
 class SubagentEvent(BaseModel):
@@ -225,6 +230,26 @@ async def gate_tool_call(
             ),
             rule_id="lead-no-tools",
             category="delegation",
+        )
+
+    # The scope its lead gave this sub-agent (roadmap stage 3's 권한 스코프,
+    # stage 5's Elevation-of-Privilege row). Checked before the rule set
+    # because it only ever narrows: a scope cannot grant what the rules deny.
+    scope = Scope.from_payload(body.scope_mode, body.scope_paths)
+    scope_reason = scope_violation(body.tool_name, body.tool_input, scope, session.workspace)
+    if scope_reason:
+        verdict = Verdict(
+            action=DENY,
+            rule_id="subagent-scope",
+            category="privilege-scope",
+            reason=scope_reason,
+        )
+        await _audit(DENY, "scope", scope_reason)
+        return GateDecision(
+            decision=DENY,
+            reason=scope_reason,
+            rule_id="subagent-scope",
+            category="privilege-scope",
         )
 
     # Scope partitioning (roadmap stage 6): a role only gets the MCP servers

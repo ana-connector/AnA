@@ -470,7 +470,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 "agent": agent,
                 "mode": plan.mode,
                 "tasks": [
-                    {"id": t.id, "title": t.title, "agent": t.agent, "prompt": t.prompt} for t in plan.tasks
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "agent": t.agent,
+                        "prompt": t.prompt,
+                        "scope": t.scope.as_dict(),
+                    }
+                    for t in plan.tasks
                 ],
             }
         )
@@ -498,7 +505,10 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 )
                 return await _run_worker(
                     worker_factory(
-                        worker_route.agent, worker_route.model, worker_route.effort
+                        worker_route.agent,
+                        worker_route.model,
+                        worker_route.effort,
+                        task.scope,
                     ),
                     build_handoff_prompt(
                         task.prompt,
