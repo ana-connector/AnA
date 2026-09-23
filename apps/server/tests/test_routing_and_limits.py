@@ -328,7 +328,9 @@ def test_settings_for_pairs_model_and_effort(effort_ladder):
     "agent,effort",
     [
         ("claude", "minimal"),  # codex's vocabulary, not claude's
-        ("codex", "xhigh"),  # claude's vocabulary, not codex's
+        # Verified against the provider's own 400: "'minimal' is not supported
+        # with the 'gpt-6-sol' model".
+        ("codex", "minimal"),
         ("claude", "hard"),
     ],
 )

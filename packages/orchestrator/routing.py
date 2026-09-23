@@ -30,7 +30,14 @@ WORKER = "worker"
 # the settings editor is rejected there rather than killing a turn later.
 EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),
-    "codex": ("minimal", "low", "medium", "high"),
+    # Verified against the provider's own rejection, not the docs: asking for
+    # "minimal" comes back as
+    #   Unsupported value: 'minimal' is not supported with the 'gpt-6-sol'
+    #   model. Supported values are: 'none', 'low', 'medium', 'high',
+    #   'xhigh', and 'max'.
+    # — a 400 that failed every Codex planning call while ANA reported the
+    # CLI's unrelated stderr warning instead.
+    "codex": ("none", "low", "medium", "high", "xhigh", "max"),
     # Kimi has no effort flag at all; ANA writes the level into the prepared
     # home's config.toml, which is why each level gets its own home.
     "kimi": ("low", "high", "max"),
@@ -184,17 +191,28 @@ def load_routing_table(path: os.PathLike | str | None = None) -> ModelLadder:
     return _cached_ladder(resolved, os.stat(resolved).st_mtime_ns)
 
 
+# What the planning call asks for. Cheap, but not the floor of the list:
+# "none" turns reasoning off entirely, and the judgement being made — does
+# this request need sub-agents, and which — is exactly the kind a model gets
+# wrong without any.
+PLANNING_EFFORT = {"claude": "low", "codex": "low", "kimi": "low"}
+
+
 def planning_effort(agent: str) -> Optional[str]:
-    """Effort for the planning call: the cheapest level the CLI has.
+    """Effort for the planning call.
 
     Planning is a few lines of JSON deciding whether a request needs
-    sub-agents — the judgement is about the *shape* of the request, and paying
-    for deep reasoning to make it would tax every turn. ANA_PLANNER_EFFORT
-    overrides; an unknown value falls back rather than failing the turn."""
-    configured = os.environ.get("ANA_PLANNER_EFFORT")
+    sub-agents, so it does not pay for deep reasoning on every turn.
+    ANA_PLANNER_EFFORT overrides; a value the named CLI does not have is
+    ignored rather than sent, because the provider answers an unknown level
+    with a 400 that fails the turn."""
     levels = EFFORTS.get(agent, ())
+    configured = os.environ.get("ANA_PLANNER_EFFORT")
     if configured and configured in levels:
         return configured
+    preferred = PLANNING_EFFORT.get(agent)
+    if preferred in levels:
+        return preferred
     return levels[0] if levels else None
 
 

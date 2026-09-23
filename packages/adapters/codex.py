@@ -5,6 +5,28 @@ from typing import AsyncIterator, Optional
 from packages.adapters.base import AdapterEvent, AgentAdapter
 
 
+# Lines the CLI writes to stderr on a perfectly healthy run. They are not
+# failures, and reporting one as the turn's error hides the real reason: a
+# Codex turn that died on a 400 was surfaced to the user as "Reading
+# additional input from stdin...", which is what the CLI prints whenever its
+# stdin is not a terminal.
+_STDERR_NOISE = (
+    "Reading additional input from stdin",
+    "failed to clean up stale arg0 temp dirs",
+    "state db returned stale rollout path",
+)
+
+
+def _meaningful_stderr(text: str) -> str:
+    """`text` with the CLI's routine chatter removed."""
+    lines = [
+        line
+        for line in (text or "").splitlines()
+        if line.strip() and not any(noise in line for noise in _STDERR_NOISE)
+    ]
+    return "\n".join(lines).strip()
+
+
 class CodexAdapter(AgentAdapter):
     """Wraps the `codex` CLI as a one-subprocess-per-turn adapter, mirroring
     ClaudeCodeAdapter: `codex exec --json` for a fresh session and
@@ -38,8 +60,9 @@ class CodexAdapter(AgentAdapter):
         self.model = model
         # Codex has no --effort flag; reasoning effort is a config value, so
         # it rides in as a -c override like the sandbox mode does. Its
-        # vocabulary is its own (minimal..high), which is why the routing
-        # ladder validates effort per agent.
+        # vocabulary is its own (none..max) and the provider answers an
+        # unknown level with a 400, which is why the routing ladder validates
+        # effort per agent.
         self.effort = effort
         # True when env["CODEX_HOME"] points at an ANA-prepared home carrying
         # hooks.json. Hooks in automation need --dangerously-bypass-hook-trust
@@ -183,6 +206,7 @@ class CodexAdapter(AgentAdapter):
         )
 
         resolved_session_id = session_id
+        reported_error = False
         final_text = ""
         streamed_items: dict[str, str] = {}
 
@@ -282,6 +306,7 @@ class CodexAdapter(AgentAdapter):
                 continue
 
             if event_type in ("turn.failed", "error"):
+                reported_error = True
                 yield AdapterEvent(
                     type="error",
                     text=_error_text(raw_event),
@@ -293,12 +318,19 @@ class CodexAdapter(AgentAdapter):
         stderr_bytes = await stderr_task if stderr_task is not None else b""
         return_code = await self._process.wait()
         if return_code != 0:
-            yield AdapterEvent(
-                type="error",
-                text=stderr_bytes.decode("utf-8", errors="replace"),
-                session_id=resolved_session_id,
-                is_error=True,
-            )
+            # The CLI's own stderr chatter is dropped, and a failure the JSON
+            # stream already explained is not re-reported: a turn that died on
+            # a provider 400 used to surface as "Reading additional input from
+            # stdin...", because that warning was the last error event and it
+            # overwrote the real one.
+            text = _meaningful_stderr(stderr_bytes.decode("utf-8", errors="replace"))
+            if text or not reported_error:
+                yield AdapterEvent(
+                    type="error",
+                    text=text or f"codex exited with code {return_code}",
+                    session_id=resolved_session_id,
+                    is_error=True,
+                )
 
     async def terminate(self) -> None:
         if self._process is not None and self._process.returncode is None:
