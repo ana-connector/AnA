@@ -140,10 +140,51 @@ turn *reported* the failure honestly (the lead said the files were not in
   instructions say so too; the run *after* the allowlist landed still failed
   because the prompt was telling the worker its shell was blocked.
 
-## Still open
+## The dependency graph (added the same day)
 
-- **No dependency graph.** Tasks are still one round of independent work; a
-  task cannot wait for another's merge.
+A request like "plan(t1) → backend(t2) / design(t3) → frontend(t4) → deploy
+both(t5)" had no way to be expressed: the schema said tasks are independent
+and run together, so the lead's only compliant answer was **one** task called
+"계획부터 병렬 개발 Docker Compose 실행까지" doing all of it. That is the
+schema's fault, not the model's.
+
+A task now names what it waits for:
+
+```json
+{"id": "t4", "title": "프론트", "needs": ["t3"], "prompt": "…"}
+```
+
+- The supervisor schedules the graph: everything with no `needs` starts
+  together, a task starts when all of its dependencies are `done`, and the
+  concurrency cap still applies across the whole graph.
+- A task whose dependency **failed** is `blocked`, not run — starting the next
+  step against a half-finished tree is worse than not starting it — and its
+  error names the task that stopped it.
+- A dependency's **output is prepended to the dependent's prompt**, so the
+  frontend task sees what the design task produced instead of guessing at the
+  handover.
+- Ids are renumbered to ANA's own (`t1`…), with `needs` remapped: a plan that
+  numbers its tasks differently would otherwise wire the edges to the wrong
+  ones. An unresolvable edge is dropped, and a cycle has its edges broken —
+  both are mistakes in a model-written plan, and honoring them means a turn
+  that hangs until its timeout with nothing to show.
+- The plan graph in the UI draws the real edges now: a task sits one column
+  behind what it waits for, so "these two are parallel, that one is next" is
+  visible.
+
+Live, in a fresh workspace, from the request that exposed the gap:
+
+```
+TASK t1 plan.md 작성   needs=[]           TASK t4 front.txt 작성 needs=['t3']
+TASK t2 back.txt 작성  needs=['t1']       TASK t5 all.txt 작성   needs=['t2','t4']
+TASK t3 design.txt 작성 needs=['t1']
+→ five merge commits in dependency order, five files, all checks passed
+```
+
+## Still open
+- **A dependency passes only its *text* along.** The dependent task gets the
+  upstream summary in its prompt and the merged tree on disk, which is enough
+  for the shapes tried so far, but there is no structured artifact handover.
 - **Verification is per task, not per turn.** Nothing re-checks the workspace
   after every branch has merged, so two individually-passing tasks can still
   leave a broken tree.
