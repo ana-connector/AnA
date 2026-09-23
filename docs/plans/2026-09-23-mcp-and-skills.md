@@ -102,7 +102,25 @@ backwards-incompatible way — every new parameter is keyword-optional.
 
 ## Verification
 
-`417 passed` (full suite, 2026-09-23), including 51 new tests:
+Live, in the running stack (2026-09-23, `claude` 2.1.197 in the server image):
+
+```
+$ claude -p "MCP로 붙은 도구 이름만 나열해" --mcp-config ... --strict-mcp-config
+mcp__git__git_status, mcp__git__git_commit, ... mcp__postgres__execute_sql, ...
+```
+
+`GET /mcp/servers` reports git and postgres active, github inactive with
+"시크릿 미등록". `codex mcp list` with the generated `-c` overrides shows the
+server `enabled`.
+
+Three things had to be fixed to get there, all recorded in `config/mcp.yaml`:
+`mcp-server-git` exits when `--repository` is not a git repository (the
+default workspace is a plain directory); `postgres-mcp` needs `--with "mcp<2"`
+because it imports the FastMCP name mcp 2.x removed; and `config/` is baked
+into the image, so the repo copy is now bind-mounted read-only — otherwise
+"edit the YAML, no restart" was only true outside Docker.
+
+`419 passed` (full suite, 2026-09-23), including 53 new tests:
 
 - `test_mcp_registry.py` — role scoping, placeholders, skip reasons.
 - `test_mcp_wiring.py` — launcher secrecy and quoting, both CLIs' argv.
@@ -113,15 +131,16 @@ backwards-incompatible way — every new parameter is keyword-optional.
 
 ## Not done / known gaps
 
-- **The servers themselves are unverified against a live run.** `uvx` is not
-  installed on this host, so `git` and `postgres` currently resolve to
-  "실행 파일 없음" outside Docker; the image now installs `uv`, but no turn has
-  been run end-to-end through an MCP tool call yet. That is the first thing to
-  check when the stack is next brought up.
-- **Codex MCP tool naming is assumed, not observed.** `packages/mcp/scope.py`
-  recognizes both `mcp__server__tool` and the punctuation-stripped form; if
-  Codex reports something else, a scoped call could be read as a native tool.
-  Worth one live check against `codex exec --json`.
+- **Codex MCP tool naming is still unobserved.** `codex mcp list` shows the
+  overrides landing (`git ... enabled`), but no live Codex turn has called an
+  MCP tool, so the tool name its hook reports is unconfirmed.
+  `packages/mcp/scope.py` therefore recognizes three spellings
+  (`mcp__server__tool`, `server__tool`, and the punctuation-stripped form) —
+  a form it missed would fall through to the command rules as if it were a
+  native tool, which is a scope bypass rather than a visible failure.
+- **No MCP tool has been called through the gate in a real turn.** The
+  servers, their tools, and the gate's scope check are each verified; the
+  three together are not.
 - **No UI.** `/mcp/servers` and `/skills` are read-only endpoints; the settings
   page does not show them yet.
 - **The planner does not name skills.** Agents pick a skill from the catalog

@@ -12,6 +12,8 @@ KNOWN = ("git", "postgres", "github")
         ("mcp__git__git_log", "git"),
         ("mcp__postgres__query", "postgres"),
         ("mcpgitgit_log", "git"),  # punctuation-stripped hook form
+        ("git__git_log", "git"),  # no mcp prefix
+        ("github__create_pr", "github"),
         ("Bash", None),
         ("Read", None),
         ("", None),

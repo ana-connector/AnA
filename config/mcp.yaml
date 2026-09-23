@@ -24,10 +24,16 @@
 servers:
   # ① Git — the roadmap's first priority: commits, diffs, branches without
   # handing the agent a shell for them.
+  # --repository is deliberately not passed: mcp-server-git exits at startup
+  # if the path is not a git repository ("... is not a valid Git repository"),
+  # and the default workspace is a plain directory — the server would then
+  # expose no tools at all. Without it every tool takes `repo_path` per call,
+  # and a path outside the session workspace still has to clear the gate's
+  # workspace-escape rule.
   - name: git
     description: "로컬 git 저장소 조회/커밋 (mcp-server-git)"
     command: uvx
-    args: ["mcp-server-git", "--repository", "{workspace}"]
+    args: ["mcp-server-git"]
     roles: [worker]
     enabled: true
 
@@ -39,8 +45,11 @@ servers:
   # and --access-mode=restricted keeps the answers to reads.
   - name: postgres
     description: "ANA 메모리/상태 DB 읽기 전용 조회 (postgres-mcp)"
+    # `--with "mcp<2"`: postgres-mcp still imports mcp.server.fastmcp, which
+    # mcp 2.x renamed — without the pin the server dies at import with
+    # "No module named 'mcp.server.fastmcp'" and exposes no tools.
     command: uvx
-    args: ["postgres-mcp", "--access-mode=restricted"]
+    args: ["--with", "mcp<2", "postgres-mcp", "--access-mode=restricted"]
     env:
       DATABASE_URI: "{database_url}"
     roles: [worker]
