@@ -169,3 +169,35 @@ async def test_a_missing_rollout_retries_as_a_fresh_session(tmp_path):
     assert "resume" in calls[0] and "resume" not in calls[1]
     assert [e.type for e in events] == ["reasoning", "text", "usage", "result"]
     assert not any(e.type == "error" for e in events)
+
+
+def test_routine_stderr_chatter_is_not_an_error():
+    """`codex exec` prints "Reading additional input from stdin..." whenever
+    its stdin is not a terminal, plus temp-dir and rollout warnings. Reporting
+    one as the turn's failure is how a provider 400 reached the user as a
+    complaint about stdin."""
+    from packages.adapters.codex import _meaningful_stderr
+
+    noisy = (
+        "Reading additional input from stdin...\n"
+        "WARNING: failed to clean up stale arg0 temp dirs: Permission denied\n"
+        "ERROR codex_rollout::list: state db returned stale rollout path for thread x\n"
+    )
+    assert _meaningful_stderr(noisy) == ""
+    assert _meaningful_stderr(noisy + "real failure here") == "real failure here"
+
+
+async def test_a_failure_the_json_stream_explained_is_not_overwritten(tmp_path):
+    adapter = _adapter(tmp_path)
+    # The child's environment is built by the adapter, not inherited.
+    adapter.env = {
+        "PATH": "/usr/bin:/bin",
+        "FAKE_CODEX_TURN_FAILED": "unsupported reasoning effort",
+        "FAKE_CODEX_EXIT": "1",
+        "FAKE_CODEX_STDERR": "Reading additional input from stdin...",
+    }
+
+    events = [event async for event in adapter.run_stream("hi")]
+
+    errors = [event.text for event in events if event.type == "error"]
+    assert errors == ["unsupported reasoning effort"]

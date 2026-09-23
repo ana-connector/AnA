@@ -47,6 +47,22 @@ def main() -> None:
         sys.stderr.flush()
         sys.exit(1)
 
+    # A turn the provider refused, reported on the JSON stream, with the CLI's
+    # routine stderr chatter alongside it and a non-zero exit — the shape that
+    # made a 400 reach the user as "Reading additional input from stdin...".
+    if os.environ.get("FAKE_CODEX_TURN_FAILED"):
+        print(json.dumps({"type": "thread.started", "thread_id": THREAD_ID}))
+        print(json.dumps({
+            "type": "turn.failed",
+            "error": {"message": os.environ["FAKE_CODEX_TURN_FAILED"]},
+        }))
+        sys.stdout.flush()
+        stderr = os.environ.get("FAKE_CODEX_STDERR")
+        if stderr:
+            sys.stderr.write(stderr)
+            sys.stderr.flush()
+        sys.exit(int(os.environ.get("FAKE_CODEX_EXIT", "1")))
+
     events = [
         {"type": "thread.started", "thread_id": THREAD_ID},
         {"type": "turn.started"},
