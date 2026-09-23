@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -284,6 +285,20 @@ class UsageEstimateUpdate(BaseModel):
     agent: str
     window: str
     utilization: float | None = None
+    # When this window next resets, as an ISO-8601 instant. Optional: without
+    # it the figure ages out one window length after entry, which assumes the
+    # window started the moment it was typed.
+    resets_at: datetime | None = None
+
+
+def _epoch(moment: datetime | None) -> float | None:
+    """ISO-8601 to epoch seconds. A value with no timezone is read as local
+    time, which is what a browser's datetime-local input sends."""
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    return moment.timestamp()
 
 
 @app.get("/usage/estimates")
@@ -294,7 +309,12 @@ async def usage_estimates(request: Request) -> dict:
 @app.put("/usage/estimates")
 async def put_usage_estimate(request: Request, body: UsageEstimateUpdate) -> dict:
     try:
-        request.app.state.usage_tracker.set_estimate(body.agent, body.window, body.utilization)
+        request.app.state.usage_tracker.set_estimate(
+            body.agent,
+            body.window,
+            body.utilization,
+            resets_at=_epoch(body.resets_at),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"estimates": request.app.state.usage_tracker.estimates()}

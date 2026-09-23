@@ -83,33 +83,75 @@ class UsageTracker:
         except (OSError, ValueError):
             pass
 
-    def set_estimate(self, agent: str, window: str, utilization: Optional[float]) -> None:
+    def set_estimate(
+        self,
+        agent: str,
+        window: str,
+        utilization: Optional[float],
+        resets_at: Optional[float] = None,
+    ) -> None:
+        """Records what the user says is already spent, and optionally when
+        that window next resets.
+
+        Without a reset time the figure is assumed to age out one window
+        length after it was entered, which is only right if the window
+        happened to start at that moment. The provider's windows reset at a
+        fixed instant — a weekly one on a particular day — so when the user
+        knows it, that instant is what the estimate expires at."""
         if agent not in ("claude", "codex") or window not in ("five_hour", "seven_day"):
             raise ValueError("unknown agent or window")
         if utilization is not None and not 0 <= utilization <= 1:
             raise ValueError("utilization must be between 0 and 1")
+        now = time.time()
+        if resets_at is not None:
+            if resets_at <= now:
+                raise ValueError("reset time must be in the future")
+            seconds = FIVE_HOURS if window == "five_hour" else SEVEN_DAYS
+            if resets_at > now + seconds:
+                # A reset further away than the window is long cannot be this
+                # window's reset, and would pin a stale figure for days.
+                raise ValueError("reset time is further away than the window is long")
         windows = self._manual.setdefault(agent, {})
         if utilization is None:
             windows.pop(window, None)
             if not windows:
                 self._manual.pop(agent, None)
         else:
-            windows[window] = {"utilization": utilization, "at": time.time()}
+            windows[window] = {
+                "utilization": utilization,
+                "at": now,
+                "resets_at": resets_at,
+            }
         self._manual_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._manual_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self._manual), encoding="utf-8")
         temporary.replace(self._manual_path)
 
     def estimates(self) -> dict:
+        """What the editor shows: the figure as entered plus the reset time it
+        was entered against, per agent and window. Entries that have already
+        expired are left out — the window has reset, so the number is gone."""
         now = time.time()
         return {
             agent: {
-                window: entry["utilization"]
+                window: {
+                    "utilization": entry["utilization"],
+                    "resets_at": entry.get("resets_at"),
+                }
                 for window, entry in windows.items()
-                if now - entry["at"] < (FIVE_HOURS if window == "five_hour" else SEVEN_DAYS)
+                if not self._expired(window, entry, now)
             }
             for agent, windows in self._manual.items()
+            if any(not self._expired(window, entry, now) for window, entry in windows.items())
         }
+
+    @staticmethod
+    def _expired(window: str, entry: dict, now: float) -> bool:
+        resets_at = entry.get("resets_at")
+        if resets_at is not None:
+            return now >= resets_at
+        seconds = FIVE_HOURS if window == "five_hour" else SEVEN_DAYS
+        return now - entry["at"] >= seconds
 
     def record_tokens(self, agent: str, tokens: int, *, now: Optional[float] = None) -> None:
         if tokens <= 0:
@@ -173,7 +215,7 @@ class UsageTracker:
         if not entry:
             return None
         seconds = FIVE_HOURS if window == "five_hour" else SEVEN_DAYS
-        if now - entry["at"] >= seconds:
+        if self._expired(window, entry, now):
             return None
         # The manually entered figure already includes everything spent before
         # entry. Only samples recorded afterward are added to the baseline.
