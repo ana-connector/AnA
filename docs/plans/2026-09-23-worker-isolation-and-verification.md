@@ -115,6 +115,31 @@ turn *reported* the failure honestly (the lead said the files were not in
 `504 passed`, including `test_worktrees.py` (10) and `test_verification.py`
 (10).
 
+## Follow-ups from running it (same day)
+
+- **Planning is no longer a mode the user picks.** The composer had a
+  Plan/Direct toggle; the lead has no tools at all, so "can this be answered
+  without touching the machine" is a judgement about the request, not a
+  preference — and the toggle let the user choose the mode that cannot do the
+  job. Every turn now asks the lead, which answers `{"mode":"direct"}` or a
+  plan of tasks. `ANA_PLANNER=off` remains for debugging. The planning call
+  runs at the CLI's cheapest effort (`ANA_PLANNER_EFFORT`), since it is a
+  short JSON judgement rather than the work.
+- **The planner prompt now separates "small" from "needs no tools".** It used
+  to say "direct unless splitting helps", which invited the lead to answer
+  questions about files it cannot read. Direct is now for what it already
+  knows; anything touching the machine is a plan, even a one-task one.
+- **The lead was answering in JSON after the fan-out**, because its
+  instructions tell it to return plans as JSON. The synthesis prompt now says
+  the planning step is over and the answer is prose.
+- **A read-only scope no longer refuses the shell outright.** The first
+  read-only worker could not answer "how many files are here": listing a
+  directory is a shell command. Shell tools are judged by their command now —
+  an allowlist of `ls`, `cat`, `grep`, `find`, `git log/status/diff`, … with
+  redirections, `sed -i` and anything unlisted still refused. The scope
+  instructions say so too; the run *after* the allowlist landed still failed
+  because the prompt was telling the worker its shell was blocked.
+
 ## Still open
 
 - **No dependency graph.** Tasks are still one round of independent work; a

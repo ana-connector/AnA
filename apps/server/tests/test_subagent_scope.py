@@ -26,8 +26,31 @@ def test_default_scope_restricts_nothing():
 def test_read_scope_refuses_the_tools_that_change_things():
     scope = Scope(mode=READ)
 
-    for tool in ("Write", "Edit", "Bash", "NotebookEdit", "mcp__git__git_commit"):
+    for tool in ("Write", "Edit", "NotebookEdit", "mcp__git__git_commit"):
         assert violation(tool, {}, scope, WORKSPACE) is not None, tool
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls -la", "ls | wc -l", "cat a.txt", "grep -rn x .", "git log --oneline",
+     "git status", "find . -name '*.py'", "RG_FLAG=1 rg pattern", "sed -n 1,5p f"],
+)
+def test_read_scope_still_allows_a_shell_that_only_looks(command):
+    """The first read-only worker ANA ran could not answer "how many files are
+    here", because listing a directory is a shell command. A survey task needs
+    `ls`, `grep` and `git log`; it does not need `rm`."""
+    assert violation("Bash", {"command": command}, Scope(mode=READ), WORKSPACE) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["echo hi > f", "rm -rf x", "git commit -m x", "sed -i 's/a/b/' f",
+     "python script.py", "ls && rm f", "cat a.txt >> b.txt", "npm install"],
+)
+def test_read_scope_refuses_a_shell_that_could_change_something(command):
+    """An allowlist, because the set of ways to change a file is not
+    enumerable — an unknown command reads as a write."""
+    assert violation("Bash", {"command": command}, Scope(mode=READ), WORKSPACE) is not None
 
 
 def test_read_scope_still_allows_reading():

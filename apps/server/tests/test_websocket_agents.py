@@ -12,6 +12,18 @@ from packages.adapters.base import AdapterEvent, AgentAdapter
 from packages.orchestrator.routing import AUTO
 
 
+@pytest.fixture(autouse=True)
+def without_planning(monkeypatch):
+    """These tests are about the socket, not about planning.
+
+    Every turn now asks the lead whether to delegate (there is no plan/direct
+    switch any more), and that call would consume the scripted adapter these
+    tests hand the graph. ANA_PLANNER=off is the same escape hatch operators
+    get for debugging a problem that is clearly not about planning."""
+    monkeypatch.setenv("ANA_PLANNER", "off")
+
+
+
 class NamedAdapter(AgentAdapter):
     def __init__(self, name: str):
         self.name = name

@@ -77,7 +77,6 @@ export default function ChatPage() {
   // Auto by default: the routing rules pick per message, and the manual
   // options stay as an override.
   const [agent, setAgent] = useState<AgentChoice>("auto");
-  const [planMode, setPlanMode] = useState(true);
   const [selectedView, setSelectedView] = useState("lead");
 
   const taskChoices = useMemo(() => {
@@ -143,7 +142,7 @@ export default function ChatPage() {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (!draft.trim()) return;
-    sendMessage(draft, agent, planMode);
+    sendMessage(draft, agent);
     setDraft("");
   };
 
@@ -338,14 +337,12 @@ export default function ChatPage() {
           value={draft}
           onChange={setDraft}
           onSubmit={() => {
-            sendMessage(draft, agent, planMode);
+            sendMessage(draft, agent);
             setDraft("");
           }}
           onCancel={cancel}
           streaming={streaming}
           connected={connected}
-          planMode={planMode}
-          onPlanModeChange={setPlanMode}
           placeholder={
             agent === "auto"
               ? "메시지… (규칙이 CLI를 고름, Enter로 전송)"

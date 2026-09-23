@@ -10,6 +10,18 @@ from apps.server.app.main import app
 from packages.adapters.base import AdapterEvent, AgentAdapter
 
 
+@pytest.fixture(autouse=True)
+def without_planning(monkeypatch):
+    """These tests are about the socket, not about planning.
+
+    Every turn now asks the lead whether to delegate (there is no plan/direct
+    switch any more), and that call would consume the scripted adapter these
+    tests hand the graph. ANA_PLANNER=off is the same escape hatch operators
+    get for debugging a problem that is clearly not about planning."""
+    monkeypatch.setenv("ANA_PLANNER", "off")
+
+
+
 class FakeAdapter(AgentAdapter):
     async def run_stream(
         self, prompt: str, session_id: Optional[str] = None

@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -85,12 +85,16 @@ CONTAINER_STATE_VOLUME = os.environ.get("ANA_STATE_VOLUME") or None
 CONTAINER_GATE_URL = os.environ.get("ANA_CONTAINER_GATE_URL", "http://server:8000")
 
 
-def planner_default() -> bool:
-    """ANA_PLANNER_DEFAULT=on makes every turn plan first. Read per call so a
-    running server picks up a change without a restart."""
-    # On by default: the lead cannot use tools, so a turn that needs anything
-    # done has to go through sub-agents.
-    return os.environ.get("ANA_PLANNER_DEFAULT", "on").lower() != "off"
+def planning_enabled() -> bool:
+    """Whether the lead decides for itself how to handle a turn.
+
+    It always does, unless ANA_PLANNER=off — which exists for debugging a
+    problem that is clearly not about planning. There is no "plan mode" for
+    the user to pick: the lead has no tools at all, so whether a request needs
+    sub-agents is a judgement about the request, not a preference about the
+    UI, and asking the user to choose meant they could pick the mode that
+    cannot do the job."""
+    return os.environ.get("ANA_PLANNER", "on").lower() != "off"
 
 
 def gate_enabled() -> bool:
@@ -321,9 +325,10 @@ class ClientFrame:
     kind: str
     prompt: str = ""
     agent: str = AUTO
-    # Ask the lead for a plan and fan the work out to sub-agents (roadmap
-    # stage 5). Off unless the client asks, since planning costs a CLI call.
-    plan_mode: bool = False
+    # Whether the lead is asked to judge the turn (direct answer vs. a plan of
+    # sub-agent tasks). Not a client choice any more: the default follows
+    # ANA_PLANNER, so a bare text frame behaves like a JSON one.
+    plan_mode: bool = field(default_factory=planning_enabled)
     # Set on kind == "approval": the gate request being answered.
     request_id: str = ""
     decision: str = "deny"
@@ -366,7 +371,9 @@ def _parse_client_frame(data: str) -> ClientFrame:
         # "auto" (or anything unknown) hands the choice to the routing rules;
         # a concrete agent from the client still wins.
         agent=payload.get("agent") if payload.get("agent") in AGENTS else AUTO,
-        plan_mode=bool(payload.get("plan_mode", planner_default())),
+        # Still parsed so an older client's frame is not rejected, but the
+        # value no longer decides anything: the lead judges every turn.
+        plan_mode=planning_enabled(),
     )
 
 
