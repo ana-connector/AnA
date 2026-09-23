@@ -31,16 +31,20 @@ lead:
     until:
       window: five_hour
       utilization: 0.25
+  # Kimi before the expensive rung: it is another subscription, so a spent
+  # Claude or Codex window is no reason to start paying for Opus. Its `until`
+  # reads ANA's *own* token estimate rather than a provider figure — Kimi
+  # reports no window utilization anywhere (see
+  # docs/plans/2026-09-23-kimi-adapter.md) — so the threshold is loose.
+  - agent: kimi
+    model: kimi-code/k3
+    effort: high
+    until:
+      window: five_hour
+      utilization: 0.8
   - agent: claude
     model: opus
     effort: high
-  # A Kimi rung would go here — it is the third CLI ANA can run, selectable in
-  # the composer and the last failover rung, but nothing routes to it
-  # automatically until this file says so:
-  #
-  #   - agent: kimi
-  #     model: kimi-code/k3
-  #     effort: high
 
 # Sub-agents do the actual work (files, commands, edits), so they get the
 # models that are good at it, with the same "spend the cheap window first"
@@ -49,8 +53,15 @@ workers:
   default:
     - agent: codex
       model: gpt-6-astra
+      effort: medium
       until:
         window: five_hour
         utilization: 0.9
+    - agent: kimi
+      model: kimi-code/k3
+      effort: high
+      until:
+        window: five_hour
+        utilization: 0.8
     - agent: claude
       model: opus
