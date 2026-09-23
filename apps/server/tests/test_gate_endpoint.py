@@ -75,16 +75,18 @@ def test_allowed_command_passes_and_is_audited(client, prepared_pool):
     assert events[0]["agent"] == "claude"
 
 
-def test_lead_can_delegate_and_read_clock_but_cannot_run_shell(client):
+def test_lead_can_read_the_clock_but_cannot_run_shell(client):
+    """Delegation is no longer a tool the lead calls: ANA's planner is the
+    only path, so the CLIs' own spawn tooling is refused (see
+    test_gate_scope.py) and the clock is what is left."""
     session = _register(client, "lead-controls", [])
     session.current_agent = "codex"
-    for name in ("collaborationspawn_agent", "clockcurr_time"):
-        response = client.post(
-            "/gate/tool-call",
-            headers={"x-ana-gate-token": session.token},
-            json={"tool_name": name, "tool_input": {}, "role": "lead"},
-        )
-        assert response.json()["decision"] == "allow"
+    response = client.post(
+        "/gate/tool-call",
+        headers={"x-ana-gate-token": session.token},
+        json={"tool_name": "clockcurr_time", "tool_input": {}, "role": "lead"},
+    )
+    assert response.json()["decision"] == "allow"
 
     blocked = client.post(
         "/gate/tool-call",

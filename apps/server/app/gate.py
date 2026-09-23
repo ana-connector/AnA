@@ -7,6 +7,7 @@ or abandoned all leave the same trail (roadmap stage 3: "게이트 통과 시 �
 """
 import contextlib
 import json
+import os
 import time
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -32,9 +33,21 @@ from packages.governance.secrets import (
 
 router = APIRouter()
 
-# These calls let the lead delegate and check the clock without granting it
-# file, shell, network, or search access. Hook tool names omit punctuation.
-LEAD_CONTROL_TOOLS = {
+# What the lead may call without being granted file, shell, network or search
+# access. Hook tool names omit punctuation.
+LEAD_CONTROL_TOOLS = {"clockcurr_time"}
+
+# The CLIs' own sub-agent tooling. ANA refuses it by default and delegates
+# through its planner instead, because a natively-spawned sub-agent skips
+# everything ANA delegation provides: no per-task permission scope, no git
+# worktree of its own, no verification command, and no visible instruction —
+# both CLIs hand these tools an *encrypted* `message` (a Fernet token), so the
+# audit row, the approval card and the secret-leak scan all see ciphertext
+# where the delegated task should be. A delegation ANA cannot read is one it
+# cannot govern.
+#
+# ANA_NATIVE_SUBAGENTS=on puts them back, for comparing the two paths.
+NATIVE_DELEGATION_TOOLS = {
     "agent",
     "task",
     "collaborationspawn_agent",
@@ -43,8 +56,17 @@ LEAD_CONTROL_TOOLS = {
     "collaborationwait_agent",
     "collaborationlist_agents",
     "collaborationinterrupt_agent",
-    "clockcurr_time",
 }
+
+
+def native_subagents_allowed() -> bool:
+    return os.environ.get("ANA_NATIVE_SUBAGENTS", "off").lower() == "on"
+
+
+def lead_control_tools() -> set[str]:
+    if native_subagents_allowed():
+        return LEAD_CONTROL_TOOLS | NATIVE_DELEGATION_TOOLS
+    return LEAD_CONTROL_TOOLS
 
 
 class ToolCallRequest(BaseModel):
@@ -217,7 +239,25 @@ async def gate_tool_call(
     if session.workspace:
         escaping = escaping_paths(body.tool_input, session.workspace)
 
-    if body.role == "lead" and not body.agent_id and body.tool_name.lower() not in LEAD_CONTROL_TOOLS:
+    if (
+        body.tool_name.lower() in NATIVE_DELEGATION_TOOLS
+        and not native_subagents_allowed()
+    ):
+        # Refused for every role, not just the lead: a sub-agent spawning its
+        # own sub-agents is the same blind spot one level down.
+        await _audit(DENY, "delegation", "native sub-agent tooling is disabled")
+        return GateDecision(
+            decision=DENY,
+            reason=(
+                "이 CLI의 자체 하위 에이전트 도구는 쓸 수 없다. 작업을 나누려면 "
+                "계획(JSON)으로 돌려줘라 — ANA가 작업마다 권한 스코프, 독립 워크트리, "
+                "검증 명령을 붙여 실행한다."
+            ),
+            rule_id="native-subagents-disabled",
+            category="delegation",
+        )
+
+    if body.role == "lead" and not body.agent_id and body.tool_name.lower() not in lead_control_tools():
         # The lead agent plans and writes the answer; everything that touches
         # the machine goes through a sub-agent. Enforced here rather than by
         # CLI flags so it holds for both CLIs and cannot be argued out of.
