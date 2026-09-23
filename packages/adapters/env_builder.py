@@ -62,6 +62,12 @@ def default_codex_model_from_settings() -> str | None:
     return os.environ.get("CODEX_MODEL") or None
 
 
+def default_codex_effort_from_settings() -> str | None:
+    """Reads CODEX_EFFORT from the environment. None means: pass no
+    model_reasoning_effort override and let the codex CLI use its own."""
+    return os.environ.get("CODEX_EFFORT") or None
+
+
 def default_codex_sandbox_from_settings() -> str | None:
     """Reads CODEX_SANDBOX from the environment. None means: pass
     --dangerously-bypass-approvals-and-sandbox, matching the Claude

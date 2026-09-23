@@ -24,6 +24,15 @@ AUTO = "auto"
 LEAD = "lead"
 WORKER = "worker"
 
+# Each CLI has its own vocabulary for how hard to think, and neither accepts
+# the other's: `claude --effort` takes these five, while Codex takes a
+# `model_reasoning_effort` config value. Validated at parse time so a typo in
+# the settings editor is rejected there rather than killing a turn later.
+EFFORTS = {
+    "claude": ("low", "medium", "high", "xhigh", "max"),
+    "codex": ("minimal", "low", "medium", "high"),
+}
+
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"
 
 
@@ -31,6 +40,10 @@ DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "config" / "routing.y
 class Rung:
     agent: str
     model: Optional[str] = None
+    # How hard the model should think on this rung. None means "whatever the
+    # CLI defaults to", which is also what the environment's CLAUDE_EFFORT
+    # gives when the ladder says nothing.
+    effort: Optional[str] = None
     # Window name and the utilization at which this rung is considered spent.
     # None means "no limit": the last rung, where everything lands.
     window: Optional[str] = None
@@ -45,6 +58,7 @@ class Rung:
 class RoutingDecision:
     agent: str
     model: Optional[str] = None
+    effort: Optional[str] = None
     reason: str = ""
     # True when the client named the agent and the ladder was not consulted.
     explicit: bool = False
@@ -101,17 +115,23 @@ class ModelLadder:
         for rung in rungs:
             if rung.window is None or rung.limit is None:
                 return RoutingDecision(
-                    agent=rung.agent, model=rung.model, reason="마지막 단계"
+                    agent=rung.agent,
+                    model=rung.model,
+                    effort=rung.effort,
+                    reason="마지막 단계",
                 )
             spent = _window_utilization(usage, rung.agent, rung.window)
             if spent < rung.limit:
                 return RoutingDecision(
                     agent=rung.agent,
                     model=rung.model,
+                    effort=rung.effort,
                     reason=f"{rung.window} {spent:.0%} < {rung.limit:.0%}",
                 )
         last = rungs[-1]
-        return RoutingDecision(agent=last.agent, model=last.model, reason="모든 단계 소진")
+        return RoutingDecision(
+            agent=last.agent, model=last.model, effort=last.effort, reason="모든 단계 소진"
+        )
 
 
 def _parse_rungs(raw, where: str) -> list[Rung]:
@@ -125,10 +145,17 @@ def _parse_rungs(raw, where: str) -> list[Rung]:
         until = entry.get("until") or {}
         window = until.get("window")
         limit = until.get("utilization")
+        effort = entry.get("effort") or None
+        if effort is not None and effort not in EFFORTS.get(agent, ()):
+            raise ValueError(
+                f"{where}: {agent} has no effort level {effort!r} "
+                f"(expected one of {', '.join(EFFORTS.get(agent, ()))})"
+            )
         rungs.append(
             Rung(
                 agent=agent,
                 model=(entry.get("model") or None),
+                effort=effort,
                 window=window if window else None,
                 limit=float(limit) if isinstance(limit, (int, float)) else None,
             )
@@ -160,10 +187,19 @@ def model_for(agent: str, *, role: str = LEAD, preference: Optional[str] = None)
     Used when the breaker moves a turn to another CLI: the model chosen for the
     rung that just failed means nothing to the next one ("fable" is not a Codex
     model), so each rung brings its own."""
+    return settings_for(agent, role=role, preference=preference)[0]
+
+
+def settings_for(
+    agent: str, *, role: str = LEAD, preference: Optional[str] = None
+) -> tuple[Optional[str], Optional[str]]:
+    """`(model, effort)` for `agent` on this ladder — the pair travels together
+    for the same reason the model does: an effort level is only meaningful
+    next to the model it was chosen for."""
     for rung in load_routing_table().rungs_for(role, preference):
         if rung.agent == agent:
-            return rung.model
-    return None
+            return rung.model, rung.effort
+    return None, None
 
 
 def decide(
@@ -183,7 +219,11 @@ def decide(
         for rung in ladder.rungs_for(role, preference):
             if rung.agent == requested_agent:
                 return RoutingDecision(
-                    agent=rung.agent, model=rung.model, reason="사용자 지정", explicit=True
+                    agent=rung.agent,
+                    model=rung.model,
+                    effort=rung.effort,
+                    reason="사용자 지정",
+                    explicit=True,
                 )
         return RoutingDecision(agent=requested_agent, reason="사용자 지정", explicit=True)
     return ladder.choose(role, usage=usage, preference=preference)

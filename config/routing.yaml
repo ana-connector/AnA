@@ -10,11 +10,19 @@
 # rate_limit_event) and from ANA's own token accounting otherwise; see
 # packages/observability/limits.py. A rung whose usage is unknown counts as 0.
 #
+# `effort` is optional per rung: how hard that model should think. Each CLI has
+# its own vocabulary and rejects the other's — claude takes
+# low/medium/high/xhigh/max (--effort), codex takes minimal/low/medium/high
+# (model_reasoning_effort). A rung that names none leaves it to the CLI (or to
+# CLAUDE_EFFORT / CODEX_EFFORT in the environment). An effort the named CLI
+# does not have is rejected when this file is saved, not at turn time.
+#
 # Editing this file takes effect on the next turn — no restart.
 
 lead:
   - agent: claude
     model: fable
+    effort: medium
     until:
       window: five_hour
       utilization: 0.25
@@ -25,6 +33,7 @@ lead:
       utilization: 0.25
   - agent: claude
     model: opus
+    effort: high
 
 # Sub-agents do the actual work (files, commands, edits), so they get the
 # models that are good at it, with the same "spend the cheap window first"

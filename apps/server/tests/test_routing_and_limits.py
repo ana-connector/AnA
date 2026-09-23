@@ -259,3 +259,87 @@ def test_system_prompt_reaches_both_clis(tmp_path, monkeypatch):
     # words ride in front of the prompt.
     assert claude_args[claude_args.index("--append-system-prompt") + 1] == "한국어로"
     assert "한국어로" in codex_args[-1] and codex_args[-1].endswith("hi")
+
+
+EFFORT_LADDER = """
+lead:
+  - agent: claude
+    model: fable
+    effort: low
+    until: {window: five_hour, utilization: 0.25}
+  - agent: codex
+    model: gpt-6-astra
+    effort: high
+    until: {window: five_hour, utilization: 0.25}
+  - agent: claude
+    model: opus
+    effort: xhigh
+workers:
+  default:
+    - agent: codex
+      model: gpt-6-astra
+      effort: medium
+"""
+
+
+@pytest.fixture
+def effort_ladder(tmp_path, monkeypatch):
+    path = tmp_path / "routing.yaml"
+    path.write_text(EFFORT_LADDER, encoding="utf-8")
+    monkeypatch.setenv("ANA_ROUTING_RULES", str(path))
+    return path
+
+
+def test_each_rung_carries_its_own_effort(effort_ladder):
+    assert decide(None, role=LEAD, usage={}).effort == "low"
+    assert decide(None, role=LEAD, usage=_usage(claude=0.5)).effort == "high"
+    assert decide(None, role=LEAD, usage=_usage(claude=0.5, codex=0.9)).effort == "xhigh"
+    assert decide(None, role=WORKER, usage={}).effort == "medium"
+
+
+def test_a_rung_without_an_effort_leaves_it_to_the_cli(ladder):
+    assert decide(None, role=LEAD, usage={}).effort is None
+
+
+def test_settings_for_pairs_model_and_effort(effort_ladder):
+    from packages.orchestrator.routing import settings_for
+
+    assert settings_for("codex", role=LEAD) == ("gpt-6-astra", "high")
+    assert settings_for("claude", role=LEAD) == ("fable", "low")
+
+
+@pytest.mark.parametrize(
+    "agent,effort",
+    [
+        ("claude", "minimal"),  # codex's vocabulary, not claude's
+        ("codex", "xhigh"),  # claude's vocabulary, not codex's
+        ("claude", "hard"),
+    ],
+)
+def test_an_effort_the_cli_does_not_have_fails_loudly(tmp_path, agent, effort):
+    """Caught at parse time so the settings editor rejects it, rather than the
+    CLI aborting the turn on an unknown flag value."""
+    path = tmp_path / "routing.yaml"
+    path.write_text(f"lead:\n  - agent: {agent}\n    effort: {effort}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="effort"):
+        ModelLadder.from_yaml(path)
+
+
+def test_claude_adapter_passes_the_effort_flag():
+    from packages.adapters.claude_code import ClaudeCodeAdapter
+
+    args, _ = ClaudeCodeAdapter(
+        workspace_dir="/w", env={}, model="opus", effort="xhigh"
+    )._build_args("hi", None)
+
+    assert args[args.index("--effort") + 1] == "xhigh"
+
+
+def test_codex_adapter_passes_the_effort_as_a_config_override():
+    """Codex has no --effort flag; reasoning effort is a config value."""
+    from packages.adapters.codex import CodexAdapter
+
+    args = CodexAdapter(workspace_dir="/w", env={}, effort="high")._build_args("hi", None)
+
+    assert 'model_reasoning_effort="high"' in args
