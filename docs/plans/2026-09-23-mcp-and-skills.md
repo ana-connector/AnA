@@ -111,7 +111,16 @@ mcp__git__git_status, mcp__git__git_commit, ... mcp__postgres__execute_sql, ...
 
 `GET /mcp/servers` reports git and postgres active, github inactive with
 "시크릿 미등록". `codex mcp list` with the generated `-c` overrides shows the
-server `enabled`.
+server `enabled`, and a live Codex turn produced a `mcp__<server>__<tool>`
+name at the gate, confirming the spelling `packages/mcp/scope.py` parses.
+
+The first real turns also showed the lead CLI process picking up an
+**account-level** MCP server (claude.ai Claude Docs) that ANA never granted,
+because a role with no servers was given no `--mcp-config` at all. Fixed two
+ways: the config is now always written and always passed with
+`--strict-mcp-config`, and the lead process carries the *worker* server set —
+the CLI's native sub-agents run inside that process and are workers, while
+the gate still refuses the lead itself every tool call but delegation.
 
 Three things had to be fixed to get there, all recorded in `config/mcp.yaml`:
 `mcp-server-git` exits when `--repository` is not a git repository (the
@@ -120,7 +129,7 @@ because it imports the FastMCP name mcp 2.x removed; and `config/` is baked
 into the image, so the repo copy is now bind-mounted read-only — otherwise
 "edit the YAML, no restart" was only true outside Docker.
 
-`419 passed` (full suite, 2026-09-23), including 53 new tests:
+`420 passed` (full suite, 2026-09-23), including 54 new tests:
 
 - `test_mcp_registry.py` — role scoping, placeholders, skip reasons.
 - `test_mcp_wiring.py` — launcher secrecy and quoting, both CLIs' argv.
@@ -131,16 +140,18 @@ into the image, so the repo copy is now bind-mounted read-only — otherwise
 
 ## Not done / known gaps
 
-- **Codex MCP tool naming is still unobserved.** `codex mcp list` shows the
-  overrides landing (`git ... enabled`), but no live Codex turn has called an
-  MCP tool, so the tool name its hook reports is unconfirmed.
-  `packages/mcp/scope.py` therefore recognizes three spellings
-  (`mcp__server__tool`, `server__tool`, and the punctuation-stripped form) —
-  a form it missed would fall through to the command rules as if it were a
-  native tool, which is a scope bypass rather than a visible failure.
-- **No MCP tool has been called through the gate in a real turn.** The
-  servers, their tools, and the gate's scope check are each verified; the
-  three together are not.
+- **Codex's built-in app server is denied, by design.** A live Codex turn
+  called `mcp__codex_apps__codex_document_control__list_document_sessions`
+  and the gate refused it as an unregistered server. Codex has no
+  `--strict-mcp-config`, so its own server stays visible to the model; the
+  gate is the enforcement point there. Add it to `config/mcp.yaml` if it
+  should be usable.
+- **`claude mcp list` / `codex mcp list` do not show ANA's session config.**
+  Those subcommands read the user/project config files; the per-session
+  servers arrive as `--mcp-config` and `-c` overrides on the run itself. An
+  agent asked "which MCP servers do you have" will answer from the wrong
+  place — ask it to list its `mcp__*` tools instead, or read
+  `GET /mcp/servers`.
 - **No UI.** `/mcp/servers` and `/skills` are read-only endpoints; the settings
   page does not show them yet.
 - **The planner does not name skills.** Agents pick a skill from the catalog

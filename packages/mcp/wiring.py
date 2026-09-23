@@ -9,6 +9,8 @@ from typing import Optional
 
 from packages.mcp.config_writer import codex_mcp_args, write_claude_mcp_config
 from packages.mcp.registry import (
+    LEAD,
+    WORKER,
     ResolvedServer,
     SkippedServer,
     load_registry,
@@ -25,6 +27,23 @@ def mcp_enabled() -> bool:
     hatch ANA_GOVERNANCE=off gives the gate. Read per call so flipping it
     needs no restart."""
     return os.environ.get("ANA_MCP", "on").lower() != "off"
+
+
+def process_role(role: str) -> str:
+    """Whose servers the CLI *process* is started with.
+
+    Not the same question as "what may this agent call". A lead CLI process is
+    also the process its native sub-agents run in (the CLI's own
+    spawn_agent/Task tooling), and those sub-agents are workers — the gate
+    sees their calls with an agent_id and judges them as such. Starting the
+    lead process with no servers would leave every natively-spawned worker
+    without git or postgres, which is exactly what happened the first time
+    this ran for real.
+
+    The lead itself is still kept away from them by the gate, which refuses it
+    every tool call but delegation and the clock. Flags decide what exists;
+    the gate decides who may use it."""
+    return WORKER if role == LEAD else role
 
 
 def resolve_for_role(
@@ -64,22 +83,25 @@ def claude_mcp(
 ) -> tuple[Optional[str], set[str]]:
     """`(--mcp-config path, server names)` for a Claude CLI run.
 
-    The path is None when this role gets no servers: passing no flag leaves
-    the CLI in its own default, which for a role with nothing scoped is the
-    same result with one less moving part. The names go to the skill catalog,
-    which only offers skills whose servers are actually there."""
+    The path is None only when MCP is switched off entirely; otherwise there
+    is always a config, even an empty one, because the flag is what keeps the
+    CLI from loading servers ANA never granted. The names go to the skill
+    catalog, which only offers skills whose servers are actually there."""
+    if not mcp_enabled():
+        return None, set()
     servers, _ = resolve_for_role(
-        role,
+        process_role(role),
         env=env,
         workspace_dir=workspace_dir,
         state_dir=state_dir,
         check_command=check_command,
     )
-    names = {server.name for server in servers}
-    if not servers:
-        return None, names
+    # Written even when the list is empty, and always passed: without
+    # --strict-mcp-config the CLI adds whatever MCP servers the host user or
+    # the account provides (a live run picked up an account-level server that
+    # ANA never granted), and the role scoping would be advisory.
     path = write_claude_mcp_config(servers, state_dir or state_dir_default(), role)
-    return str(path), names
+    return str(path), {server.name for server in servers}
 
 
 def codex_mcp(
@@ -93,7 +115,7 @@ def codex_mcp(
     """`(-c overrides, server names)` for a `codex exec` run. The overrides are
     empty when nothing is scoped for this role."""
     servers, _ = resolve_for_role(
-        role,
+        process_role(role),
         env=env,
         workspace_dir=workspace_dir,
         state_dir=state_dir,
@@ -102,6 +124,8 @@ def codex_mcp(
     names = {server.name for server in servers}
     if not servers:
         return [], names
+    # Codex has no --strict-mcp-config, so its built-in app server still shows
+    # up; the gate denies it as unregistered (verified in the audit log).
     return codex_mcp_args(servers, state_dir or state_dir_default()), names
 
 

@@ -102,9 +102,30 @@ def test_codex_adapter_passes_the_overrides_before_the_prompt(registry_path):
     assert "mcp_servers.git.args=[]" in argv
 
 
-def test_lead_gets_no_mcp_config_at_all(registry_path):
-    assert claude_mcp("lead", env={}, workspace_dir="/w") == (None, set())
-    assert codex_mcp("lead", env={}, workspace_dir="/w") == ([], set())
+def test_lead_process_carries_the_worker_servers(registry_path):
+    """The lead's CLI process is also the process its native sub-agents run
+    in, and those are workers. The lead itself is still refused every tool
+    call by the gate — flags decide what exists, the gate decides who uses
+    it."""
+    path, servers = claude_mcp("lead", env={}, workspace_dir="/w")
+    assert servers == {"git"}
+    assert path is not None
+    args, codex_servers = codex_mcp("lead", env={}, workspace_dir="/w")
+    assert codex_servers == {"git"}
+    assert args
+
+
+def test_a_role_with_nothing_scoped_still_gets_a_strict_empty_config(registry_path):
+    """Without the flag the CLI loads whatever MCP servers the host user or
+    the account provides — a live run picked up an account-level server ANA
+    never granted."""
+    path, servers = claude_mcp("reviewer", env={}, workspace_dir="/w")
+    assert servers == set()
+    assert json.loads(open(path, encoding="utf-8").read()) == {"mcpServers": {}}
+    args, _ = ClaudeCodeAdapter(
+        workspace_dir="/w", env={}, mcp_config_path=path
+    )._build_args("hi", None)
+    assert "--strict-mcp-config" in args
 
 
 def test_adapters_pass_no_mcp_flags_when_nothing_is_scoped():
