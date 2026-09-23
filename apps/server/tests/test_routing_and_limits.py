@@ -1,5 +1,7 @@
 """Automatic agent routing and the usage-window tracker."""
 import textwrap
+import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -343,3 +345,104 @@ def test_codex_adapter_passes_the_effort_as_a_config_override():
     args = CodexAdapter(workspace_dir="/w", env={}, effort="high")._build_args("hi", None)
 
     assert 'model_reasoning_effort="high"' in args
+
+
+@pytest.fixture
+def estimates_client(db_pool, postgres_dsn, monkeypatch, tmp_path):
+    """A client whose UsageTracker writes to a throwaway state directory.
+
+    The tracker is constructed when the app starts, so the environment has to
+    be set before TestClient enters — a monkeypatch inside the test body would
+    land after it and the estimate would be written to the real ~/.ana, where
+    it would then steer routing for every later test (and for the running
+    server, if this is the same machine)."""
+    monkeypatch.setenv("DATABASE_URL", postgres_dsn)
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_estimate_expires_at_the_reset_time(tmp_path, monkeypatch):
+    """A window reset wipes the figure: after the reset the user's "40% spent"
+    describes a window that no longer exists."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    tracker = UsageTracker(five_hour_budget=1000)
+    resets_at = time.time() + 1800
+
+    tracker.set_estimate("claude", "five_hour", 0.4, resets_at=resets_at)
+
+    assert tracker.snapshot()["claude"]["windows"][0]["source"] == "manual"
+    after = tracker.snapshot(now=resets_at + 1)["claude"]["windows"][0]
+    assert after["source"] == "estimated"
+    assert tracker.estimates() != {}
+
+
+def test_estimate_without_a_reset_time_still_ages_out_after_the_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    tracker = UsageTracker(five_hour_budget=1000)
+
+    tracker.set_estimate("claude", "five_hour", 0.4)
+
+    assert tracker.snapshot()["claude"]["windows"][0]["source"] == "manual"
+    later = tracker.snapshot(now=time.time() + FIVE_HOURS + 1)["claude"]["windows"][0]
+    assert later["source"] == "estimated"
+
+
+def test_estimate_survives_until_a_weekly_reset_date(tmp_path, monkeypatch):
+    """The point of the date: a weekly figure entered today is still the truth
+    five days from now, which the old entry+7d rule got right only by luck."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    tracker = UsageTracker(weekly_budget=1000)
+    resets_at = time.time() + 5 * 24 * 60 * 60
+
+    tracker.set_estimate("codex", "seven_day", 0.6, resets_at=resets_at)
+
+    in_four_days = tracker.snapshot(now=time.time() + 4 * 24 * 60 * 60)["codex"]["windows"][1]
+    assert in_four_days["source"] == "manual"
+    assert tracker.estimates()["codex"]["seven_day"]["resets_at"] == pytest.approx(resets_at)
+
+
+@pytest.mark.parametrize("offset", [-60, SEVEN_DAYS + 60])
+def test_a_reset_time_that_cannot_be_this_window_is_refused(tmp_path, monkeypatch, offset):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    tracker = UsageTracker()
+
+    with pytest.raises(ValueError):
+        tracker.set_estimate("claude", "seven_day", 0.5, resets_at=time.time() + offset)
+
+
+def test_estimate_endpoint_accepts_an_iso_reset_time(estimates_client):
+    client = estimates_client
+    resets_at = datetime.now(timezone.utc) + timedelta(hours=2)
+
+    response = client.put(
+        "/usage/estimates",
+        json={
+            "agent": "claude",
+            "window": "five_hour",
+            "utilization": 0.4,
+            "resets_at": resets_at.isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    stored = response.json()["estimates"]["claude"]["five_hour"]
+    assert stored["utilization"] == pytest.approx(0.4)
+    assert stored["resets_at"] == pytest.approx(resets_at.timestamp())
+
+
+def test_estimate_endpoint_rejects_a_reset_time_in_the_past(estimates_client):
+    client = estimates_client
+    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    response = client.put(
+        "/usage/estimates",
+        json={
+            "agent": "claude",
+            "window": "five_hour",
+            "utilization": 0.4,
+            "resets_at": past.isoformat(),
+        },
+    )
+
+    assert response.status_code == 422
