@@ -9,6 +9,7 @@ type Window = {
   tokens: number;
   budget: number;
   utilization: number | null;
+  resets_at: number | null;
   source: "reported" | "estimated" | "manual";
 };
 
@@ -16,6 +17,17 @@ type UsageSnapshot = Record<string, { windows: Window[] }>;
 
 function percent(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
+}
+
+/** "14:30" for a reset later today, "9/28 14:30" when it is another day —
+ *  a weekly window resets on a date, and the date is the useful half. */
+function resetLabel(epochSeconds: number | null): string | null {
+  if (epochSeconds === null) return null;
+  const at = new Date(epochSeconds * 1000);
+  if (Number.isNaN(at.getTime())) return null;
+  const clock = at.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return sameDay ? clock : `${at.getMonth() + 1}/${at.getDate()} ${clock}`;
 }
 
 function barClass(value: number | null): string {
@@ -27,10 +39,11 @@ function barClass(value: number | null): string {
 
 /** Status bar: how close each CLI is to its limits.
  *
- *  The two sources are labeled rather than blended — the Claude CLI reports
- *  real window utilization, while the Codex figure is ANA's own estimate from
- *  the tokens it has seen against a configured budget. Showing an estimate as
- *  if it were the provider's number would be the worst of both. */
+ *  Both CLIs state their real utilization — Claude on stdout, Codex only in
+ *  its rollout log, which ANA reads back — so an unlabeled figure is the
+ *  provider's own. The fallbacks are labeled rather than blended in: showing
+ *  ANA's token estimate as if it were the provider's number would be the
+ *  worst of both. */
 export function UsageBar({
   refreshKey,
   totalCostUsd,
@@ -87,6 +100,11 @@ export function UsageBar({
                   <Badge variant="outline" title="설정에서 입력한 현재 사용량에 이후 ANA 사용량을 더한 추정치">
                     수동 추정
                   </Badge>
+                )}
+                {resetLabel(window.resets_at) && (
+                  <span className="tabular-nums opacity-70" title="이 창이 초기화되는 시각">
+                    ↺ {resetLabel(window.resets_at)}
+                  </span>
                 )}
               </span>
             ))}
