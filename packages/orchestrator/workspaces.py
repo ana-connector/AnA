@@ -276,19 +276,21 @@ async def forget_workspace(
             await conn.execute("DELETE FROM turns WHERE thread_id = %s", (workspace_id,))
             # LangGraph's own tables. Named explicitly rather than cascaded:
             # they belong to the checkpointer, and a missing one (an older
-            # schema) must not fail the delete.
-            for table in (
-                "checkpoints",
-                "checkpoint_blobs",
-                "checkpoint_writes",
-                "checkpoint_migrations",
-            ):
+            # schema) must not fail the delete. `checkpoint_migrations` is not
+            # in this list on purpose: it is the checkpointer's own schema
+            # version table and has no thread_id — deleting from it raised,
+            # and the rollback that caught the error took the *turns* delete
+            # down with it, so purging quietly removed nothing but the pointer.
+            for table in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
                 try:
-                    await conn.execute(
-                        f"DELETE FROM {table} WHERE thread_id = %s", (workspace_id,)
-                    )
-                except Exception:  # noqa: BLE001 - table may not exist / have no thread_id
-                    await conn.rollback()
+                    # A savepoint, so a table this checkpointer version does
+                    # not have cannot discard the deletes that already ran.
+                    async with conn.transaction():
+                        await conn.execute(
+                            f"DELETE FROM {table} WHERE thread_id = %s", (workspace_id,)
+                        )
+                except Exception:  # noqa: BLE001 - table may not exist here
+                    pass
         cur = await conn.execute("DELETE FROM workspaces WHERE id = %s", (workspace_id,))
         return cur.rowcount > 0
 

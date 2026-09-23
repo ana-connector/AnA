@@ -260,3 +260,28 @@ async def test_an_unreachable_path_is_refused_with_a_reason(workspace_pool, tmp_
         await create_workspace(workspace_pool, name="nope", path=str(blocked / "child"))
 
     assert "서버가 볼 수 있는 경로" in str(caught.value)
+
+
+async def test_forgetting_a_workspace_really_purges_its_conversation(workspace_pool, tmp_path, monkeypatch):
+    """Regression: the purge loop also hit `checkpoint_migrations`, which has
+    no thread_id. The raise was caught with a rollback — which discarded the
+    turns delete that had already run, so purging removed the pointer and left
+    the conversation behind."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "root"))
+    workspace = await create_workspace(workspace_pool, name="purge me")
+    async with workspace_pool.connection() as conn:
+        from packages.memory.db import EMBEDDING_DIMENSIONS
+
+        await conn.execute(
+            "INSERT INTO turns (thread_id, agent, prompt, response, embedding)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (workspace.id, "claude", "q", "a", str([0.0] * EMBEDDING_DIMENSIONS)),
+        )
+
+    assert await forget_workspace(workspace_pool, workspace.id, purge=True)
+
+    async with workspace_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT count(*) FROM turns WHERE thread_id = %s", (workspace.id,)
+        )
+        assert (await cur.fetchone())[0] == 0
