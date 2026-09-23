@@ -43,6 +43,7 @@ from packages.orchestrator.settings import (
     write_system_prompt,
 )
 from packages.orchestrator.workspaces import (
+    WorkspacePathError,
     create_workspace,
     get_workspace,
     set_container_settings,
@@ -165,9 +166,12 @@ async def workspaces(request: Request, limit: int = Query(default=500, ge=1, le=
 async def add_workspace(request: Request, body: WorkspaceCreate) -> dict:
     if not body.name.strip():
         raise HTTPException(status_code=422, detail="workspace name is required")
-    workspace = await create_workspace(
-        request.app.state.pool, name=body.name, path=body.path
-    )
+    try:
+        workspace = await create_workspace(
+            request.app.state.pool, name=body.name, path=body.path
+        )
+    except WorkspacePathError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return workspace.as_dict()
 
 

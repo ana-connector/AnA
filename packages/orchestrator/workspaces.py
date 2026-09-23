@@ -9,8 +9,11 @@ the turn history and the directory all line up behind one name.
 Registering a workspace never creates the folder's contents, and deleting one
 never deletes the folder: ANA manages the pointer, the user owns the files.
 """
+import asyncio
 import json
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -35,6 +38,10 @@ ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_ports JSONB NOT NULL D
 """
 
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+class WorkspacePathError(ValueError):
+    """The requested folder cannot be created or reached from the server."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +105,20 @@ async def create_workspace(
     )
     # Created if missing, never emptied: adopting an existing project must not
     # touch what is already in it.
-    Path(resolved).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(resolved).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # The server only sees what is mounted into it. A path outside those
+        # mounts fails here with "permission denied" on a root-owned parent,
+        # and used to surface as a bare 500 — which reads as "ANA is broken"
+        # rather than "that folder is not reachable from the server".
+        raise WorkspacePathError(
+            f"{resolved!r} 폴더를 만들 수 없다 ({exc.strerror or exc}). "
+            f"서버가 볼 수 있는 경로만 쓸 수 있다 — 기본 루트는 {workspace_root()} 이고, "
+            "그 밖의 경로를 쓰려면 docker-compose.yml에 해당 디렉토리를 마운트해야 한다."
+        ) from exc
+
+    await _ensure_git(resolved)
 
     async with pool.connection() as conn:
         await conn.execute(
@@ -106,6 +126,51 @@ async def create_workspace(
             (workspace_id, name.strip() or workspace_id, resolved),
         )
     return Workspace(id=workspace_id, name=name.strip() or workspace_id, path=resolved)
+
+
+async def _ensure_git(path: str) -> bool:
+    """Makes a new workspace a git repository, with one empty commit.
+
+    Not decoration: sub-agent isolation is a `git worktree` per task
+    (packages/orchestrator/worktrees.py), and a plain directory has nothing to
+    branch from — so without this, every worker of every turn would still
+    share one tree. An adopted directory that is already inside a repository
+    is left alone, and so is one where git is unavailable or refuses.
+
+    ANA_WORKSPACE_GIT_INIT=off turns it off."""
+    if os.environ.get("ANA_WORKSPACE_GIT_INIT", "on").lower() == "off":
+        return False
+    if shutil.which("git") is None:
+        return False
+
+    async def git(*args: str) -> int:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git", *args, cwd=path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+        except OSError:
+            return 1
+        try:
+            return await asyncio.wait_for(process.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            process.kill()
+            return 1
+
+    if await git("rev-parse", "--is-inside-work-tree") == 0:
+        return False  # already someone's repository: not ANA's to restructure
+    if await git("init", "-b", "main") != 0:
+        return False
+    # A worktree needs a commit to branch from, and a fresh repository has
+    # none. The identity is set per command rather than written into the
+    # repo's config, which belongs to whoever works in it.
+    await git(
+        "-c", "user.name=ANA", "-c", "user.email=ana@localhost",
+        "commit", "--allow-empty", "-m", "ANA: workspace created",
+    )
+    return True
 
 
 def _row_to_workspace(row) -> Workspace:

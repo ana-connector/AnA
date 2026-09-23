@@ -18,6 +18,15 @@ from typing import Optional
 
 from packages.orchestrator.handoff import AGENTS
 
+def _env_int(name: str, default: int) -> int:
+    """An unparseable budget is a typo in .env, not a reason to refuse to
+    start: the default stands and the bar keeps working."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 FIVE_HOURS = 5 * 60 * 60
 SEVEN_DAYS = 7 * 24 * 60 * 60
 
@@ -74,12 +83,25 @@ class UsageTracker:
     losing a few hours of samples is a smaller problem than a schema for it."""
 
     def __init__(self, five_hour_budget: Optional[int] = None, weekly_budget: Optional[int] = None):
-        self.five_hour_budget = five_hour_budget or int(
-            os.environ.get("ANA_FIVE_HOUR_TOKEN_BUDGET", 2_000_000)
+        self.five_hour_budget = five_hour_budget or _env_int(
+            "ANA_FIVE_HOUR_TOKEN_BUDGET", 2_000_000
         )
-        self.weekly_budget = weekly_budget or int(
-            os.environ.get("ANA_WEEKLY_TOKEN_BUDGET", 20_000_000)
+        self.weekly_budget = weekly_budget or _env_int(
+            "ANA_WEEKLY_TOKEN_BUDGET", 20_000_000
         )
+        # Per-agent overrides, for the CLIs whose plan ANA cannot read. Claude
+        # and Codex report real utilization, so their budget only matters
+        # before the first turn; Kimi reports none at all, so *its* bar is
+        # entirely this number and a global default is a guess about the wrong
+        # plan. ANA_KIMI_FIVE_HOUR_TOKEN_BUDGET / ANA_KIMI_WEEKLY_TOKEN_BUDGET
+        # (and the same for CLAUDE_/CODEX_) set it per agent.
+        self._agent_budgets = {
+            agent: (
+                _env_int(f"ANA_{agent.upper()}_FIVE_HOUR_TOKEN_BUDGET", 0),
+                _env_int(f"ANA_{agent.upper()}_WEEKLY_TOKEN_BUDGET", 0),
+            )
+            for agent in AGENTS
+        }
         self._samples: dict[str, list[_Sample]] = {}
         # agent -> window -> {"utilization": float, "resets_at": float | None}.
         # Both CLIs state a reset instant with their figures, and a reported
@@ -292,7 +314,7 @@ class UsageTracker:
                 key="five_hour",
                 seconds=FIVE_HOURS,
                 tokens=self._tokens_since(agent, FIVE_HOURS, now),
-                budget=self.five_hour_budget,
+                budget=self._budget(agent, "five_hour"),
                 reported=five_reported["utilization"] if five_reported else None,
                 manual=self._manual_utilization(agent, "five_hour", now),
                 resets_at=self._resets_at(agent, "five_hour", five_reported),
@@ -302,7 +324,7 @@ class UsageTracker:
                 key="seven_day",
                 seconds=SEVEN_DAYS,
                 tokens=self._tokens_since(agent, SEVEN_DAYS, now),
-                budget=self.weekly_budget,
+                budget=self._budget(agent, "seven_day"),
                 reported=week_reported["utilization"] if week_reported else None,
                 manual=self._manual_utilization(agent, "seven_day", now),
                 resets_at=self._resets_at(agent, "seven_day", week_reported),
@@ -310,11 +332,33 @@ class UsageTracker:
             result[agent] = {"windows": [five.as_dict(), week.as_dict()]}
         return result
 
+    def _budget(self, agent: str, window: str) -> int:
+        """This agent's token budget for a window: its own when configured,
+        the global one otherwise."""
+        five, weekly = self._agent_budgets.get(agent, (0, 0))
+        if window == "five_hour":
+            return five or self.five_hour_budget
+        return weekly or self.weekly_budget
+
     def _resets_at(self, agent: str, window: str, reported: Optional[dict]) -> Optional[float]:
         """What the bar shows as the next reset: the provider's instant when
         there is one, otherwise the one the user typed with their estimate."""
         if reported and isinstance(reported.get("resets_at"), (int, float)):
             return float(reported["resets_at"])
+        # The window rolled over and nobody has run that CLI since, so its
+        # utilization is unknown again — but *when it next rolls over* is not:
+        # windows are a fixed length, so the schedule continues from the last
+        # instant the provider stated. Showing it keeps the bar useful in the
+        # gap between a reset and the next turn.
+        stale = self._reported.get(agent, {}).get(window) or {}
+        stale_reset = stale.get("resets_at")
+        if isinstance(stale_reset, (int, float)):
+            length = FIVE_HOURS if window == "five_hour" else SEVEN_DAYS
+            now = time.time()
+            upcoming = float(stale_reset)
+            while upcoming <= now:
+                upcoming += length
+            return upcoming
         entry = self._manual.get(agent, {}).get(window) or {}
         resets_at = entry.get("resets_at")
         return float(resets_at) if isinstance(resets_at, (int, float)) else None
@@ -328,6 +372,6 @@ class UsageTracker:
             return None
         # The manually entered figure already includes everything spent before
         # entry. Only samples recorded afterward are added to the baseline.
-        budget = self.five_hour_budget if window == "five_hour" else self.weekly_budget
+        budget = self._budget(agent, window)
         later = sum(s.tokens for s in self._samples.get(agent, []) if s.at > entry["at"] and s.at >= now - seconds)
         return min(entry["utilization"] + (later / budget if budget > 0 else 0), 1.0)
