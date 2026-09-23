@@ -13,6 +13,15 @@ class AdapterEvent:
     cost_usd: Optional[float] = None
     is_error: bool = False
     raw: Optional[dict] = None
+    # Token counts as the CLI reported them, normalized only in key names
+    # each CLI already uses ("input_tokens"/"output_tokens"). Kept separate
+    # from cost_usd because the two CLIs report different things: the Claude
+    # CLI gives a dollar figure, the Codex CLI gives tokens only.
+    usage: Optional[dict] = None
+    # The model the CLI actually ran ("claude-fable-5-1", "gpt-6-astra", ...).
+    # Shown in the UI instead of the CLI's name: which product wrapped the call
+    # matters less than which model answered.
+    model: Optional[str] = None
 
 
 class AgentAdapter(ABC):

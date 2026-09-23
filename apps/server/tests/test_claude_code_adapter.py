@@ -78,6 +78,22 @@ async def test_run_stream_yields_text_then_result():
 
 
 @pytest.mark.asyncio
+async def test_run_stream_emits_partial_text_without_repeating_completed_message():
+    adapter = ClaudeCodeAdapter(
+        workspace_dir="/home/hello/workspace",
+        env={"PATH": "/usr/bin:/bin", "FAKE_CLAUDE_PARTIAL": "1"},
+        executable=sys.executable,
+    )
+    adapter._extra_args_prefix = [FAKE_CLI]
+
+    events = await _collect(adapter.run_stream("ping", session_id="previous-session"))
+
+    assert [event.text for event in events if event.type == "text"] == ["po", "ng"]
+    args, _ = adapter._build_args("ping", "previous-session")
+    assert "--include-partial-messages" in args
+
+
+@pytest.mark.asyncio
 async def test_run_stream_drains_stderr_concurrently_without_deadlock():
     # Regression test: fake_claude.py writes >64KiB to stderr in between
     # stdout events. If run_stream() only read stderr after the stdout loop
@@ -150,3 +166,35 @@ def test_build_args_includes_model_and_effort_when_set():
     assert args[args.index("--model") + 1] == "opus"
     assert "--effort" in args
     assert args[args.index("--effort") + 1] == "high"
+
+
+def test_parse_event_surfaces_extended_thinking():
+    event = ClaudeCodeAdapter._parse_event(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking", "thinking": "생각 중"}]},
+        },
+        session_id="sid",
+    )
+
+    # Thinking is its own event type so the UI can show it apart from the
+    # answer (and collapse it) rather than mixing it into the reply.
+    assert event is not None
+    assert (event.type, event.text) == ("reasoning", "생각 중")
+
+
+def test_parse_event_prefers_text_over_thinking():
+    event = ClaudeCodeAdapter._parse_event(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "생각"},
+                    {"type": "text", "text": "답변"},
+                ]
+            },
+        },
+        session_id="sid",
+    )
+
+    assert (event.type, event.text) == ("text", "답변")

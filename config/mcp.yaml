@@ -1,0 +1,65 @@
+# ANA MCP server registry — which MCP servers an agent may talk to.
+#
+# Roadmap stage 6: existing open-source servers are reused rather than
+# rewritten, so this file is mostly a list of commands to spawn. Editing it
+# needs no code change and no restart (it is re-read whenever the mtime
+# changes, like config/governance.yaml).
+#
+# Per entry:
+#   name          server id; the agent sees its tools as mcp__<name>__<tool>
+#   command/args  the stdio server to spawn
+#   env           environment for that server only, never for the agent
+#   roles         which agent roles get the server ("lead", "worker").
+#                 The lead plans and delegates, so it gets nothing here.
+#   enabled       false keeps the entry as documentation without running it
+#   requires_env  secret names that must be registered (Settings → Secrets)
+#                 before the server is used; missing ones disable it quietly
+#
+# Placeholders substituted at build time:
+#   {workspace}     this session's workspace directory
+#   {database_url}  ANA's own Postgres DSN
+#   {state_dir}     ANA's state directory
+#   {secret:NAME}   a registered secret's value (never written to argv)
+
+servers:
+  # ① Git — the roadmap's first priority: commits, diffs, branches without
+  # handing the agent a shell for them.
+  - name: git
+    description: "로컬 git 저장소 조회/커밋 (mcp-server-git)"
+    command: uvx
+    args: ["mcp-server-git", "--repository", "{workspace}"]
+    roles: [worker]
+    enabled: true
+
+  # ② Postgres — the memory/state DB from stage 2, read-only.
+  #
+  # The DSN is given to *this server's* environment only. The agent's own
+  # environment still has DATABASE_URL stripped (see env_builder), so the
+  # agent can ask questions about the DB without holding credentials to it,
+  # and --access-mode=restricted keeps the answers to reads.
+  - name: postgres
+    description: "ANA 메모리/상태 DB 읽기 전용 조회 (postgres-mcp)"
+    command: uvx
+    args: ["postgres-mcp", "--access-mode=restricted"]
+    env:
+      DATABASE_URI: "{database_url}"
+    roles: [worker]
+    enabled: true
+
+  # ③ GitHub — enabled only once a token is registered as a secret, since
+  # without one every call fails at the API.
+  - name: github
+    description: "GitHub 이슈/PR (github-mcp-server, 토큰 등록 시에만 활성)"
+    command: docker
+    args:
+      - run
+      - "-i"
+      - "--rm"
+      - "-e"
+      - GITHUB_PERSONAL_ACCESS_TOKEN
+      - "ghcr.io/github/github-mcp-server"
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "{secret:GITHUB_PERSONAL_ACCESS_TOKEN}"
+    requires_env: [GITHUB_PERSONAL_ACCESS_TOKEN]
+    roles: [worker]
+    enabled: true

@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 
 from psycopg_pool import AsyncConnectionPool
@@ -14,16 +15,125 @@ async def store_turn(
     prompt: str,
     response: str,
     cost_usd: Optional[float],
+    agent: str = "claude",
+    meta: Optional[dict] = None,
 ) -> None:
     embedding = embedding_model.embed_one(f"{prompt}\n{response}")
     async with pool.connection() as conn:
         await conn.execute(
             """
-            INSERT INTO turns (thread_id, session_id, prompt, response, cost_usd, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO turns
+                (thread_id, session_id, prompt, response, cost_usd, embedding, agent, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
             """,
-            (thread_id, session_id, prompt, response, cost_usd, embedding),
+            (
+                thread_id, session_id, prompt, response, cost_usd, embedding, agent,
+                json.dumps(meta or {}, ensure_ascii=False),
+            ),
         )
+
+
+async def thread_history(
+    pool: AsyncConnectionPool,
+    *,
+    thread_id: str,
+    limit: int = 50,
+) -> list[dict]:
+    """Returns one thread's turns oldest-first, for redrawing the chat after a
+    browser reload. The server-side conversation already survives a refresh
+    (CLI sessions + LangGraph checkpoints); this is what lets the *screen*
+    survive it too.
+
+    Newest `limit` rows are selected and then reversed, so a long thread
+    shows its most recent turns rather than its first ones."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT prompt, response, agent, cost_usd, created_at, meta, id
+            FROM turns
+            WHERE thread_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (thread_id, limit),
+        )
+        rows = await cur.fetchall()
+    return [
+        {
+            "prompt": r[0],
+            "response": r[1],
+            "agent": r[2],
+            "cost_usd": r[3],
+            "created_at": r[4].isoformat(),
+            "meta": r[5] or {},
+            "id": r[6],
+        }
+        for r in reversed(rows)
+    ]
+
+
+async def list_threads(pool: AsyncConnectionPool, *, limit: int = 50) -> list[dict]:
+    """Conversations that have at least one recorded turn, newest first.
+
+    Built from `turns` rather than from the checkpoint tables: a thread the
+    user can meaningfully return to is one that produced something, and the
+    first prompt is what makes it recognizable in a list."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT t.thread_id,
+                   COUNT(*) AS turn_count,
+                   MAX(t.created_at) AS last_at,
+                   (ARRAY_AGG(t.prompt ORDER BY t.created_at, t.id))[1] AS first_prompt,
+                   (ARRAY_AGG(t.agent ORDER BY t.created_at DESC, t.id DESC))[1] AS last_agent
+            FROM turns t
+            GROUP BY t.thread_id
+            ORDER BY MAX(t.created_at) DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = await cur.fetchall()
+    return [
+        {
+            "thread_id": r[0],
+            "turn_count": r[1],
+            "last_at": r[2].isoformat(),
+            "title": (r[3] or "").strip().splitlines()[0][:80] if r[3] else "",
+            "last_agent": r[4],
+        }
+        for r in rows
+    ]
+
+
+async def recent_turns(
+    pool: AsyncConnectionPool,
+    *,
+    thread_id: str,
+    limit: int = 4,
+) -> list[dict]:
+    """Returns the newest `limit` turns of one thread, oldest-first, for
+    building an agent handoff brief (packages/orchestrator/handoff.py).
+
+    This is deliberately *not* the similarity search above: a handoff needs
+    what just happened in this conversation regardless of how semantically
+    close it is to the new prompt, which is exactly what the relevance
+    threshold in search_similar_turns filters out."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT prompt, response, agent
+            FROM turns
+            WHERE thread_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (thread_id, limit),
+        )
+        rows = await cur.fetchall()
+    return [
+        {"prompt": r[0], "response": r[1], "agent": r[2]} for r in reversed(rows)
+    ]
 
 
 async def search_similar_turns(

@@ -9,7 +9,11 @@ services:
       # state and has no auth layer beyond the password, which is a
       # documented dev-only placeholder (see .env.example) -- publishing on
       # 0.0.0.0 would make it reachable by anyone on the internal network.
-      - "127.0.0.1:5432:5432"
+      # Host port 15432, not 5432: this machine already runs an unrelated
+      # Postgres container on 5432, and publishing there both fails to bind
+      # and points local (non-docker) dev at the wrong database. The
+      # in-network port other services connect to is still 5432.
+      - "127.0.0.1:15432:5432"
     volumes:
       - ana_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,30 +27,169 @@ services:
       context: .
       dockerfile: apps/server/Dockerfile
     ports:
-      - "8000:8000"
+      # Host port 8100: 8000 is taken by an unrelated container on this
+      # machine. The app still listens on 8000 inside the container.
+      - "8100:8000"
     env_file:
       - .env
     volumes:
       - /home/hello/workspace:/home/hello/workspace
       # read-write: the CLI persists session state here (what --session-id
       # creates and --resume reads); read-only breaks conversation continuity
-      - ${HOME}/.claude:/root/.claude
+      # Mounted into the unprivileged `ana` user's home (uid 1000), not
+      # /root: the claude CLI refuses to auto-approve as root.
+      - ${HOME}/.claude:/home/ana/.claude
+      # The CLI keeps its config *outside* that directory, in ~/.claude.json,
+      # and refuses to run without it ("Claude configuration file not found
+      # at: ...") — mounting only ~/.claude is not enough.
+      - ${HOME}/.claude.json:/home/ana/.claude.json
+      # same for codex: auth lives here, and `codex exec resume <id>` reads
+      # the session files `codex exec` wrote on the previous turn
+      - ${HOME}/.codex:/home/ana/.codex
+      # Keeps the fastembed model out of a re-download on every restart.
+      - ana_model_cache:/home/ana/.cache
+      # Shared with per-workspace containers: the CLI settings file carrying
+      # the governance hook lives here, and the CLI inside the workspace
+      # container has to read the same one.
+      - ana_state:/home/ana/.ana
+      # Per-workspace containers (docs/plans/2026-09-23-workspace-containers.md).
+      # This is host-root equivalent, which is why the feature also needs
+      # ANA_WORKSPACE_CONTAINERS=on; comment both out to switch it off entirely.
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    # The socket is root:docker on the host, and the container runs as uid
+    # 1000 — without the socket's group the client gets "permission denied".
+    group_add:
+      - "${DOCKER_GID:-983}"
     environment:
       - ANA_WORKSPACE_DIR=/home/hello/workspace
+      # Each conversation gets its own directory under this root, so two
+      # threads cannot overwrite each other's work; the gate escalates any
+      # tool call that reaches outside the calling thread's directory.
+      - ANA_WORKSPACE_ROOT=${ANA_WORKSPACE_ROOT:-/home/hello/workspace/sessions}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-ana_dev_password}@postgres:5432/ana
+      # Must match the web service's published port (3005), or the origin
+      # check in /ws/chat closes every browser connection with 1008.
+      # Must list every origin the browser actually uses, including the LAN
+      # address when the UI is opened from another device — a missing entry
+      # closes the WebSocket with 1008 and the page just reads "disconnected".
+      - ANA_ALLOWED_ORIGINS=${ANA_ALLOWED_ORIGINS:-http://localhost:3005,http://127.0.0.1:3005,http://192.168.0.33:3005}
+      # Off by default: containers per workspace need the Docker socket above.
+      - ANA_WORKSPACE_CONTAINERS=${ANA_WORKSPACE_CONTAINERS:-off}
+      # Workspace containers join this network so their CLIs can still reach
+      # the gate at http://server:8000.
+      - ANA_WORKSPACE_NETWORK=${ANA_WORKSPACE_NETWORK:-ana_default}
+      - ANA_STATE_VOLUME=${ANA_STATE_VOLUME:-ana_ana_state}
+      # Host paths for the CLI credentials. A workspace container's bind mounts
+      # are resolved by the daemon on the *host*, so the server cannot derive
+      # these from its own filesystem.
+      # How a workspace container reaches the gate: the service name on the
+      # compose network, not the server's own loopback.
+      - ANA_CONTAINER_GATE_URL=${ANA_CONTAINER_GATE_URL:-http://server:8000}
+      - ANA_HOST_CLAUDE_DIR=${HOME}/.claude
+      - ANA_HOST_CLAUDE_JSON=${HOME}/.claude.json
+      - ANA_HOST_CODEX_DIR=${HOME}/.codex
+      # Tracing target. Unset any of these and the tracer becomes a no-op.
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse:3000}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-ana-dev}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-ana-dev}
     depends_on:
       postgres:
         condition: service_healthy
+      langfuse:
+        condition: service_started
 
   web:
     build:
       context: apps/web
       args:
-        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws/chat}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+        # Only the port: with NEXT_PUBLIC_WS_URL left blank, the browser
+        # derives the WebSocket host from the page it was served from, so the
+        # same build works on localhost and over the LAN (see useChatSocket).
+        NEXT_PUBLIC_WS_PORT: ${NEXT_PUBLIC_WS_PORT:-8100}
     ports:
-      - "3000:3000"
+      # Host port 3005: 3000 and 3001 are both taken on this machine.
+      - "3005:3000"
     depends_on:
       - server
 
+  # --- observability (roadmap stage 4) -------------------------------------
+  langfuse-postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_PASSWORD=${LANGFUSE_DB_PASSWORD:-langfuse_dev_password}
+      - POSTGRES_DB=langfuse
+    volumes:
+      - ana_langfuse_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  langfuse:
+    # v2: a single container plus Postgres. v3 additionally requires
+    # ClickHouse, Redis and S3-compatible storage, which is more moving parts
+    # than a single-user local deployment needs.
+    image: langfuse/langfuse:2
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3100:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${LANGFUSE_DB_PASSWORD:-langfuse_dev_password}@langfuse-postgres:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:3100
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:-ana_dev_nextauth_secret}
+      - SALT=${LANGFUSE_SALT:-ana_dev_salt}
+      - ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      - TELEMETRY_ENABLED=false
+      # Self-provisioning: without these the first run needs a human to sign
+      # up in the UI before any key exists, which would make the tracer
+      # silently no-op on a fresh `docker compose up`.
+      - LANGFUSE_INIT_ORG_ID=ana
+      - LANGFUSE_INIT_ORG_NAME=ANA
+      - LANGFUSE_INIT_PROJECT_ID=ana
+      - LANGFUSE_INIT_PROJECT_NAME=ANA
+      - LANGFUSE_INIT_PROJECT_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-ana-dev}
+      - LANGFUSE_INIT_PROJECT_SECRET_KEY=${LANGFUSE_SECRET_KEY:-sk-lf-ana-dev}
+      - LANGFUSE_INIT_USER_EMAIL=${LANGFUSE_USER_EMAIL:-ana@example.com}
+      - LANGFUSE_INIT_USER_NAME=ANA
+      - LANGFUSE_INIT_USER_PASSWORD=${LANGFUSE_USER_PASSWORD:-ana_dev_password}
+      # Self-hosted and internal-network only: trace data never leaves the box.
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ana_prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Retention is unlimited by roadmap decision; this is just a large cap
+      # so the volume cannot fill the disk silently.
+      - --storage.tsdb.retention.size=10GB
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    depends_on:
+      - prometheus
+    ports:
+      - "127.0.0.1:3200:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ana_grafana_data:/var/lib/grafana
+
 volumes:
   ana_postgres_data:
+  ana_model_cache:
+  ana_state:
+  ana_langfuse_data:
+  ana_prometheus_data:
+  ana_grafana_data:

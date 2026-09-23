@@ -1,0 +1,54 @@
+"""The read-only capability endpoints: /mcp/servers and /skills."""
+import pytest
+import pytest_asyncio
+from fastapi.testclient import TestClient
+
+from apps.server.app.main import app
+from packages.governance.secrets import run_secret_migrations
+
+
+@pytest_asyncio.fixture
+async def prepared_pool(db_pool):
+    await run_secret_migrations(db_pool)
+    return db_pool
+
+
+@pytest.fixture
+def client(prepared_pool, postgres_dsn, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", postgres_dsn)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_mcp_servers_reports_active_and_why_not(client):
+    body = client.get("/mcp/servers?role=worker").json()
+
+    assert body["role"] == "worker"
+    names = {entry["name"] for entry in body["active"]} | {
+        entry["name"] for entry in body["inactive"]
+    }
+    assert names == {"git", "postgres", "github"}
+    # Every inactive server says why, so the settings page never shows a
+    # server that is simply missing with no explanation.
+    assert all(entry["reason"] for entry in body["inactive"])
+
+
+def test_lead_has_no_mcp_servers(client):
+    body = client.get("/mcp/servers?role=lead").json()
+
+    assert body["active"] == []
+
+
+def test_skills_lists_the_library_with_schemas(client):
+    body = client.get("/skills").json()
+
+    names = {skill["name"] for skill in body["skills"]}
+    assert {"code-review", "db-inspect", "git-commit", "github-pr"} <= names
+    assert body["errors"] == []
+    review = next(skill for skill in body["skills"] if skill["name"] == "code-review")
+    assert [field["name"] for field in review["inputs"]] == ["target", "focus"]
+
+
+def test_skill_detail_and_404(client):
+    assert client.get("/skills/git-commit").json()["name"] == "git-commit"
+    assert client.get("/skills/no-such-skill").status_code == 404

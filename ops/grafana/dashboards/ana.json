@@ -1,0 +1,98 @@
+{
+  "title": "ANA — Orchestrator",
+  "uid": "ana-orchestrator",
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Turns per minute by agent and outcome",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (agent, outcome) (rate(ana_turns_total[5m])) * 60",
+          "legendFormat": "{{agent}} / {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Turn duration (p50 / p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, agent) (rate(ana_turn_duration_seconds_bucket[10m])))",
+          "legendFormat": "p50 {{agent}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, agent) (rate(ana_turn_duration_seconds_bucket[10m])))",
+          "legendFormat": "p95 {{agent}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gate decisions by verdict",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (verdict) (rate(ana_gate_decisions_total[5m])) * 60",
+          "legendFormat": "{{verdict}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Blocked and escalated calls by rule",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (rule_id, verdict) (increase(ana_gate_decisions_total{verdict=~\"deny|pending\"}[24h]))",
+          "format": "table",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Failovers (circuit breaker)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (from_rung, to_rung) (increase(ana_failovers_total[1h]))",
+          "legendFormat": "{{from_rung}} → {{to_rung}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Approval wait (p95) and open sessions",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ana_gate_wait_seconds_bucket[30m])))",
+          "legendFormat": "approval wait p95"
+        },
+        { "expr": "ana_active_sessions", "legendFormat": "open sessions" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cost and tokens per hour",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (agent) (increase(ana_turn_cost_usd_total[1h]))",
+          "legendFormat": "$ {{agent}}"
+        },
+        {
+          "expr": "sum by (agent) (increase(ana_turn_tokens_total[1h]))",
+          "legendFormat": "tokens {{agent}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

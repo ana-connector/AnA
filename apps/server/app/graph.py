@@ -1,3 +1,10 @@
+import asyncio
+import contextlib
+import logging
+import os
+import sys
+import time
+from dataclasses import dataclass
 from typing import Optional, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -5,7 +12,47 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from packages.memory.rag import search_similar_turns, store_turn
+from packages.memory.rag import recent_turns, search_similar_turns, store_turn
+from packages.orchestrator.breaker import (
+    BreakerConfig,
+    BreakerState,
+    build_chain,
+    is_usage_limit,
+    next_rung,
+    rate_limit_exceeded,
+    thread_budget_exceeded,
+)
+from packages.observability.metrics import record_failover, record_subagent, record_turn
+from packages.observability.tracing import Tracer
+from packages.orchestrator.handoff import build_handoff_prompt
+from packages.orchestrator.routing import LEAD, WORKER, decide, model_for
+from packages.orchestrator.planner import (
+    build_planning_prompt,
+    build_synthesis_prompt,
+    max_tasks,
+    parse_plan,
+)
+from packages.orchestrator.supervisor import (
+    WorkerRun,
+    run_tasks,
+    summarize,
+)
+
+# A disabled tracer, used when no caller wired one in (tests, single-agent
+# callers). Every method is a no-op, so nothing downstream needs a guard.
+NULL_TRACER = Tracer(None)
+
+logger = logging.getLogger("ana.graph")
+
+
+@contextlib.contextmanager
+def _suppress_tracing():
+    """Tracing is never a reason a turn fails."""
+    try:
+        yield
+    except Exception:  # noqa: BLE001
+        pass
+
 
 
 class GraphState(TypedDict):
@@ -13,6 +60,33 @@ class GraphState(TypedDict):
     session_id: Optional[str]
     response_text: str
     total_cost_usd: float
+    # Cumulative input+output tokens across the thread's turns. Tracked
+    # alongside total_cost_usd, not instead of it: the Claude CLI reports a
+    # dollar figure and the Codex CLI reports tokens, so a thread that used
+    # both has one meaningful number from each.
+    total_tokens: int
+    # Which CLI runs this turn ("claude" | "codex"). Absent/unknown values
+    # normalize to the default agent, so a client that never sends one keeps
+    # the single-agent behavior this graph shipped with.
+    agent: str
+    # One CLI session id per agent: each CLI resumes its *own* conversation
+    # (claude --resume / codex exec resume), so they cannot share the single
+    # `session_id` field above -- that one stays as the active agent's id for
+    # backward compatibility with callers/tests that read it.
+    session_ids: dict[str, Optional[str]]
+    # Which agent ran the previous turn in this thread; a mismatch with
+    # `agent` is what triggers the handoff brief.
+    last_agent: Optional[str]
+    # Circuit breaker memory: which failover rung this thread fell back to,
+    # when it tripped, and why. Empty/zero means "running on the preferred
+    # rung"; the cooldown in BreakerConfig is what ends a trip.
+    failover_rung: Optional[str]
+    failover_tripped_at: float
+    failover_reason: str
+    # Set per turn by the client: ask the lead for a plan first and fan the
+    # work out to sub-agents when it says so. Off by default because planning
+    # costs an extra CLI call.
+    plan_mode: bool
 
 
 # Bound on each matched turn's prompt/response before interpolation into the
@@ -29,7 +103,9 @@ _MAX_MATCH_FIELD_CHARS = 300
 def _truncate(text: str, limit: int = _MAX_MATCH_FIELD_CHARS) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + "..."
+    head = limit // 3
+    tail = limit - head - 3
+    return text[:head] + "..." + text[-tail:]
 
 
 def _build_augmented_prompt(prompt: str, matches: list[dict]) -> str:
@@ -44,61 +120,578 @@ def _build_augmented_prompt(prompt: str, matches: list[dict]) -> str:
     )
 
 
+def _tokens_from_usage(usage: Optional[dict]) -> int:
+    """Input+output tokens out of either CLI's usage payload. Cache-hit and
+    cache-write counts are deliberately excluded: both CLIs report them as a
+    breakdown *of* input_tokens, so adding them double-counts. Returns 0 for
+    a payload with no token counts at all (the Claude CLI's
+    rate_limit_event, which reports window utilization instead)."""
+    if not usage:
+        return 0
+    total = 0
+    for key in ("input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            total += value
+    return total
+
+
+async def _run_worker(adapter, prompt: str) -> WorkerRun:
+    """One sub-agent: a fresh CLI session (never resumed) that answers exactly
+    one task. Errors are returned, not raised — the supervisor turns them into
+    a task result so the other workers keep going."""
+    run = WorkerRun(adapter=adapter)
+    try:
+        async for event in adapter.run_stream(prompt, session_id=None):
+            if event.type == "text":
+                run.output += event.text
+            elif event.type == "result":
+                if event.cost_usd:
+                    run.cost_usd += event.cost_usd
+                run.tokens += _tokens_from_usage(event.usage)
+                if event.is_error:
+                    run.failed = True
+                    run.error = event.text
+            elif event.type == "usage":
+                run.tokens += _tokens_from_usage(event.usage)
+            elif event.type == "error":
+                run.failed = True
+                run.error = event.text
+    finally:
+        # The worker's subprocess must not outlive the fan-out, including when
+        # the turn is cancelled mid-flight.
+        with contextlib.suppress(Exception):
+            await adapter.terminate()
+    return run
+
+
+async def _plan_turn(adapter, prompt: str, *, tracer, trace):
+    """Asks the lead for a plan. A planning call that fails costs latency, not
+    the turn: parse_plan() falls back to a direct answer."""
+    planning = WorkerRun()
+    with tracer.span(trace, name="plan"):
+        try:
+            async for event in adapter.run_stream(
+                build_planning_prompt(prompt), session_id=None
+            ):
+                if event.type == "text":
+                    planning.output += event.text
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            planning.error = str(exc)
+    return parse_plan(planning.output)
+
+
+def _resolve_adapter(
+    configurable: dict,
+    agent: str,
+    auth_mode: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    """Picks the adapter for one rung of the failover chain.
+
+    `configurable["adapter_factory"]`, when present, can build an adapter for
+    a specific auth mode — which is what lets the breaker retry the Claude CLI
+    on its other billing bucket. Without it the pre-built
+    `configurable["adapters"]` map is used, and failing that the single
+    `configurable["adapter"]` this graph originally took (still how the
+    single-agent callers and tests wire it up)."""
+    factory = configurable.get("adapter_factory")
+    if factory is not None:
+        return factory(agent, auth_mode, model)
+    adapters = configurable.get("adapters")
+    adapter = adapters.get(agent) if adapters else configurable.get("adapter")
+    if adapter is None:
+        raise KeyError(f"no adapter configured for agent {agent!r}")
+    if model is not None and hasattr(adapter, "model"):
+        # Turns are serialized per connection, so setting the model on the
+        # shared adapter is safe and avoids rebuilding it for every rung.
+        adapter.model = model
+    return adapter
+
+
+@dataclass
+class _TurnOutcome:
+    """What one attempt on one rung produced."""
+
+    response_text: str = ""
+    session_id: Optional[str] = None
+    cost_usd: Optional[float] = None
+    turn_tokens: int = 0
+    error_text: str = ""
+    # The end-of-turn frame, held back until the caller knows whether this
+    # attempt is the last one: a rung that is about to be retried must not tell
+    # the UI the turn is over.
+    result_payload: Optional[dict] = None
+    # The model the CLI said it was running, when it said so.
+    model: Optional[str] = None
+    usage_limited: bool = False
+    caught_exc: Optional[BaseException] = None
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.error_text) or self.caught_exc is not None
+
+
+async def _stream_turn(
+    adapter,
+    *,
+    outcome: _TurnOutcome,
+    prompt: str,
+    agent: str,
+    session_id: Optional[str],
+    writer,
+    base_cost_usd: float,
+    base_tokens: int,
+    rate_limit_utilization: float,
+    usage_tracker=None,
+    timeline=None,
+) -> _TurnOutcome:
+    """Runs one attempt, streaming its events to the client.
+
+    `outcome` is created by the caller and filled in here rather than returned
+    fresh: a cancelled turn (client disconnect, Stop button) never returns at
+    all, and whatever partial answer it produced still has to reach the
+    transcript.
+
+    Error frames are *not* written here: the caller may still have a rung left
+    to try, and reporting a failure the system is about to recover from would
+    be noise. Text and usage frames stream as they arrive, because a partial
+    answer is still worth showing."""
+    try:
+        async for event in adapter.run_stream(prompt, session_id=session_id):
+            if event.type == "result" and event.session_id:
+                outcome.session_id = event.session_id
+            if event.type == "text":
+                outcome.response_text += event.text
+            if event.type == "result":
+                outcome.cost_usd = event.cost_usd
+                # `is_error` is not always set for this: a plan that cannot pay
+                # for the model answers "Fable 5 requires usage credits…" as a
+                # perfectly successful result whose entire content is that
+                # sentence. A reply that is *only* a limit message is a limit
+                # message.
+                looks_like_limit = is_usage_limit(event.text)
+                whole_reply = outcome.response_text.strip() in ("", event.text.strip())
+                if looks_like_limit and (event.is_error or whole_reply):
+                    outcome.usage_limited = True
+                    outcome.error_text = event.text
+            if event.type == "error":
+                # Never clobber a real message with an empty one: the CLI can
+                # follow a "requires usage credits" result with a bare non-zero
+                # exit whose stderr is empty, and overwriting the reason made
+                # the turn look like it had not failed at all.
+                if event.text or not outcome.error_text:
+                    outcome.error_text = event.text or "CLI exited with an error"
+                if is_usage_limit(event.text):
+                    outcome.usage_limited = True
+            if event.type in ("usage", "result"):
+                outcome.turn_tokens += _tokens_from_usage(event.usage)
+            if event.type == "usage" and usage_tracker is not None:
+                # The Claude CLI's rate_limit_event carries the provider's own
+                # utilization; taking it beats any estimate ANA could make.
+                usage_tracker.record_reported(agent, event.usage)
+            if event.type == "usage" and rate_limit_exceeded(
+                event.usage, rate_limit_utilization
+            ):
+                # The Claude CLI reports window utilization before it starts
+                # refusing; treating "at the cap" as a limit hit is what makes
+                # the breaker preemptive rather than purely reactive.
+                outcome.usage_limited = True
+
+            if event.type == "text":
+                if timeline is not None:
+                    timeline.append_text(event.text)
+                writer({"type": event.type, "text": event.text})
+                continue
+            if event.type == "reasoning":
+                writer(
+                    {
+                        "type": "reasoning",
+                        "text": event.text,
+                        "session_id": event.session_id,
+                        "is_error": False,
+                        "agent": agent,
+                    }
+                )
+                continue
+            if event.type == "model":
+                outcome.model = event.text
+                writer(
+                    {
+                        "type": "model",
+                        "text": event.text,
+                        "session_id": event.session_id,
+                        "is_error": False,
+                        "agent": agent,
+                    }
+                )
+                continue
+            if event.type == "error":
+                continue  # held back until the caller knows whether it retries
+
+            payload = {
+                "type": event.type,
+                "text": event.text,
+                "session_id": event.session_id,
+                "is_error": event.is_error,
+                # Which CLI produced this turn, so the UI can label
+                # the reply and mark where a handoff happened.
+                "agent": agent,
+            }
+            if event.usage:
+                payload["usage"] = event.usage
+            if event.type == "result":
+                payload["cost_usd"] = outcome.cost_usd
+                payload["total_cost_usd"] = base_cost_usd + (outcome.cost_usd or 0.0)
+                payload["turn_tokens"] = outcome.turn_tokens
+                payload["total_tokens"] = base_tokens + outcome.turn_tokens
+                # Held, not written: see _TurnOutcome.result_payload.
+                outcome.result_payload = payload
+                continue
+            writer(payload)
+    except Exception as exc:  # noqa: BLE001 - a raised failure is still a turn
+        # outcome, not something to lose: the caller logs it to the transcript
+        # and either fails over or re-raises it unchanged.
+        outcome.caught_exc = exc
+        outcome.usage_limited = is_usage_limit(str(exc))
+    return outcome
+
+
 async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     configurable = config["configurable"]
-    adapter = configurable["adapter"]
     pool = configurable["pool"]
     embedding_model = configurable["embedding_model"]
     transcript = configurable["transcript"]
     thread_id = configurable["thread_id"]
 
     writer = get_stream_writer()
+    started_at = time.time()
+    tracer = configurable.get("tracer") or NULL_TRACER
+    usage_tracker = configurable.get("usage_tracker")
+    trace = tracer.trace(
+        name="turn",
+        thread_id=thread_id,
+        metadata={"requested_agent": state.get("agent")},
+    )
 
-    matches = await search_similar_turns(pool, embedding_model, state["prompt"], limit=3)
-    augmented_prompt = _build_augmented_prompt(state["prompt"], matches)
+    last_agent = state.get("last_agent")
+    # Which CLI answers is a rule-set decision unless the client named one:
+    # asking the user to pick on every message is a choice they cannot make
+    # better than the rules can (packages/orchestrator/routing.py).
+    usage_snapshot = usage_tracker.snapshot() if usage_tracker is not None else None
+    route = decide(state.get("agent"), role=LEAD, usage=usage_snapshot)
+    agent = route.agent
+    lead_model = route.model
+    if not route.explicit:
+        writer(
+            {
+                "type": "route",
+                "text": route.reason,
+                "session_id": None,
+                "is_error": False,
+                "agent": agent,
+                "model": lead_model,
+            }
+        )
+    adapter = _resolve_adapter(configurable, agent, model=lead_model)
+    session_ids: dict[str, Optional[str]] = dict(state.get("session_ids") or {})
+
+    is_handoff = last_agent is not None and last_agent != agent
+    with tracer.span(trace, name="prompt.handoff" if is_handoff else "prompt.rag"):
+        if is_handoff:
+            # Handoff turn: the incoming CLI has no idea what the other one just
+            # did, so it gets the thread's actual recent turns instead of the
+            # similarity search. The two are deliberately not combined -- the
+            # handoff brief already carries this thread's context, and stacking
+            # semantically-matched turns on top of it only inflates a prompt that
+            # ends up as a single argv element (see _MAX_MATCH_FIELD_CHARS).
+            turns = await recent_turns(pool, thread_id=thread_id, limit=4)
+            augmented_prompt = build_handoff_prompt(
+                state["prompt"],
+                incoming_agent=agent,
+                previous_agent=last_agent,
+                turns=turns,
+            )
+        else:
+            matches = await search_similar_turns(
+                pool, embedding_model, state["prompt"], limit=3
+            )
+            augmented_prompt = _build_augmented_prompt(state["prompt"], matches)
+
+    # --- Planner-Worker (roadmap stage 5) --------------------------------
+    # A worker needs its *own* adapter: the per-connection ones hold a single
+    # subprocess handle, so running five turns through one object would have
+    # them overwrite and terminate each other.
+    worker_factory = configurable.get("worker_factory")
+    subagent_results: list[dict] = []
+    turn_model: Optional[str] = None
+    subagent_cost = 0.0
+    subagent_tokens = 0
+    if state.get("plan_mode") and worker_factory is not None:
+        plan = await _plan_turn(
+            _resolve_adapter(configurable, agent, model=lead_model),
+            state["prompt"],
+            tracer=tracer,
+            trace=trace,
+        )
+        writer(
+            {
+                "type": "plan",
+                "text": plan.note,
+                "session_id": None,
+                "is_error": False,
+                "agent": agent,
+                "mode": plan.mode,
+                "tasks": [
+                    {"id": t.id, "title": t.title, "agent": t.agent, "prompt": t.prompt} for t in plan.tasks
+                ],
+            }
+        )
+
+        if plan.delegating:
+            async def announce(result) -> None:
+                writer(
+                    {
+                        "type": "subagent",
+                        "text": result.error,
+                        "session_id": None,
+                        "is_error": result.status in ("error", "timeout"),
+                        "agent": result.task.agent,
+                        "task": result.as_dict(),
+                    }
+                )
+
+            async def run_worker(task):
+                # Workers do the actual work, so they get the worker ladder —
+                # and they share the thread's workspace and gate token, so
+                # every tool call they make is screened exactly like the
+                # lead's would be.
+                worker_route = decide(
+                    task.agent, role=WORKER, usage=usage_snapshot
+                )
+                return await _run_worker(
+                    worker_factory(worker_route.agent, worker_route.model),
+                    build_handoff_prompt(
+                        task.prompt,
+                        incoming_agent=task.agent,
+                        previous_agent="lead",
+                        turns=await recent_turns(pool, thread_id=thread_id, limit=2),
+                    ),
+                )
+
+            with tracer.span(trace, name="subagents", metadata={"count": len(plan.tasks)}):
+                results = await run_tasks(
+                    plan.tasks,
+                    run_worker,
+                    max_concurrency=max_tasks(),
+                    timeout_seconds=float(
+                        os.environ.get("ANA_SUBAGENT_TIMEOUT_SECONDS", 600)
+                    ),
+                    on_update=announce,
+                )
+
+            subagent_results = [r.as_dict() for r in results]
+            totals = summarize(results)
+            subagent_cost = totals["cost_usd"]
+            subagent_tokens = totals["tokens"]
+            for result in results:
+                record_subagent(result.task.agent, result.status)
+            # The lead answers from what the workers produced; this is the
+            # prompt the normal (failover-protected) turn loop below runs.
+            augmented_prompt = build_synthesis_prompt(state["prompt"], subagent_results)
+
+    if agent in session_ids:
+        session_id = session_ids[agent]
+    elif last_agent is None or last_agent == agent:
+        # Nothing recorded for this agent yet, but the flat session_id field
+        # may hold its id from before session_ids existed (or from a caller
+        # that only ever passes the flat field). Only trust it when no *other*
+        # agent ran last -- otherwise it belongs to that other CLI, and
+        # resuming another CLI's session id is at best an error.
+        session_id = state.get("session_id")
+    else:
+        session_id = None
+    total_cost_usd = state.get("total_cost_usd", 0.0)
+    total_tokens = state.get("total_tokens") or 0
+
+    breaker_config: BreakerConfig = configurable.get("breaker_config") or BreakerConfig.from_env()
+    breaker = BreakerState(
+        rung_label=state.get("failover_rung"),
+        tripped_at=state.get("failover_tripped_at") or 0.0,
+        reason=state.get("failover_reason") or "",
+    )
+    preferred_mode = configurable.get("claude_auth_mode")
+    chain = build_chain(agent, preferred_mode)
+
+    # A thread that already crossed its budget starts one rung down instead of
+    # spending another turn proving the limit is still there.
+    budget_reason = thread_budget_exceeded(breaker_config, total_cost_usd, total_tokens)
+    tried: list[str] = []
+    start_index = 0
+    if breaker.active(breaker_config.cooldown_seconds):
+        # Still inside the cooldown: keep using what we fell back to, and skip
+        # the rungs above it. Once the cooldown expires the next turn starts
+        # from the preferred rung again — that is the automatic recovery.
+        for index, rung in enumerate(chain):
+            if rung.label == breaker.rung_label:
+                start_index = index
+                break
+    elif budget_reason and len(chain) > 1:
+        start_index = 1
 
     response_text = ""
-    session_id = state.get("session_id")
-    total_cost_usd = state.get("total_cost_usd", 0.0)
+    turn_tokens = 0
     cost_usd = None
     for_error_text = ""
     caught_exc: Optional[BaseException] = None
+    used_rung = chain[start_index]
+    failed_over = start_index > 0
+    in_flight: Optional[_TurnOutcome] = None
+    failover_reason = (
+        breaker.reason
+        if breaker.active(breaker_config.cooldown_seconds)
+        else (budget_reason or "")
+    )
 
     try:
-        async for event in adapter.run_stream(augmented_prompt, session_id=session_id):
-            # "text" chunks are content deltas the frontend appends as-is (see
-            # useChatSocket.ts) and never inspects session_id/is_error for — so
-            # only "result"/"error"/"usage" events, which carry turn-level
-            # metadata, get the full payload.
-            if event.type == "text":
-                writer({"type": event.type, "text": event.text})
+        for rung in chain[start_index:]:
+            tried.append(rung.label)
+            used_rung = rung
+            if rung.agent != agent:
+                # Changing CLI mid-turn is a handoff like any other: the
+                # incoming one has none of this thread's context.
+                turns = await recent_turns(pool, thread_id=thread_id, limit=4)
+                attempt_prompt = build_handoff_prompt(
+                    state["prompt"],
+                    incoming_agent=rung.agent,
+                    previous_agent=agent,
+                    turns=turns,
+                )
+                attempt_session_id = session_ids.get(rung.agent)
             else:
+                attempt_prompt = augmented_prompt
+                attempt_session_id = session_id
+
+            # Each rung brings its own model: the one picked for the rung that
+            # just failed is meaningless to another CLI ("fable" is not a Codex
+            # model, and passing it makes the retry fail for a new reason).
+            rung_model = lead_model if rung.agent == agent else model_for(rung.agent)
+            try:
+                adapter = _resolve_adapter(
+                    configurable, rung.agent, rung.auth_mode, model=rung_model
+                )
+            except Exception as exc:  # noqa: BLE001 - a rung that cannot even be
+                # built is a rung that is not available: the Claude CLI's API
+                # mode needs a key that may not be configured. Skip to the next
+                # one instead of ending the turn on a setup problem.
+                skip_to = next_rung(chain, tried)
+                if skip_to is None:
+                    caught_exc = exc
+                    break
+                failed_over = True
+                failover_reason = str(exc)
+                record_failover(rung.label, skip_to.label)
                 writer(
                     {
-                        "type": event.type,
-                        "text": event.text,
-                        "session_id": event.session_id,
-                        "is_error": event.is_error,
+                        "type": "failover",
+                        "text": failover_reason,
+                        "session_id": session_id,
+                        "is_error": False,
+                        "agent": rung.agent,
+                        "from_rung": rung.label,
+                        "to_rung": skip_to.label,
                     }
                 )
-            if event.type == "result" and event.session_id:
-                session_id = event.session_id
-            if event.type == "text":
-                response_text += event.text
-            if event.type == "result":
-                cost_usd = event.cost_usd
-            if event.type == "error":
-                for_error_text = event.text
-    except Exception as exc:  # noqa: BLE001 - deliberately broad: any failure
-        # mid-stream (a raised exception from adapter.run_stream, as opposed
-        # to a well-formed type="error" AdapterEvent) must still reach the
-        # transcript/turns table before propagating, exactly like a turn
-        # that ends in a type="error" event does below. Caught here rather
-        # than left to an outer try/finally so the fallback response text
-        # can be computed and logged, then the original exception re-raised
-        # unchanged for the websocket layer to turn into an error frame.
-        caught_exc = exc
+                continue
+            # Held in a name the finally block can still read if this attempt
+            # is cancelled mid-stream.
+            outcome = _TurnOutcome(session_id=attempt_session_id)
+            in_flight = outcome
+            with tracer.span(
+                trace, name=f"cli.{rung.label}", metadata={"resumed": bool(attempt_session_id)}
+            ):
+                await _stream_turn(
+                    adapter,
+                    outcome=outcome,
+                    prompt=attempt_prompt,
+                    agent=rung.agent,
+                    session_id=attempt_session_id,
+                    writer=writer,
+                    base_cost_usd=total_cost_usd,
+                    base_tokens=total_tokens + turn_tokens,
+                    rate_limit_utilization=breaker_config.rate_limit_utilization,
+                    usage_tracker=usage_tracker,
+                    timeline=configurable.get("timeline"),
+                )
+
+            response_text = outcome.response_text or response_text
+            turn_model = outcome.model or turn_model
+            session_id = outcome.session_id
+            turn_tokens += outcome.turn_tokens
+            cost_usd = outcome.cost_usd
+            for_error_text = outcome.error_text
+            caught_exc = outcome.caught_exc
+            if outcome.session_id:
+                session_ids[rung.agent] = outcome.session_id
+
+            if not outcome.failed:
+                if outcome.result_payload is not None:
+                    writer(outcome.result_payload)
+                break
+
+            # Logged because this decision is invisible from the outside and
+            # was wrong once already: a turn that ends on a limit message with
+            # rungs left is a bug, not a user-visible event.
+            logger.warning(
+                "turn attempt failed rung=%s usage_limited=%s tried=%s chain=%s error=%r",
+                rung.label,
+                outcome.usage_limited,
+                tried,
+                [r.label for r in chain],
+                (outcome.error_text or "")[:120],
+            )
+            follow_up = next_rung(chain, tried) if outcome.usage_limited else None
+            if follow_up is None:
+                # Either an ordinary failure (report it as-is) or the chain is
+                # exhausted (nothing left to try). Either way this attempt was
+                # the last one, so its end-of-turn frame goes out now.
+                if outcome.result_payload is not None:
+                    writer(outcome.result_payload)
+                if for_error_text:
+                    writer(
+                        {
+                            "type": "error",
+                            "text": for_error_text,
+                            "session_id": session_id,
+                            "is_error": True,
+                            "agent": rung.agent,
+                        }
+                    )
+                break
+
+            failed_over = True
+            failover_reason = outcome.error_text or "usage limit reached"
+            record_failover(rung.label, follow_up.label)
+            writer(
+                {
+                    "type": "failover",
+                    "text": failover_reason,
+                    "session_id": session_id,
+                    "is_error": False,
+                    "agent": rung.agent,
+                    "from_rung": rung.label,
+                    "to_rung": follow_up.label,
+                }
+            )
+            caught_exc = None  # recovered by moving down the chain
+            for_error_text = ""
     finally:
+        # A cancelled attempt never gets to copy its fields out of the loop,
+        # so read them straight off the in-flight outcome here.
+        if in_flight is not None:
+            response_text = response_text or in_flight.response_text
+            session_id = session_id or in_flight.session_id
+            cost_usd = cost_usd if cost_usd is not None else in_flight.cost_usd
         final_response = response_text or for_error_text or (
             f"[error: {caught_exc}]" if caught_exc is not None else ""
         )
@@ -121,18 +714,83 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 pool, embedding_model,
                 thread_id=thread_id, session_id=session_id,
                 prompt=state["prompt"], response=final_response, cost_usd=cost_usd,
+                # The rung that actually answered, which is not the requested
+                # agent when the breaker moved the turn.
+                agent=used_rung.agent,
+                # What the reply was made of besides text, so reopening the
+                # conversation shows the work rather than only the answer.
+                meta={
+                    "rung": used_rung.label,
+                    "model": turn_model,
+                    "tokens": turn_tokens + subagent_tokens,
+                    "subagents": subagent_results + list(configurable.get("native_agents", {}).values()),
+                    "failed_over": failed_over,
+                    "blocks": configurable["timeline"].blocks if configurable.get("timeline") else [],
+                },
             )
+
+        # Recorded here rather than after the try block: a client that
+        # disconnects right after the result frame cancels this coroutine
+        # while the tail (embedding + storage) is still running, and a turn
+        # that happened must still be counted. asyncio.CancelledError is a
+        # BaseException, so it shows up in sys.exc_info() here rather than in
+        # the except clause above.
+        cancelled = sys.exc_info()[0] is asyncio.CancelledError
+        outcome_label = (
+            "cancelled"
+            if cancelled
+            else ("error" if (caught_exc is not None or for_error_text) else "ok")
+        )
+        if usage_tracker is not None and turn_tokens:
+            # Estimated side of the status bar: what ANA has actually spent in
+            # the rolling windows, per agent.
+            usage_tracker.record_tokens(used_rung.agent, turn_tokens + subagent_tokens)
+        record_turn(
+            used_rung.agent,
+            outcome=outcome_label,
+            duration_seconds=time.time() - started_at,
+            cost_usd=cost_usd or 0.0,
+            tokens=turn_tokens,
+        )
+        with _suppress_tracing():
+            trace.update(
+                metadata={
+                    "rung": used_rung.label,
+                    "outcome": outcome_label,
+                    "cost_usd": cost_usd,
+                    "tokens": turn_tokens,
+                    "failed_over": failed_over,
+                }
+            )
+        tracer.flush()
 
     if caught_exc is not None:
         raise caught_exc
 
     if cost_usd is not None:
         total_cost_usd += cost_usd
+    total_cost_usd += subagent_cost
+    total_tokens += turn_tokens + subagent_tokens
+
+    session_ids[used_rung.agent] = session_id
 
     return {
         "session_id": session_id,
+        "session_ids": session_ids,
+        "agent": used_rung.agent,
+        "last_agent": used_rung.agent,
         "response_text": final_response,
         "total_cost_usd": total_cost_usd,
+        "total_tokens": total_tokens,
+        # Remembered so the next turn starts on the same rung until the
+        # cooldown expires, then returns to the preferred one on its own.
+        "failover_rung": used_rung.label if failed_over else None,
+        "failover_tripped_at": (
+            breaker.tripped_at
+            if (failed_over and breaker.active(breaker_config.cooldown_seconds))
+            else (time.time() if failed_over else 0.0)
+        ),
+        "failover_reason": failover_reason if failed_over else "",
     }
 
 

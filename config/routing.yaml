@@ -1,0 +1,40 @@
+# Which model answers, by how much of its usage window is already spent.
+#
+# Not keyword matching: the lead agent's job is the same whoever runs it, so
+# the only question worth asking per turn is "which model can I still afford?".
+# Each rung names a CLI and a model, and `until` is the point at which ANA
+# stops using that rung and moves to the next one. The last rung has no
+# `until` — it is where everything lands once the cheaper ones are spent.
+#
+# Utilization comes from the provider when it reports one (the Claude CLI's
+# rate_limit_event) and from ANA's own token accounting otherwise; see
+# packages/observability/limits.py. A rung whose usage is unknown counts as 0.
+#
+# Editing this file takes effect on the next turn — no restart.
+
+lead:
+  - agent: claude
+    model: fable
+    until:
+      window: five_hour
+      utilization: 0.25
+  - agent: codex
+    model: gpt-6-astra
+    until:
+      window: five_hour
+      utilization: 0.25
+  - agent: claude
+    model: opus
+
+# Sub-agents do the actual work (files, commands, edits), so they get the
+# models that are good at it, with the same "spend the cheap window first"
+# shape. `default` applies when the plan does not name a preference.
+workers:
+  default:
+    - agent: codex
+      model: gpt-6-astra
+      until:
+        window: five_hour
+        utilization: 0.9
+    - agent: claude
+      model: opus

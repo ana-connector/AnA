@@ -20,6 +20,18 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS turns_embedding_idx ON turns
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- Which agent CLI produced the turn ("claude" | "codex"). Added after the
+-- table shipped, so it is an ALTER rather than a column in the CREATE above;
+-- existing rows predate dual-agent support and default to 'claude'.
+ALTER TABLE turns ADD COLUMN IF NOT EXISTS agent TEXT NOT NULL DEFAULT 'claude';
+-- What the reply was made of besides its text: the sub-agent fan-out, and
+-- (joined in on read) the tool calls. Stored so reopening a conversation shows
+-- the same thing it showed while it ran, instead of text with the work removed.
+ALTER TABLE turns ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{{}}'::jsonb;
+-- Handoff briefs read the newest turns of one thread (see
+-- packages/orchestrator/handoff.py), which is a different access pattern
+-- from the embedding index and needs its own.
+CREATE INDEX IF NOT EXISTS turns_thread_created_idx ON turns (thread_id, created_at DESC);
 """
 
 

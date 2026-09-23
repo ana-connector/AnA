@@ -25,8 +25,16 @@ def _build_events() -> list[dict]:
     text = "pong"
     if os.environ.get("FAKE_CLAUDE_BIG_STDOUT_LINE"):
         text = "p" * 200_000 + "ong"  # well over the default 64KiB limit
+    partial = (
+        [
+            {"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": chunk}}}
+            for chunk in ("po", "ng")
+        ]
+        if os.environ.get("FAKE_CLAUDE_PARTIAL") else []
+    )
     return [
         {"type": "system", "subtype": "init", "session_id": SESSION_ID},
+        *partial,
         {
             "type": "assistant",
             "message": {"content": [{"type": "text", "text": text}]},

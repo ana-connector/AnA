@@ -1,0 +1,11 @@
+# Scrapes ANA's own /metrics. Everything else on this box is out of scope:
+# the roadmap asks for agent-orchestration visibility, not host monitoring.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: ana-server
+    metrics_path: /metrics
+    static_configs:
+      # Container-network name and port, not the published 8100.
+      - targets: ["server:8000"]

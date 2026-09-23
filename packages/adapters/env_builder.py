@@ -35,6 +35,43 @@ class EnvBuilder:
         return env
 
 
+def build_codex_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a `codex` CLI subprocess. Codex authenticates from
+    ~/.codex (mounted into the container), so unlike the Claude adapter there
+    are no keys to inject -- but the same DATABASE_URL strip applies: the
+    auto-approved agent subprocess must not be handed working credentials to
+    ANA's own memory database (see EnvBuilder.build)."""
+    env = dict(base_env if base_env is not None else os.environ)
+    env.pop("DATABASE_URL", None)
+    return env
+
+
+def with_gate(env: dict[str, str], gate_url: str, token: str) -> dict[str, str]:
+    """Adds the gate coordinates the PreToolUse hook needs. The hook runs
+    inside the CLI subprocess, so this environment is the only channel that
+    tells it which conversation it is screening for."""
+    env = dict(env)
+    env["ANA_GATE_URL"] = gate_url
+    env["ANA_GATE_TOKEN"] = token
+    return env
+
+
+def default_codex_model_from_settings() -> str | None:
+    """Reads CODEX_MODEL from the environment. None means: let the codex CLI
+    use its own default (no --model flag passed)."""
+    return os.environ.get("CODEX_MODEL") or None
+
+
+def default_codex_sandbox_from_settings() -> str | None:
+    """Reads CODEX_SANDBOX from the environment. None means: pass
+    --dangerously-bypass-approvals-and-sandbox, matching the Claude
+    adapter's --dangerously-skip-permissions."""
+    sandbox = os.environ.get("CODEX_SANDBOX") or None
+    if sandbox and sandbox not in ("read-only", "workspace-write", "danger-full-access"):
+        raise ValueError(f"unknown codex sandbox mode: {sandbox!r}")
+    return sandbox
+
+
 def default_mode_from_settings(default: str = "api") -> str:
     mode = os.environ.get("CLAUDE_AUTH_MODE", default)
     return mode if mode in ("pro", "api") else default

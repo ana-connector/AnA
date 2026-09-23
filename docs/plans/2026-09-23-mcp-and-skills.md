@@ -1,0 +1,131 @@
+# ANA — MCP & Skills (roadmap stage 6)
+
+Date: 2026-09-23
+Status: implemented
+
+## Goal
+
+Roadmap stage 6, as written: reuse existing open-source MCP servers
+(① Git/GitHub, ② Postgres) instead of writing our own, define skills as YAML
+validated by Pydantic, and partition MCP access by agent role.
+
+Built additively while other work was in flight on the same tree, so the
+footprint in existing files is deliberately tiny — everything else is new
+modules (see "Blast radius" below).
+
+## Design
+
+### MCP: config decides, the gate enforces
+
+```
+config/mcp.yaml ──► packages/mcp/registry.py ──► packages/mcp/wiring.py
+                         (role scoping)              │
+                                                     ├─► launcher.py  (one sh script + env file per server)
+                                                     ├─► config_writer.py
+                                                     │     ├─ claude: --mcp-config <file> --strict-mcp-config
+                                                     │     └─ codex:  -c mcp_servers.<n>.command="..."
+                                                     └─► build_adapter() / build_codex_adapter()
+
+apps/server/app/gate.py ──► packages/mcp/scope.py   (a call outside the role's scope is denied + audited)
+```
+
+- **The registry is a file.** `config/mcp.yaml` is re-read whenever its mtime
+  changes, the same contract `config/governance.yaml` and `config/routing.yaml`
+  already use. Adding a server is an edit, not a restart.
+- **The lead gets no MCP servers at all.** It plans and delegates; the gate
+  already refuses it every tool call but the delegation ones. Servers are
+  scoped `roles: [worker]`.
+- **`--strict-mcp-config` is not optional.** Without it the Claude CLI also
+  loads whatever MCP servers the host user configured for themselves, and the
+  role scoping would be advisory rather than enforced.
+- **Secrets never reach argv.** Codex takes MCP config as `-c` overrides,
+  which land in the command line where `ps` inside the workspace container
+  shows them to the agent the secret is being kept from. So both CLIs are
+  pointed at a generated launcher script (`$ANA_STATE_DIR/mcp/<name>`, 0700)
+  that sources a sibling `<name>.env` (0600). The state directory sits outside
+  the session workspace, so an agent reading those files trips the gate's
+  existing workspace-escape rule.
+- **The Postgres server gets the DSN the agent does not.** Stage 2 strips
+  `DATABASE_URL` from every agent subprocess on purpose; the server's own
+  environment carries it, and `--access-mode=restricted` keeps it to reads.
+- **A server that cannot run is skipped, not fatal.** Missing executable,
+  missing secret, disabled, out of scope — each becomes a reason string shown
+  at `GET /mcp/servers`. The availability probe is skipped when the CLI runs
+  inside a workspace container, where the container's PATH is what counts.
+
+### Skills: a catalog, not a dispatcher
+
+`packages/skills/library/*.yaml`, validated by Pydantic
+(`packages/skills/models.py`), loaded with user overrides from
+`$ANA_STATE_DIR/skills/`, and rendered into the agent's system prompt as a
+one-line-per-skill catalog (`packages/skills/catalog.py`).
+
+Four shipped skills: `git-commit`, `db-inspect` (postgres), `github-pr`
+(github), `code-review` (no MCP server needed).
+
+- **Validation is strict.** `extra: forbid` on every model, kebab-case names,
+  and instructions may not reference an input nobody declared — a skill that
+  fails validation is dropped with a message at `GET /skills` rather than
+  shipped into a prompt where the failure looks like the model ignoring us.
+- **`skill.render(inputs)` validates against a model built from the YAML.**
+  That is what stage 6's "Pydantic으로 입출력 스키마 검증" buys: the arguments
+  are checked before they are pasted into a prompt.
+- **A skill is only offered when its MCP servers are actually scoped.**
+  Offering `git-commit` to an agent with no git server walks it into a gate
+  denial; the catalog filters on the resolved server names.
+
+## Blast radius (parallel work was in flight)
+
+New: `config/mcp.yaml`, `packages/mcp/*`, `packages/skills/*`,
+`apps/server/app/capabilities.py`, six test files.
+
+Touched, minimally:
+
+| File | Change |
+|---|---|
+| `packages/adapters/claude_code.py` | `mcp_config_path` param; 2 argv lines |
+| `packages/adapters/codex.py` | `mcp_args` param; 1 argv line |
+| `apps/server/app/websocket.py` | 2 imports; one `claude_mcp()`/`codex_mcp()` call per factory |
+| `apps/server/app/gate.py` | 2 imports; one scope check block |
+| `apps/server/app/main.py` | 1 import; 1 `include_router` |
+| `apps/server/Dockerfile` | install `uv` (for `uvx`) |
+
+No reflow, no restructuring, no shared signature changed in a
+backwards-incompatible way — every new parameter is keyword-optional.
+
+## Switches
+
+- `ANA_MCP=off` — no MCP servers for anyone (the escape hatch
+  `ANA_GOVERNANCE=off` gives the gate).
+- `ANA_MCP_REGISTRY` — an alternative `mcp.yaml`.
+- `ANA_SKILLS_DIR` — where user skills live (default `$ANA_STATE_DIR/skills`).
+
+## Verification
+
+`417 passed` (full suite, 2026-09-23), including 51 new tests:
+
+- `test_mcp_registry.py` — role scoping, placeholders, skip reasons.
+- `test_mcp_wiring.py` — launcher secrecy and quoting, both CLIs' argv.
+- `test_mcp_scope.py` — gate-side scope decisions, both tool-name forms.
+- `test_mcp_gate.py` — the endpoint: allowed, denied, audited.
+- `test_skills.py` — schema validation, rendering, catalog filtering.
+- `test_capabilities_endpoint.py` — `/mcp/servers`, `/skills`.
+
+## Not done / known gaps
+
+- **The servers themselves are unverified against a live run.** `uvx` is not
+  installed on this host, so `git` and `postgres` currently resolve to
+  "실행 파일 없음" outside Docker; the image now installs `uv`, but no turn has
+  been run end-to-end through an MCP tool call yet. That is the first thing to
+  check when the stack is next brought up.
+- **Codex MCP tool naming is assumed, not observed.** `packages/mcp/scope.py`
+  recognizes both `mcp__server__tool` and the punctuation-stripped form; if
+  Codex reports something else, a scoped call could be read as a native tool.
+  Worth one live check against `codex exec --json`.
+- **No UI.** `/mcp/servers` and `/skills` are read-only endpoints; the settings
+  page does not show them yet.
+- **The planner does not name skills.** Agents pick a skill from the catalog
+  themselves; `parse_plan()` has no `skill` field, which would be the natural
+  next slice.
+- **`packages/mcp_servers/` (custom in-house servers) is not started** — the
+  roadmap says to build one only when no open-source server exists.
