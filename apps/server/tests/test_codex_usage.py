@@ -133,3 +133,37 @@ def test_claude_reset_times_are_kept_too(tmp_path, monkeypatch):
     assert five["source"] == "reported"
     assert five["resets_at"] == pytest.approx(resets_at)
     assert tracker.snapshot(now=resets_at + 1)["claude"]["windows"][0]["source"] == "estimated"
+
+
+def test_reported_figures_survive_a_restart(tmp_path, monkeypatch):
+    """They arrive only while a turn runs — the Claude CLI states them on its
+    stream and nowhere else — so without persistence a restart left the bar
+    reading "estimated 0%" until someone happened to run that CLI again."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    resets_at = time.time() + 3600
+    tracker = UsageTracker()
+    tracker.record_reported(
+        "claude",
+        {"unifiedWindows": {"five_hour": {"utilization": 0.42, "resetsAt": resets_at}}},
+    )
+
+    restarted = UsageTracker()
+
+    five = restarted.snapshot()["claude"]["windows"][0]
+    assert five["source"] == "reported"
+    assert five["utilization"] == pytest.approx(0.42)
+
+
+def test_a_stored_figure_past_its_reset_is_dropped_on_load(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    (tmp_path / "usage-reported.json").write_text(
+        json.dumps(
+            {"claude": {"five_hour": {"utilization": 0.9, "resets_at": time.time() - 1}}}
+        ),
+        encoding="utf-8",
+    )
+
+    five = UsageTracker().snapshot()["claude"]["windows"][0]
+
+    # The window has reset; the number describes one that no longer exists.
+    assert five["source"] == "estimated"
