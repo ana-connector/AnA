@@ -31,6 +31,9 @@ WORKER = "worker"
 EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),
     "codex": ("minimal", "low", "medium", "high"),
+    # Kimi has no effort flag at all; ANA writes the level into the prepared
+    # home's config.toml, which is why each level gets its own home.
+    "kimi": ("low", "high", "max"),
 }
 
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"

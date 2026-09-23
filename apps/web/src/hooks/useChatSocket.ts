@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Agent } from "@/components/ui/agent-toggle";
+import { AGENTS, type Agent } from "@/components/ui/agent-toggle";
 import { fetchThreadHistory, wsBase } from "@/lib/api";
 
 export type ChatEvent =
@@ -169,7 +169,7 @@ function appendTool(blocks: MessageBlock[], tool: ToolEvent): MessageBlock[] {
 }
 
 function isAgentName(value: string): value is Agent {
-  return value === "claude" || value === "codex";
+  return (AGENTS as readonly string[]).includes(value);
 }
 
 export function useChatSocket() {
@@ -542,8 +542,10 @@ export function useChatSocket() {
           // The next text chunk belongs to the retry, not to the partial reply
           // that was streaming before the switch.
           agentMessageIndexRef.current = null;
-          if (event.to_rung?.startsWith("codex")) pendingAgentRef.current = "codex";
-          else if (event.to_rung?.startsWith("claude")) pendingAgentRef.current = "claude";
+          // A rung label is "<agent>" or "<agent>/<mode>", so the agent is
+          // whatever precedes the slash.
+          const rungAgent = event.to_rung?.split("/")[0];
+          if (rungAgent && isAgentName(rungAgent)) pendingAgentRef.current = rungAgent;
           return;
         }
 

@@ -42,6 +42,32 @@ def write_claude_mcp_config(
     return path
 
 
+def write_kimi_mcp_config(
+    servers: Sequence[ResolvedServer],
+    state_dir: os.PathLike | str,
+    kimi_home: os.PathLike | str,
+) -> Path:
+    """Writes `$KIMI_CODE_HOME/mcp.json`, which Kimi reads at session start.
+
+    Same `mcpServers` shape as the Claude config file, so the launcher
+    indirection carries over unchanged. Kimi has no --strict flag, but ANA's
+    prepared home *is* the user level: nothing else is loaded from it, and a
+    project-level `.kimi-code/mcp.json` inside the workspace still has to get
+    past the gate's scope check."""
+    launchers = write_launchers(servers, state_dir)
+    payload = {
+        "mcpServers": {
+            server.name: {"command": str(launchers[server.name]), "args": []}
+            for server in servers
+        }
+    }
+    path = Path(kimi_home)
+    path.mkdir(parents=True, exist_ok=True)
+    target = path / "mcp.json"
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return target
+
+
 def codex_mcp_args(
     servers: Sequence[ResolvedServer], state_dir: os.PathLike | str
 ) -> list[str]:

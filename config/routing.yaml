@@ -34,6 +34,13 @@ lead:
   - agent: claude
     model: opus
     effort: high
+  # A Kimi rung would go here — it is the third CLI ANA can run, selectable in
+  # the composer and the last failover rung, but nothing routes to it
+  # automatically until this file says so:
+  #
+  #   - agent: kimi
+  #     model: kimi-code/k3
+  #     effort: high
 
 # Sub-agents do the actual work (files, commands, edits), so they get the
 # models that are good at it, with the same "spend the cheap window first"

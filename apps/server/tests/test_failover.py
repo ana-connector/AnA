@@ -196,7 +196,7 @@ async def test_chain_exhaustion_reports_the_last_error(db_pool):
     graph = build_graph(InMemorySaver())
     frames, _ = await _run(graph, _config(db_pool, factory, "fo-4"))
 
-    assert len([f for f in frames if f["type"] == "failover"]) == 2  # pro→api→codex
+    assert len([f for f in frames if f["type"] == "failover"]) == 3  # pro→api→codex→kimi
     error = next(f for f in frames if f["type"] == "error")
     assert "usage limit" in error["text"]
 

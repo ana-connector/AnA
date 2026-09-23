@@ -85,6 +85,7 @@ def default_auth_mounts() -> tuple[str, ...]:
         (os.environ.get("ANA_HOST_CLAUDE_DIR"), "/home/ana/.claude"),
         (os.environ.get("ANA_HOST_CLAUDE_JSON"), "/home/ana/.claude.json"),
         (os.environ.get("ANA_HOST_CODEX_DIR"), "/home/ana/.codex"),
+        (os.environ.get("ANA_HOST_KIMI_DIR"), "/home/ana/.kimi-code"),
     )
     return tuple(f"{host}:{inside}" for host, inside in pairs if host)
 

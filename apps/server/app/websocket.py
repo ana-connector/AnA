@@ -11,22 +11,30 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from packages.adapters.claude_code import ClaudeCodeAdapter, supports_permission_prompts
 from packages.adapters.codex import CodexAdapter
+from packages.adapters.kimi import KimiAdapter, default_executable as kimi_executable
 from packages.adapters.env_builder import (
     EnvBuilder,
     build_codex_env,
+    build_kimi_env,
     default_codex_effort_from_settings,
     default_codex_model_from_settings,
     default_codex_sandbox_from_settings,
     default_effort_from_settings,
+    default_kimi_effort_from_settings,
+    default_kimi_model_from_settings,
     default_mode_from_settings,
     default_model_from_settings,
     with_gate,
 )
 from packages.adapters.transcript import TranscriptLogger
-from packages.governance.cli_config import prepare_codex_home, write_claude_settings
+from packages.governance.cli_config import (
+    prepare_codex_home,
+    prepare_kimi_home,
+    write_claude_settings,
+)
 from packages.governance.secrets import load_secrets
 from packages.governance.subagent_scope import Scope, with_instructions
-from packages.mcp.wiring import claude_mcp, codex_mcp
+from packages.mcp.wiring import claude_mcp, codex_mcp, kimi_mcp
 from packages.skills.catalog import with_catalog
 from packages.governance.workspace import session_workspace, workspace_root
 from packages.orchestrator.containers import (
@@ -60,6 +68,9 @@ def allowed_origins() -> set[str]:
 ANA_STATE_DIR = os.environ.get("ANA_STATE_DIR", os.path.expanduser("~/.ana"))
 GATE_URL = os.environ.get("ANA_GATE_URL", "http://127.0.0.1:8000")
 CODEX_SOURCE_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
+# The user's own Kimi data directory, which ANA copies its config from and
+# links credentials to (see prepare_kimi_home).
+KIMI_SOURCE_HOME = os.environ.get("KIMI_CODE_HOME", os.path.expanduser("~/.kimi-code"))
 # Image and network a workspace container gets when it does not name its own.
 # The server image already carries both CLIs, so it is the sane default.
 CONTAINER_IMAGE_DEFAULT = os.environ.get("ANA_WORKSPACE_IMAGE", "ana-server:latest")
@@ -218,6 +229,80 @@ def _drop_finished_workers(adapters: dict) -> None:
             adapters.pop(key, None)
 
 
+def build_kimi_adapter(
+    gate_token: Optional[str] = None,
+    extra_env: Optional[dict] = None,
+    workspace_dir: Optional[str] = None,
+    command_prefix: Optional[list] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+    role: str = "lead",
+    scope: Optional[Scope] = None,
+) -> KimiAdapter:
+    """Factory mirroring the other two, for the `kimi` CLI.
+
+    Kimi keeps everything in a data directory rather than in flags: hooks and
+    the effort level live in its `config.toml`, MCP servers in its `mcp.json`.
+    ANA therefore prepares a home per effort level — the level cannot be
+    passed per run, so two concurrent sub-agents on different levels would
+    otherwise rewrite one file under each other."""
+    env = build_kimi_env()
+    env.update(extra_env or {})
+    env["ANA_GATE_ROLE"] = role
+    env.update((scope or Scope()).to_env())
+    resolved_effort = effort or default_kimi_effort_from_settings()
+    home = prepare_kimi_home(
+        os.path.join(ANA_STATE_DIR, "kimi_home", resolved_effort or "default"),
+        KIMI_SOURCE_HOME,
+        python_executable=sys.executable,
+        effort=resolved_effort,
+    )
+    env["KIMI_CODE_HOME"] = str(home)
+    if gate_token is not None and gate_enabled():
+        env = with_gate(env, GATE_URL, gate_token)
+    else:
+        # Without a gate the hook would deny every call fail-closed, which for
+        # a deliberately ungoverned run is not what the operator asked for.
+        home = prepare_kimi_home(
+            os.path.join(ANA_STATE_DIR, "kimi_home", "ungated"),
+            KIMI_SOURCE_HOME,
+            python_executable=sys.executable,
+            effort=resolved_effort,
+        )
+        _strip_hooks(home)
+        env["KIMI_CODE_HOME"] = str(home)
+    mcp_servers = kimi_mcp(
+        role,
+        str(home),
+        env=env,
+        workspace_dir=workspace_dir or WORKSPACE_DIR,
+        check_command=not command_prefix,
+    )
+    return KimiAdapter(
+        workspace_dir=workspace_dir or WORKSPACE_DIR,
+        env=env,
+        executable=kimi_executable(),
+        model=model or default_kimi_model_from_settings(),
+        command_prefix=command_prefix,
+        system_prompt=with_instructions(
+            with_catalog(system_prompt_for("kimi", role), role, mcp_servers), scope
+        ),
+    )
+
+
+def _strip_hooks(home) -> None:
+    """Removes ANA's hook entries from a prepared Kimi config."""
+    config = os.path.join(str(home), "config.toml")
+    try:
+        with open(config, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return
+    head = text.split("[[hooks]]")[0]
+    with open(config, "w", encoding="utf-8") as handle:
+        handle.write(head)
+
+
 def build_transcript() -> TranscriptLogger:
     """Factory mirroring build_adapter(), rather than constructing
     TranscriptLogger(WORKSPACE_DIR) inline in chat_ws(): WORKSPACE_DIR is
@@ -247,7 +332,7 @@ class ClientFrame:
 def _parse_client_frame(data: str) -> ClientFrame:
     """Parses one client frame.
 
-    The protocol is JSON — {"prompt": "...", "agent": "claude"|"codex"} for a
+    The protocol is JSON — {"prompt": ..., "agent": "claude"|"codex"|"kimi"} for a
     turn, {"type": "cancel"} to stop the in-flight one, {"type": "approval",
     "request_id": ..., "decision": "allow"|"deny"} to answer the governance
     gate — but a bare text frame is still accepted as a prompt, so clients
@@ -452,8 +537,33 @@ async def chat_ws(websocket: WebSocket) -> None:
                     else None
                 ),
             )
+            kimi_adapter = build_kimi_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                # Kimi reads hooks, effort and MCP servers out of its home, so
+                # the container needs to see the same prepared directory.
+                command_prefix=(
+                    exec_prefix(
+                        container_spec,
+                        env={
+                            "ANA_GATE_URL": CONTAINER_GATE_URL,
+                            "ANA_GATE_TOKEN": gate_session.token,
+                            "KIMI_CODE_HOME": os.path.join(
+                                ANA_STATE_DIR,
+                                "kimi_home",
+                                default_kimi_effort_from_settings() or "default",
+                            ),
+                        },
+                    )
+                    if container_spec is not None
+                    else None
+                ),
+            )
             transcript = build_transcript()
-            adapters.update({"claude": adapter, "codex": codex_adapter})
+            adapters.update(
+                {"claude": adapter, "codex": codex_adapter, "kimi": kimi_adapter}
+            )
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await websocket.send_json(
@@ -518,6 +628,16 @@ async def chat_ws(websocket: WebSocket) -> None:
                     scope=scope,
                 )
                 if agent == "codex"
+                else build_kimi_adapter(
+                    gate_session.token,
+                    extra_env=secret_env,
+                    workspace_dir=workspace_dir,
+                    model=model,
+                    effort=effort,
+                    role="worker",
+                    scope=scope,
+                )
+                if agent == "kimi"
                 else build_adapter(
                     gate_session.token,
                     extra_env=secret_env,

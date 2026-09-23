@@ -46,6 +46,32 @@ def build_codex_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def build_kimi_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a `kimi` CLI subprocess.
+
+    Kimi authenticates from its data directory (KIMI_CODE_HOME), not from
+    environment variables — its own docs are explicit that KIMI_API_KEY and
+    friends are *not* read from the shell — so there is nothing to inject
+    here. The DATABASE_URL strip applies for the same reason as the other
+    two: an agent subprocess has no business holding credentials to ANA's own
+    memory database."""
+    env = dict(base_env if base_env is not None else os.environ)
+    env.pop("DATABASE_URL", None)
+    return env
+
+
+def default_kimi_model_from_settings() -> str | None:
+    """Reads KIMI_MODEL. None means: no --model flag, so the CLI uses
+    `default_model` from its config."""
+    return os.environ.get("KIMI_MODEL") or None
+
+
+def default_kimi_effort_from_settings() -> str | None:
+    """Reads KIMI_EFFORT. Kimi has no effort flag — the value is written into
+    the prepared home's config.toml instead (see prepare_kimi_home)."""
+    return os.environ.get("KIMI_EFFORT") or None
+
+
 def with_gate(env: dict[str, str], gate_url: str, token: str) -> dict[str, str]:
     """Adds the gate coordinates the PreToolUse hook needs. The hook runs
     inside the CLI subprocess, so this environment is the only channel that

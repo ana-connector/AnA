@@ -46,6 +46,11 @@ services:
       # same for codex: auth lives here, and `codex exec resume <id>` reads
       # the session files `codex exec` wrote on the previous turn
       - ${HOME}/.codex:/home/ana/.codex
+      # Kimi keeps everything in one data directory: ANA copies its config
+      # from here (adding the gate hook) and symlinks `credentials/` back, so
+      # an OAuth refresh is shared rather than diverging into two half-valid
+      # copies. Read-write for that refresh.
+      - ${HOME}/.kimi-code:/home/ana/.kimi-code
       # Keeps the fastembed model out of a re-download on every restart.
       - ana_model_cache:/home/ana/.cache
       # Shared with per-workspace containers: the CLI settings file carrying
@@ -95,6 +100,7 @@ services:
       - ANA_HOST_CLAUDE_DIR=${HOME}/.claude
       - ANA_HOST_CLAUDE_JSON=${HOME}/.claude.json
       - ANA_HOST_CODEX_DIR=${HOME}/.codex
+      - ANA_HOST_KIMI_DIR=${HOME}/.kimi-code
       # Tracing target. Unset any of these and the tracer becomes a no-op.
       - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse:3000}
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-ana-dev}

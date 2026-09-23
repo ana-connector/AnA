@@ -73,7 +73,7 @@ def test_chain_tries_the_other_auth_mode_before_the_other_cli():
 
     # The two Claude modes bill against different buckets, so re-auth is the
     # cheapest escape; switching CLI costs the conversation its session.
-    assert [r.label for r in chain] == ["claude/api", "claude/pro", "codex"]
+    assert [r.label for r in chain] == ["claude/api", "claude/pro", "codex", "kimi"]
 
 
 def test_chain_from_pro_mode():
@@ -81,12 +81,13 @@ def test_chain_from_pro_mode():
         "claude/pro",
         "claude/api",
         "codex",
+        "kimi",
     ]
 
 
 def test_chain_from_codex_falls_back_to_claude():
     # Nothing to re-auth on the Codex side.
-    assert [r.label for r in build_chain("codex", "pro")] == ["codex", "claude/pro"]
+    assert [r.label for r in build_chain("codex", "pro")] == ["codex", "claude/pro", "kimi"]
 
 
 def test_next_rung_skips_what_was_tried():
@@ -94,7 +95,8 @@ def test_next_rung_skips_what_was_tried():
 
     assert next_rung(chain, ["claude/api"]).label == "claude/pro"
     assert next_rung(chain, ["claude/api", "claude/pro"]).label == "codex"
-    assert next_rung(chain, ["claude/api", "claude/pro", "codex"]) is None
+    assert next_rung(chain, ["claude/api", "claude/pro", "codex"]).label == "kimi"
+    assert next_rung(chain, ["claude/api", "claude/pro", "codex", "kimi"]) is None
 
 
 def test_breaker_state_expires_after_the_cooldown():

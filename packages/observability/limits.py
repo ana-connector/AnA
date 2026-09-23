@@ -16,6 +16,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
+from packages.orchestrator.handoff import AGENTS
+
 FIVE_HOURS = 5 * 60 * 60
 SEVEN_DAYS = 7 * 24 * 60 * 60
 
@@ -106,7 +108,7 @@ class UsageTracker:
         happened to start at that moment. The provider's windows reset at a
         fixed instant — a weekly one on a particular day — so when the user
         knows it, that instant is what the estimate expires at."""
-        if agent not in ("claude", "codex") or window not in ("five_hour", "seven_day"):
+        if agent not in AGENTS or window not in ("five_hour", "seven_day"):
             raise ValueError("unknown agent or window")
         if utilization is not None and not 0 <= utilization <= 1:
             raise ValueError("utilization must be between 0 and 1")
@@ -232,7 +234,11 @@ class UsageTracker:
 
     def snapshot(self, *, now: Optional[float] = None) -> dict:
         now = time.time() if now is None else now
-        agents = sorted(set(self._samples) | set(self._reported) | set(self._manual))
+        # Every CLI ANA can route to, whether or not it has been used yet: a
+        # status bar that shows only the agents with data makes "nothing here"
+        # and "nothing spent" look the same, and the row a user checks before
+        # switching agents is exactly the one that would be missing.
+        agents = sorted(set(AGENTS) | set(self._samples) | set(self._reported) | set(self._manual))
         result = {}
         for agent in agents:
             five_reported = self._reported_window(agent, "five_hour", now)
