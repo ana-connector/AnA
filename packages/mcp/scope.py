@@ -33,11 +33,19 @@ def server_for_tool(tool_name: str, known_servers: Iterable[str]) -> Optional[st
     match = MCP_TOOL_RE.match(tool_name)
     if match:
         return match.group("server")
+    known = list(known_servers)
+    # `<server>__<tool>`, without the mcp prefix. Verified for Claude
+    # (mcp__git__git_log); Codex's exact hook spelling is unconfirmed, and a
+    # form this check missed would fall through to the command rules as if it
+    # were a native tool — a scope bypass rather than a visible failure.
+    head, separator, rest = tool_name.partition("__")
+    if separator and rest and head in known:
+        return head
     normalized = _normalize(tool_name)
     if not normalized.startswith("mcp"):
         return None
     remainder = normalized[3:]
-    for server in known_servers:
+    for server in known:
         key = _normalize(server)
         if key and remainder.startswith(key) and len(remainder) > len(key):
             return server
