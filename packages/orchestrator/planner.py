@@ -29,7 +29,7 @@ PLAN_INSTRUCTIONS = """\
 여러 갈래로 나눠 병렬 처리하는 게 확실히 이득인 요청이면:
 {"mode": "delegate", "tasks": [
   {"title": "짧은 제목", "agent": "codex", "prompt": "그 작업만 수행하도록 쓴 완결된 지시",
-   "scope": {"mode": "write", "paths": []}}
+   "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"}
 ]}
 
 규칙:
@@ -39,6 +39,11 @@ PLAN_INSTRUCTIONS = """\
   - mode: "read"면 파일 수정·명령 실행이 차단된다. 조사/리뷰/설명 작업은 read로 줘라.
   - paths: 워크스페이스 기준 상대 경로 목록. 적으면 그 안에서만 작업할 수 있다.
   - 필요 이상으로 넓게 주지 마라. 좁게 준 스코프는 게이트가 강제한다.
+- verify는 그 작업이 끝났음을 증명할 셸 명령이다(생략 가능). ANA가 직접 실행하고,
+  실패하면 실패 출력을 붙여 그 작업을 한 번 다시 시킨다. 하위 에이전트의 "다 했다"는
+  말은 검증 결과를 이기지 못한다.
+  - 코드 변경이면 테스트/빌드/린트 명령을 써라. 없으면 비워라(없는 명령을 지어내지 마라).
+  - 조사·설명 작업에는 붙이지 마라.
 - 작업은 최대 %(max_tasks)d개. 서로 독립적이어야 한다(동시에 실행된다).
 - 각 prompt는 그 작업만 보고도 수행 가능하도록 자족적으로 써라.
 - 나눌 이유가 없으면 주저 말고 direct를 골라라.
@@ -51,6 +56,9 @@ SYNTHESIS_INSTRUCTIONS = """\
 아래는 네가 세운 계획에 따라 서브에이전트들이 병렬로 수행한 결과다.
 이걸 종합해서 사용자에게 줄 최종 답변을 작성해라. 실패한 작업이 있으면 숨기지 말고
 무엇이 안 됐는지 밝혀라.
+
+괄호 안의 검증/병합 결과는 ANA가 직접 확인한 사실이다. 하위 에이전트가 "다 했다"고
+써도 검증이 실패했으면 그 작업은 실패한 것으로 보고해라.
 
 원래 요청:
 %(prompt)s
@@ -69,6 +77,11 @@ class PlanTask:
     # What the lead is willing to let this task do (roadmap stage 3's
     # "권한 스코프"). Enforced at the gate, not by the CLI.
     scope: Scope = field(default_factory=Scope)
+    # A shell command that proves the task is done. ANA runs it itself after
+    # the worker finishes (packages/orchestrator/verification.py); empty means
+    # there is nothing to check, which is the honest state for a task whose
+    # output is prose.
+    verify: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,10 +111,32 @@ def build_planning_prompt(prompt: str, limit: Optional[int] = None) -> str:
 
 def build_synthesis_prompt(prompt: str, results: list[dict]) -> str:
     rendered = "\n\n".join(
-        f"[{r['title']} · {r['agent']} · {r['status']}]\n{(r.get('output') or '').strip()[:4000]}"
+        f"[{r['title']} · {r['agent']} · {r['status']}]{_verdict(r)}\n"
+        f"{(r.get('output') or '').strip()[:4000]}"
         for r in results
     )
     return SYNTHESIS_INSTRUCTIONS % {"prompt": prompt, "results": rendered or "(결과 없음)"}
+
+
+def _verdict(result: dict) -> str:
+    """What ANA itself observed about a task, appended to the worker's own
+    words. A sub-agent that says "done" after a failing test is reporting a
+    claim; this line is the fact, and the lead is told to prefer it."""
+    parts = []
+    check = result.get("verification") or {}
+    if check.get("ran"):
+        parts.append(
+            f"검증 {'통과' if check.get('passed') else '실패'}: {check.get('command', '')}"
+            + ("" if check.get("passed") else f" — {check.get('reason', '')}")
+        )
+    elif check.get("reason"):
+        parts.append(f"검증 실행 못함: {check['reason']}")
+    merge = result.get("merge") or {}
+    if merge and not merge.get("merged", True):
+        parts.append(f"병합 충돌 — 결과는 {merge.get('branch', '')} 브랜치에 있음")
+    elif merge.get("empty"):
+        parts.append("변경 없음")
+    return f" ({'; '.join(parts)})" if parts else ""
 
 
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
@@ -158,6 +193,9 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
                 title=str(raw.get("title") or f"작업 {index + 1}")[:80],
                 prompt=task_prompt.strip(),
                 scope=Scope.parse(raw.get("scope")),
+                verify=(raw.get("verify") or "").strip()[:500]
+                if isinstance(raw.get("verify"), str)
+                else "",
                 # Client-of-the-model data: an invented agent name would
                 # otherwise pick a subprocess that does not exist.
                 agent=agent if agent in AGENTS else DEFAULT_AGENT,

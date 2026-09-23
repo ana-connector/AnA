@@ -28,6 +28,10 @@ class TaskResult:
     error: str = ""
     cost_usd: float = 0.0
     tokens: int = 0
+    # What ANA checked after the worker said it was done, and what happened to
+    # its branch. Both are None when the task asked for neither.
+    verification: Optional[dict] = None
+    merge: Optional[dict] = None
 
     def as_dict(self) -> dict:
         return {
@@ -43,6 +47,8 @@ class TaskResult:
             "error": self.error,
             "cost_usd": self.cost_usd,
             "tokens": self.tokens,
+            "verification": self.verification,
+            "merge": self.merge,
         }
 
 
@@ -108,9 +114,24 @@ async def run_tasks(
                 result.output = run.output
                 result.cost_usd = run.cost_usd
                 result.tokens = run.tokens
+                result.verification = run.extras.get("verification")
+                result.merge = run.extras.get("merge")
                 if run.failed or run.error:
                     result.status = ERROR
                     result.error = run.error or "서브에이전트가 실패를 보고함"
+                elif result.verification and result.verification.get("ran") and not result.verification.get("passed"):
+                    # The worker's own summary does not decide this: ANA ran
+                    # the check and it failed, so the task failed.
+                    result.status = ERROR
+                    result.error = (
+                        f"검증 실패: {result.verification.get('command', '')} — "
+                        f"{result.verification.get('reason', '')}"
+                    )
+                elif result.merge and not result.merge.get("merged", True):
+                    result.status = ERROR
+                    result.error = (
+                        f"병합 충돌: 작업 결과는 {result.merge.get('branch', '')} 브랜치에 남아 있다"
+                    )
                 else:
                     result.status = DONE
             await notify(result)

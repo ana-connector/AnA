@@ -1,12 +1,15 @@
 """Workspaces: the folder ANA works in, and the one conversation that owns it."""
 from pathlib import Path
 
+import subprocess
+
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from apps.server.app.main import app
 from packages.orchestrator.workspaces import (
+    WorkspacePathError,
     create_workspace,
     ensure_workspace,
     forget_workspace,
@@ -200,3 +203,60 @@ def test_websocket_still_accepts_thread_id(client):
 
     assert frame["workspace_id"] == "legacy-one"
     assert client.get("/workspaces").json()["workspaces"][0]["id"] == "legacy-one"
+
+
+async def test_a_new_workspace_is_a_git_repository(workspace_pool, tmp_path, monkeypatch):
+    """Sub-agent isolation is a worktree per task, and a plain directory has
+    nothing to branch from — without this every worker would still share one
+    tree."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "root"))
+
+    workspace = await create_workspace(workspace_pool, name="git me")
+
+    assert (Path(workspace.path) / ".git").exists()
+    head = subprocess.run(
+        ["git", "log", "--oneline"], cwd=workspace.path, capture_output=True, text=True
+    )
+    assert "ANA: workspace created" in head.stdout
+
+
+async def test_an_adopted_repository_is_left_alone(workspace_pool, tmp_path):
+    """An existing project is someone else's repository; ANA registers a
+    pointer to it and restructures nothing."""
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-b", "trunk"], cwd=project, capture_output=True)
+
+    workspace = await create_workspace(workspace_pool, name="adopted", path=str(project))
+
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        cwd=workspace.path, capture_output=True, text=True,
+    )
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=workspace.path, capture_output=True, text=True
+    )
+    assert branch.stdout.strip() == "trunk"
+    # No ANA commit was added to someone else's repository.
+    assert log.stdout.strip() == ""
+
+
+async def test_git_init_can_be_switched_off(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "root"))
+    monkeypatch.setenv("ANA_WORKSPACE_GIT_INIT", "off")
+
+    workspace = await create_workspace(workspace_pool, name="plain")
+
+    assert not (Path(workspace.path) / ".git").exists()
+
+
+async def test_an_unreachable_path_is_refused_with_a_reason(workspace_pool, tmp_path):
+    """It used to be a bare 500, which reads as "ANA is broken" rather than
+    "that folder is not reachable from the server"."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o500)
+
+    with pytest.raises(WorkspacePathError) as caught:
+        await create_workspace(workspace_pool, name="nope", path=str(blocked / "child"))
+
+    assert "서버가 볼 수 있는 경로" in str(caught.value)

@@ -610,6 +610,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             model: Optional[str] = None,
             effort: Optional[str] = None,
             scope: Optional[Scope] = None,
+            worker_workspace: Optional[str] = None,
         ):
             """A fresh adapter per sub-agent task. The pre-built pair each hold
             one subprocess handle, so several concurrent workers sharing one
@@ -621,7 +622,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 build_codex_adapter(
                     gate_session.token,
                     extra_env=secret_env,
-                    workspace_dir=workspace_dir,
+                    workspace_dir=worker_workspace or workspace_dir,
                     model=model,
                     effort=effort,
                     role="worker",
@@ -631,7 +632,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 else build_kimi_adapter(
                     gate_session.token,
                     extra_env=secret_env,
-                    workspace_dir=workspace_dir,
+                    workspace_dir=worker_workspace or workspace_dir,
                     model=model,
                     effort=effort,
                     role="worker",
@@ -641,7 +642,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 else build_adapter(
                     gate_session.token,
                     extra_env=secret_env,
-                    workspace_dir=workspace_dir,
+                    workspace_dir=worker_workspace or workspace_dir,
                     model=model,
                     effort=effort,
                     role="worker",
@@ -659,6 +660,9 @@ async def chat_ws(websocket: WebSocket) -> None:
                 "adapter_factory": adapter_factory,
                 "worker_factory": worker_factory,
                 "claude_auth_mode": read_auth_mode(),
+                # Where this conversation works. The fan-out needs it to give
+                # each sub-agent its own git worktree under it.
+                "workspace_dir": workspace_dir,
                 "tracer": websocket.app.state.tracer,
                 "usage_tracker": websocket.app.state.usage_tracker,
                 # Kept alongside "adapters" for callers/tests that still wire a
