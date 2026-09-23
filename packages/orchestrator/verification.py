@@ -17,7 +17,9 @@ be a hole straight through the gate. Only a command the rules *allow* runs; an
 `ask` verdict is not a prompt anyone can answer here, so it is refused too.
 """
 import asyncio
+import contextlib
 import os
+import signal
 from dataclasses import dataclass
 from typing import Optional
 
@@ -91,26 +93,45 @@ async def verify(
         process = await asyncio.create_subprocess_shell(
             command,
             cwd=cwd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env={**os.environ, **(env or {})},
+            # Its own process group, so the timeout below can kill the whole
+            # tree. A test runner that spawns children of its own would
+            # otherwise survive the kill and hold the pipe open.
+            start_new_session=True,
         )
     except OSError as exc:
         return VerificationResult(
             ran=False, passed=False, command=command, reason=f"실행 실패: {exc}"
         )
 
+    # Read on a separate task and wait on the *process*, not on communicate():
+    # cancelling communicate() does not return until its pipe readers finish,
+    # which for a wedged command means not until the command exits — so the
+    # timeout waited exactly as long as the thing it was supposed to cut off.
+    reader = asyncio.create_task(process.stdout.read())
+    timed_out = False
     try:
-        output, _ = await asyncio.wait_for(
-            process.communicate(), timeout=timeout_seconds()
-        )
+        await asyncio.wait_for(process.wait(), timeout=timeout_seconds())
     except asyncio.TimeoutError:
-        process.kill()
+        timed_out = True
+        _kill_tree(process)
         await process.wait()
+
+    try:
+        output = await asyncio.wait_for(reader, timeout=5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        reader.cancel()
+        output = b""
+
+    if timed_out:
         return VerificationResult(
             ran=True,
             passed=False,
             command=command,
+            output=_tail(output.decode("utf-8", errors="replace").strip()),
             reason=f"{timeout_seconds():.0f}초 안에 끝나지 않음",
         )
 
@@ -122,6 +143,15 @@ async def verify(
         output=_tail(text),
         reason="" if process.returncode == 0 else f"종료 코드 {process.returncode}",
     )
+
+
+def _kill_tree(process) -> None:
+    """Kills the command and anything it started."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
 
 
 def retry_prompt(prompt: str, result: VerificationResult) -> str:

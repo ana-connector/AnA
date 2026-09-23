@@ -28,8 +28,11 @@ PLAN_INSTRUCTIONS = """\
 
 기계를 건드려야 하는 요청이면(파일 읽기/쓰기, 명령 실행, 코드 조사, 검색 등):
 {"mode": "delegate", "tasks": [
-  {"title": "짧은 제목", "agent": "codex", "prompt": "그 작업만 수행하도록 쓴 완결된 지시",
-   "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"}
+  {"id": "t1", "title": "짧은 제목", "agent": "codex", "needs": [],
+   "prompt": "그 작업만 수행하도록 쓴 완결된 지시",
+   "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"},
+  {"id": "t2", "title": "다음 단계", "agent": "codex", "needs": ["t1"],
+   "prompt": "t1 결과를 받아 수행할 지시"}
 ]}
 
 규칙:
@@ -44,7 +47,13 @@ PLAN_INSTRUCTIONS = """\
   말은 검증 결과를 이기지 못한다.
   - 코드 변경이면 테스트/빌드/린트 명령을 써라. 없으면 비워라(없는 명령을 지어내지 마라).
   - 조사·설명 작업에는 붙이지 마라.
-- 작업은 최대 %(max_tasks)d개. 서로 독립적이어야 한다(동시에 실행된다).
+- 작업은 최대 %(max_tasks)d개.
+- **needs로 순서를 표현해라.** needs가 빈 작업들은 동시에 시작하고, needs에 적은
+  작업이 모두 끝나야 그 작업이 시작한다. 앞 작업의 결과는 뒤 작업 지시에 자동으로
+  붙는다. 순서가 필요한 일을 한 작업으로 뭉치지 마라 — 단계마다 나누고 needs로 엮어라.
+  예: 계획(t1) → 백엔드(t2, needs t1) / 디자인(t3, needs t1) → 프론트(t4, needs t3)
+      → 배포(t5, needs t2·t4). t2와 t3는 병렬로 돈다.
+- id는 t1, t2 … 처럼 짧게. needs에는 이미 정의한 id만 쓴다(순환 금지).
 - 각 prompt는 그 작업만 보고도 수행 가능하도록 자족적으로 써라.
 - **direct는 "쉬운 요청"이 아니라 "도구가 필요 없는 요청"에 쓴다.** 너는 파일도
   못 읽고 명령도 못 돌린다. 파일 내용·실행 결과·저장소 상태가 답에 필요하면
@@ -83,6 +92,9 @@ class PlanTask:
     # What the lead is willing to let this task do (roadmap stage 3's
     # "권한 스코프"). Enforced at the gate, not by the CLI.
     scope: Scope = field(default_factory=Scope)
+    # Ids of the tasks that must finish first. Empty means "start immediately";
+    # everything with an empty `needs` runs in parallel.
+    needs: tuple[str, ...] = ()
     # A shell command that proves the task is done. ANA runs it itself after
     # the worker finishes (packages/orchestrator/verification.py); empty means
     # there is nothing to check, which is the honest state for a task whose
@@ -115,6 +127,33 @@ def build_planning_prompt(prompt: str, limit: Optional[int] = None) -> str:
     return PLAN_INSTRUCTIONS % {"max_tasks": limit or max_tasks(), "prompt": prompt}
 
 
+UPSTREAM_INSTRUCTIONS = """\
+[선행 작업 결과] 아래는 네 작업이 기다린 작업들이 실제로 만들어낸 결과다.
+여기 적힌 내용을 전제로 이어서 작업해라. 이미 끝난 일을 다시 하지 마라.
+
+%(results)s
+
+[네 작업]
+%(prompt)s
+"""
+
+
+def build_task_prompt(task, upstream: list[dict]) -> str:
+    """One task's instruction, with what it waited for in front of it.
+
+    A dependency that carried no output is still listed: "the previous step
+    produced nothing" is information, and a worker left to assume otherwise
+    invents the handover."""
+    if not upstream:
+        return task.prompt
+    rendered = "\n\n".join(
+        f"[{entry['title']} · {entry['status']}]\n"
+        f"{(entry.get('output') or '(출력 없음)').strip()[:3000]}"
+        for entry in upstream
+    )
+    return UPSTREAM_INSTRUCTIONS % {"results": rendered, "prompt": task.prompt}
+
+
 def build_synthesis_prompt(prompt: str, results: list[dict]) -> str:
     rendered = "\n\n".join(
         f"[{r['title']} · {r['agent']} · {r['status']}]{_verdict(r)}\n"
@@ -143,6 +182,24 @@ def _verdict(result: dict) -> str:
     elif merge.get("empty"):
         parts.append("변경 없음")
     return f" ({'; '.join(parts)})" if parts else ""
+
+
+def _parse_needs(raw, id_map: dict[str, str], own_id: str) -> tuple[str, ...]:
+    """Dependencies as ANA's own task ids.
+
+    Client-of-the-model data: an id nobody defined, or a task naming itself,
+    is dropped rather than failing the plan — a dependency ANA cannot resolve
+    would otherwise block the task forever."""
+    if not isinstance(raw, list):
+        return ()
+    needs = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        resolved = id_map.get(entry.strip())
+        if resolved and resolved != own_id and resolved not in needs:
+            needs.append(resolved)
+    return tuple(needs)
 
 
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
@@ -186,6 +243,16 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
         return Plan(note="위임 계획에 작업이 없어 단독 처리")
 
     tasks: list[PlanTask] = []
+    # The model's own ids, in order, so `needs` can be resolved to the ids ANA
+    # assigns. A plan that numbers its tasks differently than ANA does would
+    # otherwise wire the dependencies to the wrong ones.
+    id_map: dict[str, str] = {}
+    for index, raw in enumerate(raw_tasks[:cap]):
+        if isinstance(raw, dict):
+            claimed = raw.get("id")
+            if isinstance(claimed, str) and claimed.strip():
+                id_map[claimed.strip()] = f"t{index + 1}"
+
     for index, raw in enumerate(raw_tasks[:cap]):
         if not isinstance(raw, dict):
             continue
@@ -195,6 +262,7 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
         agent = raw.get("agent")
         tasks.append(
             PlanTask(
+                needs=_parse_needs(raw.get("needs"), id_map, f"t{index + 1}"),
                 id=f"t{index + 1}",
                 title=str(raw.get("title") or f"작업 {index + 1}")[:80],
                 prompt=task_prompt.strip(),

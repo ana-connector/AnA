@@ -37,6 +37,7 @@ from packages.orchestrator.routing import (
 )
 from packages.orchestrator.planner import (
     build_planning_prompt,
+    build_task_prompt,
     build_synthesis_prompt,
     max_tasks,
     parse_plan,
@@ -183,6 +184,7 @@ def _task_frame(task) -> dict:
         "prompt": task.prompt,
         "scope": task.scope.as_dict(),
         "verify": task.verify,
+        "needs": list(task.needs),
     }
 
 
@@ -515,7 +517,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             merge_lock = asyncio.Lock()
             workspace_dir = configurable.get("workspace_dir")
 
-            async def run_worker(task):
+            async def run_worker(task, upstream=()):
                 # Workers do the actual work, so they get the worker ladder —
                 # and they share the thread's gate token, so every tool call
                 # they make is screened exactly like the lead's would be. What
@@ -532,7 +534,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 )
                 cwd = tree.path if tree is not None else workspace_dir
                 base_prompt = build_handoff_prompt(
-                    task.prompt,
+                    build_task_prompt(task, [r.as_dict() for r in upstream]),
                     incoming_agent=task.agent,
                     previous_agent="lead",
                     turns=await recent_turns(pool, thread_id=thread_id, limit=2),

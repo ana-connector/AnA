@@ -42,12 +42,18 @@ async def test_an_ask_verdict_is_refused_too(tmp_path):
 
 
 async def test_a_hanging_command_is_killed(tmp_path, monkeypatch):
-    monkeypatch.setenv("ANA_VERIFY_TIMEOUT_SECONDS", "1")
+    import time
 
-    result = await verification.verify("sleep 30", str(tmp_path))
+    monkeypatch.setenv("ANA_VERIFY_TIMEOUT_SECONDS", "1")
+    started = time.monotonic()
+
+    result = await verification.verify("sleep 20", str(tmp_path))
 
     assert result.ran and not result.passed
     assert "초" in result.reason
+    # And it really stopped waiting — the point of the timeout is that a
+    # wedged check does not hold the turn for its own duration.
+    assert time.monotonic() - started < 10
 
 
 def test_the_retry_prompt_carries_the_evidence():
@@ -78,7 +84,7 @@ async def test_a_failed_check_fails_the_task_however_the_worker_wrote_it_up():
         '{"mode":"delegate","tasks":[{"title":"t","prompt":"p","verify":"pytest -q"}]}'
     )
 
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         return WorkerRun(
             output="다 고쳤습니다",
             extras={
@@ -100,7 +106,7 @@ async def test_a_failed_check_fails_the_task_however_the_worker_wrote_it_up():
 async def test_a_conflicted_merge_fails_the_task_and_names_the_branch():
     plan = parse_plan('{"mode":"delegate","tasks":[{"title":"t","prompt":"p"}]}')
 
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         return WorkerRun(
             output="했습니다",
             extras={"merge": {"merged": False, "branch": "ana/th-t1", "reason": "conflict"}},
@@ -117,7 +123,7 @@ async def test_a_passing_check_leaves_the_task_done():
         '{"mode":"delegate","tasks":[{"title":"t","prompt":"p","verify":"true"}]}'
     )
 
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         return WorkerRun(
             output="ok",
             extras={"verification": {"ran": True, "passed": True, "command": "true"}},

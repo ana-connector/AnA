@@ -41,6 +41,7 @@ export type ChatEvent =
         agent: string;
         prompt?: string;
         scope?: { mode: string; paths: string[] };
+        needs?: string[];
       }[];
       task?: SubagentTask;
       rule_id?: string | null;
@@ -100,7 +101,9 @@ export type SubagentTask = {
   /** The permission scope the lead gave this sub-agent, enforced at the gate
    *  (packages/governance/subagent_scope.py). Absent means unrestricted. */
   scope?: { mode: string; paths: string[] };
-  status: "running" | "done" | "error" | "timeout" | "unknown";
+  /** Task ids this one waited for. Empty means it started immediately. */
+  needs?: string[];
+  status: "running" | "done" | "error" | "timeout" | "blocked" | "unknown";
   error?: string;
   output?: string;
   cost_usd?: number;

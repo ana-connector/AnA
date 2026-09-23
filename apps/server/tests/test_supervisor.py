@@ -24,7 +24,7 @@ def _tasks(count: int) -> list[PlanTask]:
 
 @pytest.mark.asyncio
 async def test_all_tasks_run_and_report_output():
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         return WorkerRun(output=f"{task.id} done", cost_usd=0.01, tokens=10)
 
     results = await run_tasks(_tasks(3), run_worker)
@@ -34,6 +34,7 @@ async def test_all_tasks_run_and_report_output():
     assert summarize(results) == {
         "total": 3,
         "done": 3,
+        "blocked": 0,
         "failed": 0,
         "cost_usd": pytest.approx(0.03),
         "tokens": 30,
@@ -45,7 +46,7 @@ async def test_concurrency_is_capped():
     active = 0
     peak = 0
 
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
@@ -61,7 +62,7 @@ async def test_concurrency_is_capped():
 
 @pytest.mark.asyncio
 async def test_one_failing_task_does_not_sink_the_others():
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         if task.id == "t1":
             raise RuntimeError("worker exploded")
         return WorkerRun(output="ok")
@@ -75,7 +76,7 @@ async def test_one_failing_task_does_not_sink_the_others():
 
 @pytest.mark.asyncio
 async def test_worker_reported_failure_is_an_error_result():
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         return WorkerRun(output="partial", failed=True, error="usage limit reached")
 
     results = await run_tasks(_tasks(1), run_worker)
@@ -88,7 +89,7 @@ async def test_worker_reported_failure_is_an_error_result():
 
 @pytest.mark.asyncio
 async def test_slow_task_times_out_without_blocking_the_rest():
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         if task.id == "t0":
             await asyncio.sleep(5)
         return WorkerRun(output="fast")
@@ -106,7 +107,7 @@ async def test_updates_are_announced_for_each_state_change():
     async def on_update(result):
         seen.append((result.task.id, result.status))
 
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         return WorkerRun(output="ok")
 
     await run_tasks(_tasks(2), run_worker, on_update=on_update)
@@ -122,7 +123,7 @@ async def test_cancellation_propagates_to_workers():
     started = asyncio.Event()
     cancelled = []
 
-    async def run_worker(task):
+    async def run_worker(task, upstream=()):
         started.set()
         try:
             await asyncio.sleep(10)
@@ -144,7 +145,7 @@ async def test_cancellation_propagates_to_workers():
 
 @pytest.mark.asyncio
 async def test_empty_task_list_is_a_no_op():
-    async def run_worker(task):  # pragma: no cover - must not be called
+    async def run_worker(task, upstream=()):  # pragma: no cover - must not be called
         raise AssertionError("no tasks to run")
 
     assert await run_tasks([], run_worker) == []

@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import type { PlanState, SubagentTask } from "@/hooks/useChatSocket";
 
 const STATUS_LABEL: Record<SubagentTask["status"], string> = {
+  blocked: "대기 취소",
   running: "실행 중",
   done: "완료",
   error: "실패",
@@ -45,21 +46,55 @@ function nodeStyle(status?: SubagentTask["status"]): React.CSSProperties {
     width: 210,
   };
   if (status === "done") return { ...base, borderColor: "var(--primary)" };
+  // Never started, because something it waited for did not finish: dimmed
+  // rather than red, since it did not fail — it was not run.
+  if (status === "blocked") {
+    return { ...base, opacity: 0.55, borderStyle: "dashed" };
+  }
   if (status === "error" || status === "timeout") {
     return { ...base, borderColor: "var(--destructive)", color: "var(--destructive)" };
   }
   return base;
 }
 
-/** The lead fanning out to its sub-agents, drawn as it happens. The same plan
- *  data drives the list below, so this is a view rather than the source of
- *  truth. */
+/** The plan as a graph, drawn as it happens: the lead, its tasks, and the
+ *  order they run in. A task that waits for another is drawn behind it rather
+ *  than beside it, because "these two are parallel and that one is next" is
+ *  the whole point of the plan. The same data drives the list below, so this
+ *  is a view rather than the source of truth. */
 export function PlanGraph({ plan }: { plan: PlanState }) {
   const { resolvedTheme } = useTheme();
 
   const { nodes, edges } = useMemo(() => {
     const laneHeight = 56;
-    const height = Math.max(plan.tasks.length, 1) * laneHeight;
+    const columnWidth = 230;
+    // A task's column is one past the deepest task it waits for, so the graph
+    // reads left to right in the order things actually happen.
+    const byId = new Map(plan.tasks.map((task) => [task.id, task]));
+    const depthCache = new Map<string, number>();
+    const depthOf = (id: string, seen: Set<string> = new Set()): number => {
+      const cached = depthCache.get(id);
+      if (cached !== undefined) return cached;
+      if (seen.has(id)) return 0; // a cycle the server already broke
+      seen.add(id);
+      const task = byId.get(id);
+      const needs = task?.needs?.filter((need) => byId.has(need)) ?? [];
+      const depth = needs.length
+        ? Math.max(...needs.map((need) => depthOf(need, seen) + 1))
+        : 0;
+      depthCache.set(id, depth);
+      return depth;
+    };
+
+    const rows = new Map<number, number>();
+    const placement = new Map<string, { column: number; row: number }>();
+    for (const task of plan.tasks) {
+      const column = depthOf(task.id);
+      const row = rows.get(column) ?? 0;
+      rows.set(column, row + 1);
+      placement.set(task.id, { column, row });
+    }
+    const height = Math.max(...[...rows.values(), 1]) * laneHeight;
 
     const nodeList: Node[] = [
       {
@@ -73,9 +108,12 @@ export function PlanGraph({ plan }: { plan: PlanState }) {
         targetPosition: Position.Left,
         style: { ...nodeStyle(), width: 110, textAlign: "center" },
       },
-      ...plan.tasks.map((task, index) => ({
+      ...plan.tasks.map((task) => ({
         id: task.id,
-        position: { x: 260, y: index * laneHeight },
+        position: {
+          x: 260 + (placement.get(task.id)?.column ?? 0) * columnWidth,
+          y: (placement.get(task.id)?.row ?? 0) * laneHeight,
+        },
         data: { label: `${task.title}\n${task.agent} · ${STATUS_LABEL[task.status]}` },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
@@ -83,13 +121,27 @@ export function PlanGraph({ plan }: { plan: PlanState }) {
       })),
     ];
 
-    const edgeList: Edge[] = plan.tasks.map((task) => ({
-      id: `lead-${task.id}`,
-      source: "lead",
-      target: task.id,
-      animated: task.status === "running",
-      style: { stroke: "var(--border)" },
-    }));
+    const edgeList: Edge[] = plan.tasks.flatMap((task) => {
+      const needs = (task.needs ?? []).filter((need) => byId.has(need));
+      if (!needs.length) {
+        // Nothing to wait for: it starts with the turn, so it hangs off the
+        // lead.
+        return [{
+          id: `lead-${task.id}`,
+          source: "lead",
+          target: task.id,
+          animated: task.status === "running",
+          style: { stroke: "var(--border)" },
+        }];
+      }
+      return needs.map((need) => ({
+        id: `${need}-${task.id}`,
+        source: need,
+        target: task.id,
+        animated: task.status === "running",
+        style: { stroke: "var(--border)" },
+      }));
+    });
 
     return { nodes: nodeList, edges: edgeList };
   }, [plan]);
