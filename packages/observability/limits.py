@@ -87,11 +87,39 @@ class UsageTracker:
         # window has reset, "95% spent" describes a window that is gone.
         self._reported: dict[str, dict[str, dict]] = {}
         self._manual: dict[str, dict[str, dict[str, float]]] = {}
-        self._manual_path = Path(os.environ.get("ANA_STATE_DIR", os.path.expanduser("~/.ana"))) / "usage-estimates.json"
+        state_dir = Path(os.environ.get("ANA_STATE_DIR", os.path.expanduser("~/.ana")))
+        self._manual_path = state_dir / "usage-estimates.json"
         try:
             self._manual = json.loads(self._manual_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
+        # Provider-reported figures are persisted too. They arrive only while a
+        # turn is running — the Claude CLI states them on its stream and
+        # nowhere else — so a restart used to leave the bar reading
+        # "estimated 0%" for that CLI until someone happened to run a turn on
+        # it. The figures carry their own reset instant, so a stored one
+        # expires by itself instead of going stale.
+        self._reported_path = state_dir / "usage-reported.json"
+        try:
+            stored = json.loads(self._reported_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stored = {}
+        now = time.time()
+        for agent, windows in stored.items() if isinstance(stored, dict) else []:
+            if not isinstance(windows, dict):
+                continue
+            live = {
+                name: entry
+                for name, entry in windows.items()
+                if isinstance(entry, dict)
+                and isinstance(entry.get("utilization"), (int, float))
+                and not (
+                    isinstance(entry.get("resets_at"), (int, float))
+                    and now >= entry["resets_at"]
+                )
+            }
+            if live:
+                self._reported[agent] = live
 
     def set_estimate(
         self,
@@ -198,6 +226,7 @@ class UsageTracker:
         if not windows:
             return
         store = self._reported.setdefault(agent, {})
+        changed = False
         for name, window in windows.items():
             if isinstance(window, dict) and isinstance(
                 window.get("utilization"), (int, float)
@@ -206,6 +235,21 @@ class UsageTracker:
                     "utilization": float(window["utilization"]),
                     "resets_at": window.get("resets_at"),
                 }
+                changed = True
+        if changed:
+            self._persist_reported()
+
+    def _persist_reported(self) -> None:
+        """Survives a restart; never fails a turn. Written the same way as the
+        manual estimates — temp file then replace — so a crash mid-write
+        cannot leave a half-parsed file that the next start would discard."""
+        try:
+            self._reported_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._reported_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self._reported), encoding="utf-8")
+            temporary.replace(self._reported_path)
+        except OSError:
+            pass
 
     def _reported_window(self, agent: str, window: str, now: float) -> Optional[dict]:
         """The live reported entry for one window, or None once it has reset.

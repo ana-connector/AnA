@@ -62,3 +62,18 @@ async def db_pool(postgres_dsn):
         await conn.execute("TRUNCATE turns")
     yield pool
     await pool.close()
+
+
+@pytest.fixture(autouse=True)
+def isolated_state_dir(tmp_path_factory, monkeypatch):
+    """Every test gets its own ANA state directory.
+
+    ANA_STATE_DIR is where the running system keeps the things a test can
+    quietly poison: manually entered usage estimates, the provider-reported
+    figures persisted across restarts, the prepared CLI homes, the MCP
+    launcher scripts. Without this, a test that records a usage figure writes
+    it into the developer's real ~/.ana, where it then steers routing for
+    every later test — and for the server running on the same machine. Tests
+    that need a specific directory still set the variable themselves; this
+    only keeps the default from being the real one."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path_factory.mktemp("ana-state")))
