@@ -241,6 +241,16 @@ async def gate_tool_call(
         mcp_registry.names(),
     )
     if mcp_reason:
+        # Recorded under its own rule id rather than the rule set's (which
+        # matched nothing, since no YAML rule is about MCP scope): an audit
+        # row saying "denied, decided_by mcp-scope, rule_id null" is hard to
+        # query for afterwards.
+        verdict = Verdict(
+            action=DENY,
+            rule_id="mcp-scope",
+            category="scope-partitioning",
+            reason=mcp_reason,
+        )
         await _audit(DENY, "mcp-scope", mcp_reason)
         return GateDecision(
             decision=DENY,
