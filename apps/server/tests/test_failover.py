@@ -129,7 +129,7 @@ async def test_usage_limit_falls_back_to_the_other_auth_mode(db_pool):
     limited = LimitedAdapter("claude/pro")
     working = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "claude" and auth_mode == "pro":
             return limited
         if agent == "claude" and auth_mode == "api":
@@ -150,7 +150,7 @@ async def test_usage_limit_falls_back_to_the_other_auth_mode(db_pool):
 async def test_exhausted_claude_hands_over_to_codex_with_context(db_pool):
     codex = WorkingAdapter("codex")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "codex":
             return codex
         return LimitedAdapter(f"claude/{auth_mode}")
@@ -159,7 +159,7 @@ async def test_exhausted_claude_hands_over_to_codex_with_context(db_pool):
     # A previous turn gives the handoff brief something to carry.
     _, values = await _run(
         graph,
-        _config(db_pool, lambda a, m=None, model=None: WorkingAdapter("claude"), "fo-2"),
+        _config(db_pool, lambda a, m=None, model=None, effort=None: WorkingAdapter("claude"), "fo-2"),
         prompt="설계 설명해줘",
     )
     frames, values = await _run(
@@ -177,7 +177,7 @@ async def test_ordinary_failure_does_not_fail_over(db_pool):
     broken = BrokenAdapter()
     other = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return broken if auth_mode == "pro" else other
 
     graph = build_graph(InMemorySaver())
@@ -190,7 +190,7 @@ async def test_ordinary_failure_does_not_fail_over(db_pool):
 
 @pytest.mark.asyncio
 async def test_chain_exhaustion_reports_the_last_error(db_pool):
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return LimitedAdapter(f"{agent}/{auth_mode}")
 
     graph = build_graph(InMemorySaver())
@@ -206,7 +206,7 @@ async def test_thread_stays_on_the_fallback_until_the_cooldown_expires(db_pool):
     limited = LimitedAdapter("claude/pro")
     api = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "claude" and auth_mode == "pro":
             return limited
         if agent == "claude":
@@ -231,7 +231,7 @@ async def test_preferred_rung_returns_after_the_cooldown(db_pool):
     pro = WorkingAdapter("claude/pro")
     api = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return pro if auth_mode == "pro" else api
 
     graph = build_graph(InMemorySaver())
@@ -254,7 +254,7 @@ async def test_budget_breaker_starts_one_rung_down(db_pool):
     pro = WorkingAdapter("claude/pro")
     api = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return pro if auth_mode == "pro" else api
 
     graph = build_graph(InMemorySaver())
@@ -275,7 +275,7 @@ async def test_rate_limit_warning_trips_the_breaker_even_on_success(db_pool):
     warning = RateLimitWarningAdapter()
     api = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return warning if auth_mode == "pro" else api
 
     graph = build_graph(InMemorySaver())
@@ -306,7 +306,7 @@ class CreditlessAdapter(AgentAdapter):
 async def test_a_reply_that_is_only_a_limit_message_fails_over(db_pool):
     working = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return CreditlessAdapter() if auth_mode == "pro" else working
 
     graph = build_graph(InMemorySaver())
@@ -323,7 +323,7 @@ async def test_a_retried_attempt_does_not_announce_the_turn_as_finished(db_pool)
     showing the failure as the answer."""
     working = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return CreditlessAdapter() if auth_mode == "pro" else working
 
     graph = build_graph(InMemorySaver())
@@ -358,7 +358,7 @@ async def test_an_empty_trailing_error_does_not_erase_the_reason(db_pool):
     was limited but did not look failed — so it never moved to the next rung."""
     working = WorkingAdapter("claude/api")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return CreditlessThenEmptyExitAdapter() if auth_mode == "pro" else working
 
     graph = build_graph(InMemorySaver())
@@ -374,7 +374,7 @@ async def test_a_rung_that_cannot_be_built_is_skipped(db_pool):
     being unavailable, not the turn failing."""
     codex = WorkingAdapter("codex")
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "codex":
             return codex
         if auth_mode == "api":
@@ -406,7 +406,7 @@ async def test_each_rung_uses_its_own_model(db_pool, tmp_path, monkeypatch):
 
     seen: list[tuple[str, object]] = []
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         seen.append((agent, model))
         return LimitedAdapter("claude") if agent == "claude" else WorkingAdapter("codex")
 

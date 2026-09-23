@@ -104,7 +104,7 @@ async def test_a_turn_updates_metrics_end_to_end(db_pool):
 async def test_failover_is_counted(db_pool):
     graph = build_graph(InMemorySaver())
 
-    def factory(agent, auth_mode=None, model=None):
+    def factory(agent, auth_mode=None, model=None, effort=None):
         return LimitedAdapter() if auth_mode == "pro" else WorkingAdapter()
 
     config = {

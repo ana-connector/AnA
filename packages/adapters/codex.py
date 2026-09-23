@@ -25,6 +25,7 @@ class CodexAdapter(AgentAdapter):
         env: dict[str, str],
         executable: str = "codex",
         model: Optional[str] = None,
+        effort: Optional[str] = None,
         sandbox: Optional[str] = None,
         hooks_enabled: bool = False,
         command_prefix: Optional[list[str]] = None,
@@ -35,6 +36,11 @@ class CodexAdapter(AgentAdapter):
         self.env = env
         self.executable = executable
         self.model = model
+        # Codex has no --effort flag; reasoning effort is a config value, so
+        # it rides in as a -c override like the sandbox mode does. Its
+        # vocabulary is its own (minimal..high), which is why the routing
+        # ladder validates effort per agent.
+        self.effort = effort
         # True when env["CODEX_HOME"] points at an ANA-prepared home carrying
         # hooks.json. Hooks in automation need --dangerously-bypass-hook-trust
         # (that flag skips the *hook trust prompt*, not the sandbox), and with
@@ -110,6 +116,8 @@ class CodexAdapter(AgentAdapter):
             args += ["--dangerously-bypass-approvals-and-sandbox"]
         if self.model:
             args += ["--model", self.model]
+        if self.effort:
+            args += ["-c", f'model_reasoning_effort="{self.effort}"']
         args += self.mcp_args
         args += [
             f"[시스템 지시]\n{self.system_prompt}\n\n{prompt}"

@@ -25,7 +25,7 @@ from packages.orchestrator.breaker import (
 from packages.observability.metrics import record_failover, record_subagent, record_turn
 from packages.observability.tracing import Tracer
 from packages.orchestrator.handoff import build_handoff_prompt
-from packages.orchestrator.routing import LEAD, WORKER, decide, model_for
+from packages.orchestrator.routing import LEAD, WORKER, decide, settings_for
 from packages.orchestrator.planner import (
     build_planning_prompt,
     build_synthesis_prompt,
@@ -186,6 +186,7 @@ def _resolve_adapter(
     agent: str,
     auth_mode: Optional[str] = None,
     model: Optional[str] = None,
+    effort: Optional[str] = None,
 ):
     """Picks the adapter for one rung of the failover chain.
 
@@ -197,7 +198,7 @@ def _resolve_adapter(
     single-agent callers and tests wire it up)."""
     factory = configurable.get("adapter_factory")
     if factory is not None:
-        return factory(agent, auth_mode, model)
+        return factory(agent, auth_mode, model, effort)
     adapters = configurable.get("adapters")
     adapter = adapters.get(agent) if adapters else configurable.get("adapter")
     if adapter is None:
@@ -206,6 +207,8 @@ def _resolve_adapter(
         # Turns are serialized per connection, so setting the model on the
         # shared adapter is safe and avoids rebuilding it for every rung.
         adapter.model = model
+    if effort is not None and hasattr(adapter, "effort"):
+        adapter.effort = effort
     return adapter
 
 
@@ -382,6 +385,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     route = decide(state.get("agent"), role=LEAD, usage=usage_snapshot)
     agent = route.agent
     lead_model = route.model
+    lead_effort = route.effort
     if not route.explicit:
         writer(
             {
@@ -393,7 +397,9 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 "model": lead_model,
             }
         )
-    adapter = _resolve_adapter(configurable, agent, model=lead_model)
+    adapter = _resolve_adapter(
+        configurable, agent, model=lead_model, effort=lead_effort
+    )
     session_ids: dict[str, Optional[str]] = dict(state.get("session_ids") or {})
 
     is_handoff = last_agent is not None and last_agent != agent
@@ -470,7 +476,9 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     task.agent, role=WORKER, usage=usage_snapshot
                 )
                 return await _run_worker(
-                    worker_factory(worker_route.agent, worker_route.model),
+                    worker_factory(
+                        worker_route.agent, worker_route.model, worker_route.effort
+                    ),
                     build_handoff_prompt(
                         task.prompt,
                         incoming_agent=task.agent,
@@ -575,10 +583,17 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             # Each rung brings its own model: the one picked for the rung that
             # just failed is meaningless to another CLI ("fable" is not a Codex
             # model, and passing it makes the retry fail for a new reason).
-            rung_model = lead_model if rung.agent == agent else model_for(rung.agent)
+            if rung.agent == agent:
+                rung_model, rung_effort = lead_model, lead_effort
+            else:
+                rung_model, rung_effort = settings_for(rung.agent)
             try:
                 adapter = _resolve_adapter(
-                    configurable, rung.agent, rung.auth_mode, model=rung_model
+                    configurable,
+                    rung.agent,
+                    rung.auth_mode,
+                    model=rung_model,
+                    effort=rung_effort,
                 )
             except Exception as exc:  # noqa: BLE001 - a rung that cannot even be
                 # built is a rung that is not available: the Claude CLI's API

@@ -14,6 +14,7 @@ from packages.adapters.codex import CodexAdapter
 from packages.adapters.env_builder import (
     EnvBuilder,
     build_codex_env,
+    default_codex_effort_from_settings,
     default_codex_model_from_settings,
     default_codex_sandbox_from_settings,
     default_effort_from_settings,
@@ -95,6 +96,7 @@ def build_adapter(
     workspace_dir: Optional[str] = None,
     command_prefix: Optional[list] = None,
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     role: str = "lead",
 ):
     mode = auth_mode or default_mode_from_settings()
@@ -130,7 +132,9 @@ def build_adapter(
         workspace_dir=workspace_dir or WORKSPACE_DIR,
         env=env,
         model=model or default_model_from_settings(),
-        effort=default_effort_from_settings(),
+        # The ladder's effort wins when it names one; the environment default
+        # is what applies to a rung that does not.
+        effort=effort or default_effort_from_settings(),
         settings_path=settings_path,
         permission_prompts=permission_prompts,
         command_prefix=command_prefix,
@@ -145,6 +149,7 @@ def build_codex_adapter(
     workspace_dir: Optional[str] = None,
     command_prefix: Optional[list] = None,
     model: Optional[str] = None,
+    effort: Optional[str] = None,
     role: str = "lead",
 ) -> CodexAdapter:
     """Factory mirroring build_adapter(), for the `codex` CLI. Constructing
@@ -175,6 +180,7 @@ def build_codex_adapter(
         workspace_dir=workspace_dir or WORKSPACE_DIR,
         env=env,
         model=model or default_codex_model_from_settings(),
+        effort=effort or default_codex_effort_from_settings(),
         sandbox=sandbox,
         hooks_enabled=hooks_enabled,
         command_prefix=command_prefix,
@@ -431,7 +437,10 @@ async def chat_ws(websocket: WebSocket) -> None:
         graph = websocket.app.state.graph
 
         def adapter_factory(
-            agent: str, auth_mode: Optional[str] = None, model: Optional[str] = None
+            agent: str,
+            auth_mode: Optional[str] = None,
+            model: Optional[str] = None,
+            effort: Optional[str] = None,
         ):
             """Builds the adapter for one failover rung.
 
@@ -446,15 +455,20 @@ async def chat_ws(websocket: WebSocket) -> None:
                     extra_env=secret_env,
                     workspace_dir=workspace_dir,
                     model=model,
+                    effort=effort,
                 )
                 adapters[f"claude/{auth_mode}"] = extra
                 return extra
             adapter = adapters[agent]
             if model is not None:
                 adapter.model = model
+            if effort is not None:
+                adapter.effort = effort
             return adapter
 
-        def worker_factory(agent: str, model: Optional[str] = None):
+        def worker_factory(
+            agent: str, model: Optional[str] = None, effort: Optional[str] = None
+        ):
             """A fresh adapter per sub-agent task. The pre-built pair each hold
             one subprocess handle, so several concurrent workers sharing one
             object would overwrite and terminate each other. Tracked in
@@ -467,6 +481,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                     extra_env=secret_env,
                     workspace_dir=workspace_dir,
                     model=model,
+                    effort=effort,
                     role="worker",
                 )
                 if agent == "codex"
@@ -475,6 +490,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                     extra_env=secret_env,
                     workspace_dir=workspace_dir,
                     model=model,
+                    effort=effort,
                     role="worker",
                 )
             )
