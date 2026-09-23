@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type FormEvent, type KeyboardEvent } from "react";
-import { NetworkIcon, SendIcon, SquareIcon, ZapIcon } from "lucide-react";
+import { SendIcon, SquareIcon } from "lucide-react";
 import {
   InputGroup,
   InputGroupAddon,
@@ -12,7 +12,12 @@ import {
 const MAX_ROWS = 3;
 
 /** The message box: a textarea that grows to three lines, with the send button
- *  and the turn's mode inside it.
+ *  inside it.
+ *
+ *  No plan/direct switch: the lead has no tools of its own, so whether a
+ *  request needs sub-agents is a judgement about the request, not a setting —
+ *  and offering it meant the user could pick the mode that cannot do the job.
+ *  It decides per turn now (see packages/orchestrator/planner.py).
  *
  *  Enter sends and Shift+Enter makes a newline — the usual chat contract, which
  *  a plain textarea does not give you. */
@@ -23,8 +28,6 @@ export function Composer({
   onCancel,
   streaming,
   connected,
-  planMode,
-  onPlanModeChange,
   placeholder,
 }: {
   value: string;
@@ -33,8 +36,6 @@ export function Composer({
   onCancel: () => void;
   streaming: boolean;
   connected: boolean;
-  planMode: boolean;
-  onPlanModeChange: (value: boolean) => void;
   placeholder: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -76,18 +77,6 @@ export function Composer({
           className="max-h-32 resize-none"
         />
         <InputGroupAddon align="block-end">
-          <InputGroupButton
-            type="button"
-            size="sm"
-            variant={planMode ? "default" : "ghost"}
-            aria-pressed={planMode}
-            onClick={() => onPlanModeChange(!planMode)}
-            title={planMode ? "Plan 모드 · 눌러서 Direct로 전환" : "Direct 모드 · 눌러서 Plan으로 전환"}
-          >
-            {planMode ? <NetworkIcon /> : <ZapIcon />}
-            {planMode ? "Plan" : "Direct"}
-          </InputGroupButton>
-
           {streaming ? (
             <InputGroupButton
               type="button"

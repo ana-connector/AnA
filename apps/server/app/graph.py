@@ -27,7 +27,14 @@ from packages.orchestrator import verification, worktrees
 from packages.observability.metrics import record_failover, record_subagent, record_turn
 from packages.observability.tracing import Tracer
 from packages.orchestrator.handoff import build_handoff_prompt
-from packages.orchestrator.routing import LEAD, WORKER, decide, settings_for
+from packages.orchestrator.routing import (
+    EFFORTS,
+    LEAD,
+    WORKER,
+    decide,
+    planning_effort,
+    settings_for,
+)
 from packages.orchestrator.planner import (
     build_planning_prompt,
     build_synthesis_prompt,
@@ -467,9 +474,15 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     turn_model: Optional[str] = None
     subagent_cost = 0.0
     subagent_tokens = 0
-    if state.get("plan_mode") and worker_factory is not None:
+    if state.get("plan_mode", True) and worker_factory is not None:
+        # The planning call is a short JSON judgement, not the work, so it runs
+        # at the cheapest effort the chosen CLI has unless configured
+        # otherwise. The answer call that follows gets the rung's own effort
+        # back.
         plan = await _plan_turn(
-            _resolve_adapter(configurable, agent, model=lead_model),
+            _resolve_adapter(
+                configurable, agent, model=lead_model, effort=planning_effort(agent)
+            ),
             state["prompt"],
             tracer=tracer,
             trace=trace,

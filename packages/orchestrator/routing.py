@@ -184,6 +184,20 @@ def load_routing_table(path: os.PathLike | str | None = None) -> ModelLadder:
     return _cached_ladder(resolved, os.stat(resolved).st_mtime_ns)
 
 
+def planning_effort(agent: str) -> Optional[str]:
+    """Effort for the planning call: the cheapest level the CLI has.
+
+    Planning is a few lines of JSON deciding whether a request needs
+    sub-agents — the judgement is about the *shape* of the request, and paying
+    for deep reasoning to make it would tax every turn. ANA_PLANNER_EFFORT
+    overrides; an unknown value falls back rather than failing the turn."""
+    configured = os.environ.get("ANA_PLANNER_EFFORT")
+    levels = EFFORTS.get(agent, ())
+    if configured and configured in levels:
+        return configured
+    return levels[0] if levels else None
+
+
 def model_for(agent: str, *, role: str = LEAD, preference: Optional[str] = None) -> Optional[str]:
     """The model this ladder pairs with `agent`.
 

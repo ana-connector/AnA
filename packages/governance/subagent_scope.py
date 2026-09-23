@@ -41,14 +41,38 @@ MUTATING_TOOLS = {
     "edit",
     "multiedit",
     "notebookedit",
-    "bash",
     "killshell",
     "applypatch",
     "apply_patch",
-    "shell",
-    "run_shell_command",
-    "local_shell",
 }
+
+# Shell tools are judged by their command, not refused outright: the first
+# read-only worker ANA ran could not answer "how many files are here", because
+# listing a directory is a shell command. A survey task needs `ls`, `grep` and
+# `git log`; it does not need `rm`.
+SHELL_TOOLS = {"bash", "shell", "run_shell_command", "local_shell"}
+
+# Commands whose whole job is to look. Anything not on this list is treated as
+# a write under a read-only scope — an allowlist, because the set of ways to
+# change a file is not enumerable.
+READ_ONLY_COMMANDS = {
+    "awk", "basename", "cat", "cksum", "column", "comm", "cut", "date", "df",
+    "diff", "dirname", "du", "echo", "env", "file", "find", "grep", "head",
+    "hostname", "id", "jq", "less", "ls", "md5sum", "nl", "od", "pwd", "readlink",
+    "realpath", "rg", "sha1sum", "sha256sum", "sort", "stat", "tail", "tr",
+    "tree", "uniq", "wc", "which", "whoami", "xxd", "yq",
+}
+# `git` is read-only only in some moods.
+READ_ONLY_GIT_SUBCOMMANDS = {
+    "blame", "branch", "config", "describe", "diff", "grep", "log", "ls-files",
+    "ls-tree", "rev-parse", "shortlog", "show", "show-ref", "status", "tag",
+}
+# Splits a command line into the segments a shell would run separately.
+_SEGMENT_RE = re.compile(r"(?:\|\||&&|\||;|\n)")
+# Any redirection writes, whatever the command in front of it was.
+_REDIRECT_RE = re.compile(r"(?<![0-9<>])>{1,2}(?!&)")
+# sed/perl/python editing a file in place.
+_IN_PLACE_RE = re.compile(r"(^|\s)(-i\b|--in-place)")
 MUTATING_MCP_TOOLS = {
     "git_add",
     "git_commit",
@@ -132,8 +156,10 @@ def instructions(scope: Scope) -> str:
     lines = ["[권한 스코프] 대장이 이 작업에 다음 제한을 걸었다."]
     if scope.mode == READ:
         lines.append(
-            "- 읽기 전용이다. 파일 수정, 명령 실행, 커밋은 차단된다. 변경이 필요하면"
-            " 무엇을 어떻게 바꿔야 하는지 보고만 해라."
+            "- 읽기 전용이다. 파일 수정·생성·삭제, 커밋, 설치 명령은 차단된다."
+            " 조회는 얼마든지 해도 된다: ls, cat, head, grep, rg, find, wc,"
+            " git log/status/diff 같은 읽기 전용 셸 명령과 파일 읽기 도구는 그대로"
+            " 쓸 수 있다. 변경이 필요하면 무엇을 어떻게 바꿔야 하는지 보고만 해라."
         )
     if scope.paths:
         lines.append(f"- 작업 가능한 경로: {', '.join(scope.paths)} (그 밖은 차단된다)")
@@ -156,11 +182,22 @@ def violation(
     """Why this call is outside the sub-agent's scope, or None if it is inside."""
     if scope.unrestricted:
         return None
-    if scope.mode == READ and _is_mutating(tool_name):
-        return (
-            f"읽기 전용 스코프의 하위 에이전트는 '{tool_name}'을(를) 쓸 수 없다. "
-            "변경이 필요하면 대장에게 보고해라."
-        )
+    if scope.mode == READ:
+        if _is_mutating(tool_name):
+            return (
+                f"읽기 전용 스코프의 하위 에이전트는 '{tool_name}'을(를) 쓸 수 없다. "
+                "변경이 필요하면 대장에게 보고해라."
+            )
+        if _normalize_name(tool_name) in SHELL_TOOLS:
+            command = tool_input.get("command")
+            command = command if isinstance(command, str) else ""
+            offending = _writing_segment(command)
+            if offending is not None:
+                return (
+                    f"읽기 전용 스코프에서는 조회 명령만 쓸 수 있다: '{offending}'은(는) "
+                    "변경일 수 있다. 읽기만 하는 명령(ls, cat, grep, git log 등)을 쓰거나, "
+                    "변경이 필요하면 대장에게 보고해라."
+                )
     if scope.paths and workspace:
         outside = _outside_paths(tool_input, scope.paths, workspace)
         if outside:
@@ -169,6 +206,39 @@ def violation(
                 f"이 하위 에이전트에게 허용된 경로는 {allowed} 뿐이다: "
                 f"{', '.join(outside[:3])}"
             )
+    return None
+
+
+def _writing_segment(command: str) -> Optional[str]:
+    """The first part of a shell command that is not plainly a read, or None
+    when every part of it only looks at things."""
+    if not command.strip():
+        return None
+    if _REDIRECT_RE.search(command):
+        return command.strip()[:60]
+    for segment in _SEGMENT_RE.split(command):
+        segment = segment.strip()
+        if not segment:
+            continue
+        tokens = segment.split()
+        # Leading VAR=value assignments belong to the command that follows.
+        while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        name = os.path.basename(tokens[0])
+        if name == "git":
+            subcommand = next((t for t in tokens[1:] if not t.startswith("-")), "")
+            if subcommand in READ_ONLY_GIT_SUBCOMMANDS:
+                continue
+            return segment[:60]
+        if name in ("sed", "perl", "python", "python3") and _IN_PLACE_RE.search(segment):
+            return segment[:60]
+        if name == "sed" and not _IN_PLACE_RE.search(segment):
+            continue
+        if name in READ_ONLY_COMMANDS:
+            continue
+        return segment[:60]
     return None
 
 

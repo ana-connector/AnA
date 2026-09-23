@@ -11,6 +11,18 @@ from apps.server.app.websocket import _parse_client_frame
 from packages.adapters.base import AdapterEvent, AgentAdapter
 
 
+@pytest.fixture(autouse=True)
+def without_planning(monkeypatch):
+    """These tests are about the socket, not about planning.
+
+    Every turn now asks the lead whether to delegate (there is no plan/direct
+    switch any more), and that call would consume the scripted adapter these
+    tests hand the graph. ANA_PLANNER=off is the same escape hatch operators
+    get for debugging a problem that is clearly not about planning."""
+    monkeypatch.setenv("ANA_PLANNER", "off")
+
+
+
 class SlowAdapter(AgentAdapter):
     """Streams one chunk, then stalls — long enough for a cancel frame to
     arrive mid-turn. Records whether terminate() was called, since cancelling

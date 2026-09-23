@@ -603,7 +603,7 @@ export function useChatSocket() {
   }, [requestedThreadId]);
 
   const sendMessage = useCallback(
-    (text: string, agent: Agent | "auto", planMode = false) => {
+    (text: string, agent: Agent | "auto") => {
       messageCountRef.current += 1;
       // "auto" is resolved server-side; until the route frame arrives, label
       // the pending reply with whatever ran last.
@@ -619,10 +619,10 @@ export function useChatSocket() {
       planRef.current = null;
       setPlanOutcome(null);
       setRoute(null);
-      // JSON protocol: {prompt, agent, plan_mode}. The server also still
+      // JSON protocol: {prompt, agent}. The server also still
       // accepts a bare text frame — see _parse_client_frame.
       socketRef.current?.send(
-        JSON.stringify({ prompt: text, agent, plan_mode: planMode })
+        JSON.stringify({ prompt: text, agent })
       );
     },
     []
