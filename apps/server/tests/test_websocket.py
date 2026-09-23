@@ -107,6 +107,10 @@ def test_websocket_sends_thread_id_first_then_echoes_prompt(client_with_fake_ada
         assert len(first["text"]) > 0
 
         ws.send_text("hello")
+        # A bare text frame has no agent, so routing runs and announces its
+        # choice before the turn streams.
+        second = ws.receive_json()
+        assert second["type"] == "route"
         second = ws.receive_json()
         third = ws.receive_json()
 
@@ -120,7 +124,13 @@ def test_websocket_sends_thread_id_first_then_echoes_prompt(client_with_fake_ada
 def test_websocket_reuses_supplied_thread_id(client_with_fake_adapter):
     with client_with_fake_adapter.websocket_connect("/ws/chat?thread_id=fixed-thread-abc") as ws:
         first = ws.receive_json()
-    assert first == {"type": "thread_id", "text": "fixed-thread-abc", "session_id": None, "is_error": False}
+    assert first["type"] == "thread_id"
+    assert first["text"] == "fixed-thread-abc"
+    assert first["session_id"] is None
+    assert first["is_error"] is False
+    # The frame also carries this thread's own workspace directory (see
+    # test_workspace_isolation.py); asserted there rather than pinned here.
+    assert first["workspace"].endswith("fixed-thread-abc")
 
 
 def test_websocket_allows_connection_with_allowed_origin(client_with_fake_adapter):
@@ -161,6 +171,8 @@ def test_websocket_relays_error_when_run_stream_raises(db_pool, postgres_dsn, mo
                 ws.receive_json()  # thread_id
                 ws.send_text("hello")
                 event = ws.receive_json()
+                if event["type"] == "route":
+                    event = ws.receive_json()
     assert event["type"] == "error"
     assert "boom" in event["text"]
 
@@ -179,7 +191,9 @@ def test_websocket_closes_connection_after_relay_failure(db_pool, postgres_dsn, 
             with client.websocket_connect("/ws/chat") as ws:
                 ws.receive_json()  # thread_id
                 ws.send_text("hello")
-                ws.receive_json()  # error frame
+                event = ws.receive_json()
+                if event["type"] == "route":
+                    ws.receive_json()  # error frame
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     ws.receive_text()
     assert exc_info.value.code == 1011
@@ -219,8 +233,13 @@ def test_websocket_processes_queued_prompts_in_order(db_pool, postgres_dsn, monk
                 # the queue serializes turns instead of interleaving them.
                 ws.send_text("first-msg")
                 ws.send_text("second-msg")
-                for _ in range(4):  # 2 events per turn x 2 turns
-                    ws.receive_json()
+                # Read until both turns have ended rather than counting frames:
+                # a turn's frame count is not fixed (routing, usage and model
+                # frames come and go), and stopping early raced the second turn.
+                results = 0
+                while results < 2:
+                    if ws.receive_json()["type"] == "result":
+                        results += 1
 
     assert len(adapter.calls) == 2
     assert adapter.calls[0].endswith("first-msg")

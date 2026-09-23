@@ -1,0 +1,143 @@
+# ANA governance rules — what a CLI agent may do without asking.
+#
+# Evaluated top to bottom; the first rule whose tool AND pattern match wins,
+# so put explicit allowances above the broader blocks. `action` is:
+#   deny  — never runs, the agent is told why
+#   ask   — the user answers y/n in the web UI (no answer = denied)
+#   allow — runs, and is still audited
+#
+# Patterns are Python regexes matched case-insensitively against the tool
+# input: the `command` field for shell tools, otherwise the whole input
+# serialized as JSON. Editing this file needs no code change.
+
+default_action: allow
+
+rules:
+  # --- explicit allowances (must precede the blocks below) -----------------
+  - id: git-status-and-read
+    category: allowlist
+    action: allow
+    tools: [Bash]
+    patterns:
+      - '^\s*git\s+(status|diff|log|show|branch)\b'
+
+  # --- filesystem destruction ---------------------------------------------
+  - id: fs-recursive-force-delete
+    category: filesystem-destruction
+    action: deny
+    tools: [Bash]
+    patterns:
+      - '\brm\b[^|;&]*\s-[a-z]*r[a-z]*f|\brm\b[^|;&]*\s-[a-z]*f[a-z]*r'
+      - '\brm\b[^|;&]*--recursive[^|;&]*--force'
+  - id: fs-delete-outside-workspace
+    category: filesystem-destruction
+    action: ask
+    tools: [Bash]
+    patterns:
+      - '\b(rm|shred|truncate)\b[^|;&]*\s/(etc|usr|var|boot|home|root|bin|sbin|lib)\b'
+  - id: fs-disk-format
+    category: filesystem-destruction
+    action: deny
+    tools: [Bash]
+    patterns:
+      - '\b(mkfs(\.\w+)?|fdisk|parted|dd)\b[^|;&]*\bof=/dev/'
+
+  # --- database destruction -----------------------------------------------
+  - id: db-drop
+    category: database-destruction
+    action: deny
+    tools: [Bash]
+    patterns:
+      - '\bdrop\s+(table|database|schema)\b'
+      - '\btruncate\s+table\b'
+  - id: db-unscoped-write
+    category: database-destruction
+    action: deny
+    tools: [Bash]
+    patterns:
+      # DELETE/UPDATE with no WHERE clause anywhere after it
+      - '\bdelete\s+from\s+\w+\s*(;|$)'
+      - '\bupdate\s+\w+\s+set\b(?![\s\S]*\bwhere\b)'
+
+  # --- git history destruction --------------------------------------------
+  - id: git-history-rewrite
+    category: git-history-destruction
+    action: ask
+    tools: [Bash]
+    patterns:
+      - '\bgit\s+push\b[^|;&]*(--force\b|-f\b)'
+      - '\bgit\s+reset\s+--hard\b'
+      - '\bgit\s+(filter-branch|filter-repo)\b'
+      - '\bgit\s+rebase\b[^|;&]*(-i|--interactive)\b'
+
+  # --- system control ------------------------------------------------------
+  - id: system-power-control
+    category: system-control
+    action: deny
+    tools: [Bash]
+    patterns:
+      - '\b(shutdown|reboot|halt|poweroff|systemctl\s+(stop|disable|mask))\b'
+  - id: kill-everything
+    category: system-control
+    action: deny
+    tools: [Bash]
+    patterns:
+      # kill -1 targets every process the user owns; nothing legitimate does
+      # that from an agent.
+      - '\bkill\s+(-\w+\s+)?-1\b'
+  - id: process-cleanup
+    category: system-control
+    # `pkill -f "http.server 8421"` is how you clean up the dev server you
+    # started a minute ago, so this asks instead of refusing: the pattern
+    # cannot tell that apart from killing something important, but the user
+    # can.
+    action: ask
+    tools: [Bash]
+    patterns:
+      - '\b(pkill|killall)\b'
+      - '\bkill\s+-9\b'
+  - id: container-control
+    category: system-control
+    action: ask
+    tools: [Bash]
+    patterns:
+      - '\bdocker\s+(rm|kill|stop|system\s+prune)\b'
+  - id: privilege-escalation
+    category: system-control
+    action: deny
+    tools: [Bash]
+    patterns:
+      - '\bsudo\b'
+
+  # --- credential exfiltration --------------------------------------------
+  - id: secret-file-egress
+    category: credential-exfiltration
+    action: deny
+    tools: [Bash]
+    patterns:
+      # reading a secret file and piping it into something that leaves the box
+      - '(\.env|\.aws/credentials|\.ssh/id_\w+|auth\.json|\.credentials\.json)[\s\S]*\b(curl|wget|nc|ssh|scp)\b'
+      - '\b(curl|wget)\b[\s\S]*(\.env|\.aws/credentials|\.ssh/id_\w+)'
+
+  # --- covering up failures (Replit incident) ------------------------------
+  - id: log-or-test-tampering
+    category: result-tampering
+    action: ask
+    tools: [Bash]
+    patterns:
+      - '>\s*/dev/null\s*2>&1[^|;&]*\b(test|pytest|npm\s+test|go\s+test)\b'
+      - '\b(pytest|npm\s+test)\b[^|;&]*(--exitfirst\s+)?\|\|\s*true'
+      - '\b(rm|mv|truncate|:>)\b[^|;&]*\.(log|jsonl)\b'
+
+  # --- network egress ------------------------------------------------------
+  # The roadmap requires every outbound request to pass the gate; it is `ask`
+  # rather than `deny` because normal work (installing a package, calling an
+  # API) legitimately needs it.
+  - id: network-egress
+    category: network-egress
+    action: ask
+    tools: [Bash]
+    patterns:
+      - '\b(curl|wget|nc|netcat|telnet|ssh|scp|rsync)\b'
+      - '\b(pip|pip3|npm|pnpm|yarn|cargo|go)\s+(install|add|get)\b'
+      - '\bgit\s+(push|clone|fetch|pull)\b'
