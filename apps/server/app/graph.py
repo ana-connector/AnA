@@ -22,6 +22,7 @@ from packages.orchestrator.breaker import (
     rate_limit_exceeded,
     thread_budget_exceeded,
 )
+from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
 from packages.observability.metrics import record_failover, record_subagent, record_turn
 from packages.observability.tracing import Tracer
 from packages.orchestrator.handoff import build_handoff_prompt
@@ -357,7 +358,27 @@ async def _stream_turn(
         # and either fails over or re-raises it unchanged.
         outcome.caught_exc = exc
         outcome.usage_limited = is_usage_limit(str(exc))
+    finally:
+        if agent == "codex" and usage_tracker is not None:
+            # Codex prints tokens but not limits, so its real window
+            # utilization is read back from the rollout log the turn just
+            # wrote (packages/observability/codex_usage.py). In `finally`
+            # because a turn that failed on a limit is exactly the one whose
+            # numbers matter most.
+            with contextlib.suppress(Exception):
+                usage_tracker.record_reported_windows(
+                    agent, read_codex_rate_limits(_codex_home_of(adapter))
+                )
     return outcome
+
+
+def _codex_home_of(adapter) -> Optional[str]:
+    """Where that adapter's CLI keeps its sessions. Read from the adapter's own
+    environment rather than the server's: a turn running inside a workspace
+    container still writes to the shared state volume, but the path is the
+    CLI's, not ours."""
+    env = getattr(adapter, "env", None) or {}
+    return env.get("CODEX_HOME")
 
 
 async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:

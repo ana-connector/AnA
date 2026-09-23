@@ -171,7 +171,11 @@ def test_usage_endpoint_reports_windows(client):
     assert [w["label"] for w in payload["codex"]["windows"]] == ["5시간", "7일"]
 
 
-def test_usage_endpoint_is_empty_before_any_turn(client):
+def test_usage_endpoint_is_empty_before_any_turn(client, tmp_path, monkeypatch):
+    # CODEX_HOME points at an empty directory: /usage re-reads Codex's rollout
+    # log on every call, so the machine's real one would otherwise make this
+    # test depend on whether anyone has run Codex here.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
     client.app.state.usage_tracker._samples.clear()
     client.app.state.usage_tracker._reported.clear()
 

@@ -38,6 +38,9 @@ class WindowUsage:
     # Provider-reported utilization (0..1) when the CLI gave one.
     reported: Optional[float] = None
     manual: Optional[float] = None
+    # When this window next resets, as the provider stated it (or as the user
+    # did, for a manual figure). None means nobody said.
+    resets_at: Optional[float] = None
 
     @property
     def utilization(self) -> Optional[float]:
@@ -57,6 +60,7 @@ class WindowUsage:
             "tokens": self.tokens,
             "budget": self.budget,
             "utilization": self.utilization,
+            "resets_at": self.resets_at,
             "source": "reported" if self.reported is not None else ("manual" if self.manual is not None else "estimated"),
         }
 
@@ -75,7 +79,11 @@ class UsageTracker:
             os.environ.get("ANA_WEEKLY_TOKEN_BUDGET", 20_000_000)
         )
         self._samples: dict[str, list[_Sample]] = {}
-        self._reported: dict[str, dict[str, float]] = {}
+        # agent -> window -> {"utilization": float, "resets_at": float | None}.
+        # Both CLIs state a reset instant with their figures, and a reported
+        # number outlives its window the same way a manual one does: once the
+        # window has reset, "95% spent" describes a window that is gone.
+        self._reported: dict[str, dict[str, dict]] = {}
         self._manual: dict[str, dict[str, dict[str, float]]] = {}
         self._manual_path = Path(os.environ.get("ANA_STATE_DIR", os.path.expanduser("~/.ana"))) / "usage-estimates.json"
         try:
@@ -168,12 +176,51 @@ class UsageTracker:
         windows = payload.get("unifiedWindows") or payload.get("windows") or {}
         if not isinstance(windows, dict):
             return
+        parsed = {}
+        for name, window in windows.items():
+            if not isinstance(window, dict) or not isinstance(
+                window.get("utilization"), (int, float)
+            ):
+                continue
+            entry = {"utilization": float(window["utilization"])}
+            resets_at = window.get("resetsAt") or window.get("resets_at")
+            if isinstance(resets_at, (int, float)):
+                entry["resets_at"] = float(resets_at)
+            parsed[name] = entry
+        self.record_reported_windows(agent, parsed)
+
+    def record_reported_windows(self, agent: str, windows: Optional[dict]) -> None:
+        """The same thing from a source that is already normalized — Codex's
+        rollout log, which states the provider's numbers the CLI itself does
+        not put on stdout (see packages/observability/codex_usage.py)."""
+        if not windows:
+            return
         store = self._reported.setdefault(agent, {})
         for name, window in windows.items():
             if isinstance(window, dict) and isinstance(
                 window.get("utilization"), (int, float)
             ):
-                store[name] = float(window["utilization"])
+                store[name] = {
+                    "utilization": float(window["utilization"]),
+                    "resets_at": window.get("resets_at"),
+                }
+
+    def _reported_window(self, agent: str, window: str, now: float) -> Optional[dict]:
+        """The live reported entry for one window, or None once it has reset.
+
+        Window names differ per provider: Claude says "seven_day", and ANA's
+        Codex reader normalizes to the same two names, but older payloads used
+        "weekly"."""
+        store = self._reported.get(agent, {})
+        entry = store.get(window)
+        if entry is None and window == "seven_day":
+            entry = store.get("weekly")
+        if not isinstance(entry, dict):
+            return None
+        resets_at = entry.get("resets_at")
+        if isinstance(resets_at, (int, float)) and now >= resets_at:
+            return None
+        return entry
 
     def _prune(self, agent: str, now: float) -> None:
         cutoff = now - SEVEN_DAYS
@@ -188,15 +235,17 @@ class UsageTracker:
         agents = sorted(set(self._samples) | set(self._reported) | set(self._manual))
         result = {}
         for agent in agents:
-            reported = self._reported.get(agent, {})
+            five_reported = self._reported_window(agent, "five_hour", now)
+            week_reported = self._reported_window(agent, "seven_day", now)
             five = WindowUsage(
                 label="5시간",
                 key="five_hour",
                 seconds=FIVE_HOURS,
                 tokens=self._tokens_since(agent, FIVE_HOURS, now),
                 budget=self.five_hour_budget,
-                reported=reported.get("five_hour"),
+                reported=five_reported["utilization"] if five_reported else None,
                 manual=self._manual_utilization(agent, "five_hour", now),
+                resets_at=self._resets_at(agent, "five_hour", five_reported),
             )
             week = WindowUsage(
                 label="7일",
@@ -204,11 +253,21 @@ class UsageTracker:
                 seconds=SEVEN_DAYS,
                 tokens=self._tokens_since(agent, SEVEN_DAYS, now),
                 budget=self.weekly_budget,
-                reported=reported.get("seven_day") or reported.get("weekly"),
+                reported=week_reported["utilization"] if week_reported else None,
                 manual=self._manual_utilization(agent, "seven_day", now),
+                resets_at=self._resets_at(agent, "seven_day", week_reported),
             )
             result[agent] = {"windows": [five.as_dict(), week.as_dict()]}
         return result
+
+    def _resets_at(self, agent: str, window: str, reported: Optional[dict]) -> Optional[float]:
+        """What the bar shows as the next reset: the provider's instant when
+        there is one, otherwise the one the user typed with their estimate."""
+        if reported and isinstance(reported.get("resets_at"), (int, float)):
+            return float(reported["resets_at"])
+        entry = self._manual.get(agent, {}).get(window) or {}
+        resets_at = entry.get("resets_at")
+        return float(resets_at) if isinstance(resets_at, (int, float)) else None
 
     def _manual_utilization(self, agent: str, window: str, now: float) -> Optional[float]:
         entry = self._manual.get(agent, {}).get(window)

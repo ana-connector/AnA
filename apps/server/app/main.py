@@ -1,3 +1,4 @@
+import contextlib
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -28,6 +29,7 @@ from packages.memory.db import create_pool, run_migrations
 from packages.memory.embeddings import EmbeddingModel
 from packages.memory.rag import list_threads, thread_history
 from packages.governance.workspace import session_workspace, workspace_root
+from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
 from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports
 from packages.orchestrator.routing import load_routing_table
@@ -275,9 +277,17 @@ async def put_settings(body: SettingsUpdate) -> dict:
 
 @app.get("/usage")
 async def usage(request: Request) -> dict:
-    """Per-agent usage windows for the status bar. The Claude CLI reports its
-    own utilization; the Codex side is ANA's estimate from the tokens it has
-    seen, and each window says which it is."""
+    """Per-agent usage windows for the status bar.
+
+    Both CLIs state their real utilization — Claude on stdout, Codex only in
+    its rollout log — so the bar shows the provider's numbers where they
+    exist and says "estimated" only where they do not. Codex's log is re-read
+    here as well as after each turn, so a restarted server has the real figure
+    before it has run anything."""
+    with contextlib.suppress(Exception):
+        request.app.state.usage_tracker.record_reported_windows(
+            "codex", read_codex_rate_limits()
+        )
     return {"agents": request.app.state.usage_tracker.snapshot()}
 
 
