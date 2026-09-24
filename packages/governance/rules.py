@@ -7,10 +7,13 @@ config/governance.yaml and docs/plans/2026-09-22-governance-gate.md.
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from functools import lru_cache
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -88,6 +91,8 @@ class RuleSet:
         haystack = _searchable_text(tool_input)
         for rule in self.rules:
             if rule.matches(tool_name, haystack):
+                if rule.id == "network-egress" and _is_loopback_curl(haystack):
+                    continue
                 return Verdict(
                     action=rule.action,
                     rule_id=rule.id,
@@ -106,6 +111,50 @@ def _searchable_text(tool_input: dict) -> str:
     if isinstance(command, str):
         return command
     return json.dumps(tool_input, ensure_ascii=False)
+
+
+def _is_loopback_curl(command: str) -> bool:
+    """Exempt a curl call whose explicit HTTP targets stay on this machine.
+
+    A mixed command, proxy, redirect, or curl config may contact another
+    machine, so those still take the normal network approval path.
+    """
+    if len(re.findall(r"\b(curl|wget|nc|netcat|telnet|ssh|scp|rsync)\b", command, re.I)) != 1:
+        return False
+    if re.search(r"\b(?:pip3?|npm|pnpm|yarn|cargo|go)\s+(?:install|add|get)\b|\bgit\s+(?:push|clone|fetch|pull)\b", command, re.I):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if "curl" not in tokens:
+        return False
+    if any(
+        token.startswith(("--location", "--proxy", "--config", "--connect-to", "--resolve"))
+        or re.fullmatch(r"-[A-Za-z]*[LxK][A-Za-z]*", token)
+        for token in tokens
+    ):
+        return False
+    targets = [
+        token.split("=", 1)[-1] if token.startswith("--url=") else token
+        for token in tokens
+        if token.startswith(("http://", "https://", "--url="))
+    ]
+    if not targets:
+        return False
+    for target in targets:
+        try:
+            host = urlsplit(target).hostname
+        except ValueError:
+            return False
+        if host == "localhost":
+            continue
+        try:
+            if host is None or not ip_address(host).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 @lru_cache(maxsize=4)

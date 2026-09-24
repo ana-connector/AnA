@@ -12,11 +12,14 @@ at all), so the gate is where "outside your workspace" has to be decided.
 import hashlib
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Iterable, Optional
 
-# Absolute paths, and ~-relative ones, as they appear inside a shell command.
-_PATH_RE = re.compile(r"(?<![\w=])(~?/[^\s'\";|&><)]+)")
+# Patch contents are data. Only file headers name paths the patch will touch.
+_PATCH_BLOCK_RE = re.compile(r"(?ms)^\*\*\* Begin Patch\s*\n.*?^\*\*\* End Patch[^\n]*")
+_PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE)
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w-]*)\1")
 
 # Read-only system paths a normal command touches constantly. Flagging these
 # would make the confinement check fire on `ls /usr/bin` and train the user to
@@ -35,10 +38,36 @@ _IGNORED_PREFIXES = (
     "/etc/ssl",
 )
 
+# Temporary output is routine for local probes and builds. This is an
+# exception to session workspace approval, not to a worker's narrower scope.
+_TEMP_PREFIXES = ("/tmp", "/var/tmp")
+
 # Public name for the list above: the sub-agent scope check needs the same
 # exemptions, and reaching into a private name across modules is how two
 # copies of a list start to drift.
 IGNORED_PREFIXES = _IGNORED_PREFIXES
+
+
+def is_ignored_system_path(path: str) -> bool:
+    """Match an exempt path itself or a child, never an unrelated sibling."""
+    return any(path == prefix or path.startswith(prefix + os.sep) for prefix in IGNORED_PREFIXES)
+
+
+def _without_heredoc_bodies(command: str) -> str:
+    """Keep shell commands while skipping here-document data lines."""
+    lines = command.splitlines(keepends=True)
+    kept: list[str] = []
+    delimiter: str | None = None
+    for line in lines:
+        if delimiter is not None:
+            if line.strip() == delimiter:
+                delimiter = None
+            continue
+        kept.append(line)
+        marker = _HEREDOC_RE.search(line)
+        if marker:
+            delimiter = marker.group(2)
+    return "".join(kept)
 
 # Field names used by file-oriented tools in both CLIs.
 _PATH_FIELDS = ("file_path", "path", "notebook_path", "target_file", "directory")
@@ -73,9 +102,31 @@ def extract_paths(tool_input: dict) -> list[str]:
         value = tool_input.get(field)
         if isinstance(value, str) and value:
             paths.append(value)
-    command = tool_input.get("command")
-    if isinstance(command, str):
-        paths.extend(_PATH_RE.findall(command))
+    for field in ("command", "patch"):
+        value = tool_input.get(field)
+        if not isinstance(value, str):
+            continue
+        for block in _PATCH_BLOCK_RE.findall(value):
+            paths.extend(_PATCH_PATH_RE.findall(block))
+        if field == "patch":
+            continue
+        command = _without_heredoc_bodies(_PATCH_BLOCK_RE.sub("", value))
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            # An unfinished shell quote cannot justify guessing that text in
+            # the unfinished argument is a filesystem path.
+            continue
+        for token in tokens:
+            # Accept path operands and option assignments, not arbitrary slash
+            # fragments in URLs, regexes, markup, or quoted output strings.
+            candidate = token.split("=", 1)[-1] if "=" in token else token
+            if candidate.startswith("@/"):
+                candidate = candidate[1:]
+            if candidate.startswith(("/", "~/")) and not candidate.startswith("//"):
+                paths.append(candidate)
     return paths
 
 
@@ -102,13 +153,16 @@ def escaping_paths(
     Read-only system locations are ignored (see _IGNORED_PREFIXES): a command
     that reads /usr/bin is not escaping anything, and flagging it would train
     the user to approve without reading."""
-    allowed_prefixes = tuple(_IGNORED_PREFIXES) + tuple(extra_allowed)
+    allowed_prefixes = _TEMP_PREFIXES + tuple(extra_allowed)
     escaping = []
     for raw in extract_paths(tool_input):
         candidate = _normalize(raw)
         if not os.path.isabs(candidate):
             continue  # relative paths resolve inside the working directory
-        if candidate.startswith(allowed_prefixes):
+        if is_ignored_system_path(candidate) or any(
+            candidate == prefix or candidate.startswith(prefix + os.sep)
+            for prefix in allowed_prefixes
+        ):
             continue
         if not is_within(candidate, workspace):
             escaping.append(candidate)

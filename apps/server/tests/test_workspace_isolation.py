@@ -40,6 +40,30 @@ def test_extract_paths_from_commands_and_file_tools():
     assert "/home/x/notes.md" in extract_paths({"file_path": "/home/x/notes.md"})
 
 
+def test_command_text_is_not_mistaken_for_a_path():
+    command = "docker ps -a --filter name='^/todo-3020$' --format '{{.Names}}'"
+    assert extract_paths({"command": command}) == []
+    assert extract_paths({"command": "curl -fsS http://127.0.0.1:3020/"}) == []
+    assert extract_paths({"command": "rg 's|/etc/passwd|x|' src"}) == []
+    assert extract_paths({"command": "cat <<'EOF'\n</title>\nEOF\n"}) == []
+    assert extract_paths({"command": "cat > /home/other/out <<'EOF'\n</title>\nEOF\n"}) == [
+        "/home/other/out"
+    ]
+
+
+def test_patch_scans_file_headers_without_scanning_html_content():
+    patch = """*** Begin Patch
+*** Add File: index.html
++<head><title>오늘의 할 일</title><style></style></head>
+*** Update File: /home/other/changed.txt
+@@
+-old
++new
+*** End Patch"""
+    assert extract_paths({"command": patch}) == ["index.html", "/home/other/changed.txt"]
+    assert extract_paths({"patch": patch}) == ["index.html", "/home/other/changed.txt"]
+
+
 def test_is_within_handles_traversal(tmp_path):
     root = str(tmp_path / "ws")
 
@@ -61,6 +85,16 @@ def test_escaping_paths_ignores_read_only_system_locations(tmp_path):
     # Flagging these would make every `ls /usr/bin` an approval prompt and
     # train the user to approve without reading.
     assert escaping_paths({"command": "ls /usr/bin && cat /proc/cpuinfo"}, root) == []
+    assert escaping_paths({"command": "cat /usr-other/file"}, root) == ["/usr-other/file"]
+
+
+def test_temporary_output_and_local_probe_do_not_escape_workspace(tmp_path):
+    command = (
+        "curl -fsS -o /tmp/todo-3020-response.html "
+        "-w 'HTTP %{http_code}; bytes %{size_download}' http://127.0.0.1:3020/ "
+        "&& rg -n '오늘의 할 일|localStorage|추가|삭제' /tmp/todo-3020-response.html"
+    )
+    assert escaping_paths({"command": command}, tmp_path) == []
 
 
 def test_escaping_paths_flags_paths_outside_the_workspace(tmp_path):
