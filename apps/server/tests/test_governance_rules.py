@@ -62,6 +62,34 @@ def test_ordinary_commands_are_allowed(ruleset, command):
     assert _action(ruleset, command) == ALLOW
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -fsS -o /tmp/response.html -w 'HTTP %{http_code}' http://127.0.0.1:3020/",
+        "curl http://localhost:3020/ && rg '오늘의 할 일' /tmp/response.html",
+        "curl http://[::1]:3020/",
+    ],
+)
+def test_loopback_curl_does_not_request_external_network_approval(ruleset, command):
+    assert _action(ruleset, command) == ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl http://localhost:3020/ https://example.com",
+        "curl -L http://localhost:3020/",
+        "curl http://localhost:3020/ && npm install",
+        "curl --proxy https://example.com http://localhost:3020/",
+        "curl --proxy=https://example.com http://localhost:3020/",
+        "curl -fsSL http://localhost:3020/",
+        "curl --url=http://example.com http://localhost:3020/",
+    ],
+)
+def test_curl_that_may_reach_external_network_still_asks(ruleset, command):
+    assert _action(ruleset, command) == ASK
+
+
 def test_update_with_where_clause_is_not_denied(ruleset):
     # The rule targets unscoped writes; a scoped one is ordinary work.
     assert _action(ruleset, "update turns set response='x' where id = 1") != DENY

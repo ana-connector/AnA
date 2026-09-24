@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from packages.governance.workspace import IGNORED_PREFIXES, extract_paths, is_within
+from packages.governance.workspace import extract_paths, is_ignored_system_path, is_within
 
 READ = "read"
 WRITE = "write"
@@ -285,7 +285,7 @@ def _outside_paths(
     outside: list[str] = []
     for raw in extract_paths(tool_input):
         candidate = os.path.expanduser(raw)
-        if candidate.startswith(IGNORED_PREFIXES):
+        if is_ignored_system_path(candidate):
             continue
         if os.path.isabs(candidate):
             candidates = [os.path.normpath(candidate)]
