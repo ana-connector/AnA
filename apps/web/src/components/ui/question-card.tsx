@@ -58,7 +58,7 @@ export function QuestionCard({
 
   return (
     <Questionnaire
-      className="max-w-xl"
+      className="mx-auto w-full max-w-xl"
       defaultItem="q0"
       items={items}
       shortcuts="numbers"
