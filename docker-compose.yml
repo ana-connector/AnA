@@ -121,6 +121,19 @@ services:
       - ANA_HOST_CLAUDE_JSON=${HOME}/.claude.json
       - ANA_HOST_CODEX_DIR=${HOME}/.codex
       - ANA_HOST_KIMI_DIR=${HOME}/.kimi-code
+      # Answering approvals and questions from a phone
+      # (docs/plans/2026-09-24-discord-remote-approvals.md). Nothing is
+      # published for this: the bot dials Discord *out* over the gateway, and
+      # button clicks come back down that same socket. Unset
+      # ANA_DISCORD_BOT_TOKEN and the bridge never starts.
+      - ANA_DISCORD_BOT_TOKEN=${ANA_DISCORD_BOT_TOKEN:-}
+      - ANA_DISCORD_CHANNEL_ID=${ANA_DISCORD_CHANNEL_ID:-}
+      # Who may answer. Empty means nobody, not everybody — a button in that
+      # channel approves a command the rule set already stopped. The singular
+      # spelling is read too, for the one-person case.
+      - ANA_DISCORD_ALLOWED_USER_IDS=${ANA_DISCORD_ALLOWED_USER_IDS:-}
+      - ANA_DISCORD_ALLOWED_USER_ID=${ANA_DISCORD_ALLOWED_USER_ID:-}
+      - ANA_DISCORD_TURN_SUMMARIES=${ANA_DISCORD_TURN_SUMMARIES:-on}
       # Tracing target. Unset any of these and the tracer becomes a no-op.
       - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse:3000}
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-pk-lf-ana-dev}
