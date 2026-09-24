@@ -144,3 +144,105 @@ async def test_merging_works_without_a_configured_git_identity(tmp_path, monkeyp
 
     assert result.merged, result.reason
     assert (repo / "new.txt").exists()
+
+
+async def test_a_worker_that_raises_still_gives_its_worktree_back(repo, db_pool, monkeypatch):
+    """A failed or cancelled task used to leave its checkout and its branch
+    behind — one leak per failure, piling up in the workspace."""
+    import contextlib
+
+    from apps.server.app.graph import build_graph
+    from langgraph.checkpoint.memory import InMemorySaver
+    from packages.adapters.base import AdapterEvent, AgentAdapter
+
+    class Exploding(AgentAdapter):
+        async def run_stream(self, prompt, session_id=None):
+            raise RuntimeError("boom")
+            yield AdapterEvent(type="text")  # pragma: no cover
+
+        async def terminate(self):
+            return None
+
+    class Lead(AgentAdapter):
+        def __init__(self):
+            self.replies = [
+                '{"mode":"delegate","tasks":[{"id":"a","title":"t","prompt":"p"}]}',
+                "정리했습니다",
+            ]
+
+        async def run_stream(self, prompt, session_id=None):
+            text = self.replies.pop(0) if self.replies else "ok"
+            yield AdapterEvent(type="text", text=text, session_id="lead-sid")
+            yield AdapterEvent(type="result", text=text, session_id="lead-sid", cost_usd=0.0)
+
+        async def terminate(self):
+            return None
+
+    from packages.memory.db import run_migrations
+
+    await run_migrations(db_pool)
+    graph = build_graph(InMemorySaver())
+    config = {
+        "configurable": {
+            "thread_id": "wt-leak",
+            "pool": db_pool,
+            "embedding_model": _StubEmbedding(),
+            "transcript": _NullTranscript(),
+            "adapters": {"claude": Lead()},
+            "worker_factory": lambda *args, **kwargs: Exploding(),
+            "workspace_dir": str(repo),
+        }
+    }
+    with contextlib.suppress(Exception):
+        async for _ in graph.astream(
+            {"prompt": "해줘", "agent": "claude", "plan_mode": True},
+            config,
+            stream_mode="custom",
+        ):
+            pass
+
+    # No checkout and no branch left over.
+    assert not (repo / ".ana" / "worktrees").exists() or not list(
+        (repo / ".ana" / "worktrees").iterdir()
+    )
+    assert _git("branch", "--list", "ana/*", cwd=repo).strip() == ""
+
+
+class _StubEmbedding:
+    def encode(self, text):
+        return [0.0] * 384
+
+    async def encode_async(self, text):
+        return [0.0] * 384
+
+
+class _NullTranscript:
+    def append(self, *args, **kwargs):
+        return None
+
+
+async def test_two_turns_on_one_workspace_do_not_share_a_worktree_name():
+    """A second browser tab on the same workspace is enough: both turns plan a
+    "t1", and a shared name meant creating the second one deleted the first
+    one's live checkout out from under a running worker."""
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    _git("init", "-b", "main", cwd=directory)
+    _git("-c", "user.name=x", "-c", "user.email=x@y", "commit", "--allow-empty", "-m", "base", cwd=directory)
+
+    first = await worktrees.create(str(directory), "t1", thread_id="th")
+    (Path(first.path) / "mine.txt").write_text("first\n", encoding="utf-8")
+    second = await worktrees.create(str(directory), "t1", thread_id="th")
+
+    assert first.path != second.path
+    assert first.branch != second.branch
+    # The first worker's work is still there.
+    assert (Path(first.path) / "mine.txt").exists()
+
+
+def test_the_merge_lock_is_per_workspace():
+    from packages.orchestrator import worktrees as module
+
+    assert module.merge_lock_for("/a") is module.merge_lock_for("/a/")
+    assert module.merge_lock_for("/a") is not module.merge_lock_for("/b")

@@ -276,7 +276,9 @@ async def gate_tool_call(
     # stage 5's Elevation-of-Privilege row). Checked before the rule set
     # because it only ever narrows: a scope cannot grant what the rules deny.
     scope = Scope.from_payload(body.scope_mode, body.scope_paths)
-    scope_reason = scope_violation(body.tool_name, body.tool_input, scope, session.workspace)
+    scope_reason = scope_violation(
+        body.tool_name, body.tool_input, scope, session.workspace, body.cwd
+    )
     if scope_reason:
         verdict = Verdict(
             action=DENY,

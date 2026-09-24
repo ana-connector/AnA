@@ -25,6 +25,7 @@ Deliberate limits:
 import asyncio
 import os
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -103,6 +104,20 @@ async def current_branch(workspace: str) -> Optional[str]:
     return None if branch in ("", "HEAD") else branch
 
 
+# One lock per workspace path, not per turn: two conversations open on the
+# same folder merge into the same index, and git answers the second one with
+# "Another git process seems to be running".
+_MERGE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def merge_lock_for(workspace: str) -> asyncio.Lock:
+    key = os.path.normpath(workspace)
+    lock = _MERGE_LOCKS.get(key)
+    if lock is None:
+        lock = _MERGE_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
 async def create(workspace: str, task_id: str, *, thread_id: str = "") -> Optional[Worktree]:
     """A fresh worktree for one task, or None when the workspace cannot host
     one (not a repo, detached HEAD, no commits yet, git unavailable)."""
@@ -119,14 +134,17 @@ async def create(workspace: str, task_id: str, *, thread_id: str = "") -> Option
     if code != 0:
         return None
 
-    slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in f"{thread_id}-{task_id}")
+    # The name carries a per-run suffix. Without it, two turns on the same
+    # workspace — a second browser tab is enough — produce the same name for
+    # their own "t1", and creating the second one deleted the first one's
+    # live checkout out from under a running worker.
+    slug = "".join(
+        ch if ch.isalnum() or ch in "-_" else "-"
+        for ch in f"{thread_id}-{task_id}-{uuid.uuid4().hex[:6]}"
+    )
     slug = slug.strip("-") or task_id
     branch = f"{BRANCH_PREFIX}/{slug}"
     path = Path(workspace) / WORKTREE_DIRNAME / slug
-    if path.exists():
-        # Left over from a crashed turn: reuse the name by clearing it, since
-        # the branch below is recreated from the current HEAD anyway.
-        await remove(Worktree(str(path), branch, base, workspace))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     await _exclude_worktrees(workspace)

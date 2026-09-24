@@ -415,3 +415,21 @@ async def test_each_rung_uses_its_own_model(db_pool, tmp_path, monkeypatch):
 
     assert ("codex", "gpt-6-astra") in seen
     assert ("codex", "fable") not in seen
+
+
+@pytest.mark.asyncio
+async def test_a_rung_without_an_effort_does_not_inherit_the_planning_one(db_pool):
+    """The planning call runs at the cheapest effort. A rung that names no
+    effort of its own means "let the CLI decide" — not "keep whatever the last
+    call used", which is what a skipped assignment left behind."""
+    from apps.server.app.graph import _resolve_adapter
+
+    adapter = WorkingAdapter("claude")
+    adapter.model, adapter.effort = None, None
+    configurable = {"adapters": {"claude": adapter}}
+
+    _resolve_adapter(configurable, "claude", model="fable", effort="low")
+    assert (adapter.model, adapter.effort) == ("fable", "low")
+
+    _resolve_adapter(configurable, "claude", model=None, effort=None)
+    assert (adapter.model, adapter.effort) == (None, None)

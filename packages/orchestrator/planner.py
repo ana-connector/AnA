@@ -17,7 +17,12 @@ from packages.orchestrator.handoff import AGENTS, DEFAULT_AGENT
 DIRECT = "direct"
 DELEGATE = "delegate"
 
-DEFAULT_MAX_TASKS = 5
+# How many tasks one plan may contain, and how many may run at once. They
+# stopped being the same number when tasks gained dependencies: a five-stage
+# pipeline is five tasks that run two at a time, and capping the *plan* at the
+# concurrency limit truncated exactly the plans worth making.
+DEFAULT_MAX_TASKS = 10
+DEFAULT_MAX_CONCURRENCY = 5
 
 PLAN_INSTRUCTIONS = """\
 너는 오케스트레이터의 대장 에이전트다. 아래 요청을 보고 **JSON만** 출력해라.
@@ -47,7 +52,7 @@ PLAN_INSTRUCTIONS = """\
   말은 검증 결과를 이기지 못한다.
   - 코드 변경이면 테스트/빌드/린트 명령을 써라. 없으면 비워라(없는 명령을 지어내지 마라).
   - 조사·설명 작업에는 붙이지 마라.
-- 작업은 최대 %(max_tasks)d개.
+- 작업은 최대 %(max_tasks)d개. (동시에 도는 개수는 ANA가 따로 제한한다)
 - **needs로 순서를 표현해라.** needs가 빈 작업들은 동시에 시작하고, needs에 적은
   작업이 모두 끝나야 그 작업이 시작한다. 앞 작업의 결과는 뒤 작업 지시에 자동으로
   붙는다. 순서가 필요한 일을 한 작업으로 뭉치지 마라 — 단계마다 나누고 needs로 엮어라.
@@ -115,12 +120,23 @@ class Plan:
 
 
 def max_tasks() -> int:
-    """Also the concurrency cap: planning more tasks than can run at once only
-    queues them, and the roadmap fixes the cap at 5 by default."""
+    """How many tasks a plan may contain (ANA_MAX_PLAN_TASKS)."""
     try:
-        return max(1, int(os.environ.get("ANA_MAX_SUBAGENTS", DEFAULT_MAX_TASKS)))
+        return max(1, int(os.environ.get("ANA_MAX_PLAN_TASKS", DEFAULT_MAX_TASKS)))
     except ValueError:
         return DEFAULT_MAX_TASKS
+
+
+def max_concurrency() -> int:
+    """How many sub-agents may run at the same time (ANA_MAX_SUBAGENTS).
+
+    The roadmap's resource cap, unchanged at 5: a plan may be longer than this
+    — the rest simply waits its turn, which for a dependency graph is what it
+    was going to do anyway."""
+    try:
+        return max(1, int(os.environ.get("ANA_MAX_SUBAGENTS", DEFAULT_MAX_CONCURRENCY)))
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENCY
 
 
 def build_planning_prompt(prompt: str, limit: Optional[int] = None) -> str:

@@ -94,12 +94,21 @@ def test_task_count_is_capped():
     assert "제외" in plan.note
 
 
-def test_cap_comes_from_the_environment(monkeypatch):
-    monkeypatch.setenv("ANA_MAX_SUBAGENTS", "3")
-    assert max_tasks() == 3
+def test_the_plan_cap_and_the_concurrency_cap_are_separate(monkeypatch):
+    """They stopped being the same number when tasks gained dependencies: a
+    five-stage pipeline is five tasks that run two at a time, and capping the
+    plan at the concurrency limit truncated exactly the plans worth making."""
+    from packages.orchestrator.planner import max_concurrency
 
+    monkeypatch.setenv("ANA_MAX_PLAN_TASKS", "3")
+    monkeypatch.setenv("ANA_MAX_SUBAGENTS", "2")
+    assert max_tasks() == 3
+    assert max_concurrency() == 2
+
+    monkeypatch.setenv("ANA_MAX_PLAN_TASKS", "nonsense")
     monkeypatch.setenv("ANA_MAX_SUBAGENTS", "nonsense")
-    assert max_tasks() == 5  # roadmap default
+    assert max_tasks() == 10
+    assert max_concurrency() == 5  # the roadmap's resource cap, unchanged
 
 
 @pytest.mark.parametrize("payload", ['{"mode": "delegate", "tasks": "nope"}', "[1,2,3]"])

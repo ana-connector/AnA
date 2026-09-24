@@ -39,6 +39,7 @@ from packages.orchestrator.planner import (
     build_planning_prompt,
     build_task_prompt,
     build_synthesis_prompt,
+    max_concurrency,
     max_tasks,
     parse_plan,
 )
@@ -175,6 +176,45 @@ async def _run_worker(adapter, prompt: str) -> WorkerRun:
     return run
 
 
+async def _work_the_task(task, prompt, base_prompt, cwd, worker_route, worker_factory, writer):
+    """Runs one task's worker, re-dispatching once when ANA's own check fails.
+
+    Split out of the fan-out so the caller can wrap it in a `finally` that
+    always merges and removes the worktree."""
+    run = None
+    checked = None
+    for attempt in range(verification.max_retries() + 1):
+        run = await _run_worker(
+            worker_factory(
+                worker_route.agent,
+                worker_route.model,
+                worker_route.effort,
+                task.scope,
+                cwd,
+            ),
+            prompt,
+        )
+        if not task.verify:
+            break
+        checked = await verification.verify(task.verify, cwd or ".")
+        if not checked.failed or attempt >= verification.max_retries():
+            break
+        # The check is the fact; the worker's summary is a claim. Send it back
+        # once with the failure output attached.
+        writer(
+            {
+                "type": "subagent",
+                "text": f"검증 실패, 재시도: {checked.command}",
+                "session_id": None,
+                "is_error": True,
+                "agent": task.agent,
+                "task": {**_task_frame(task), "status": "running"},
+            }
+        )
+        prompt = verification.retry_prompt(base_prompt, checked)
+    return run, checked
+
+
 def _task_frame(task) -> dict:
     """One planned task as the UI reads it."""
     return {
@@ -226,11 +266,16 @@ def _resolve_adapter(
     adapter = adapters.get(agent) if adapters else configurable.get("adapter")
     if adapter is None:
         raise KeyError(f"no adapter configured for agent {agent!r}")
-    if model is not None and hasattr(adapter, "model"):
-        # Turns are serialized per connection, so setting the model on the
-        # shared adapter is safe and avoids rebuilding it for every rung.
+    # Set unconditionally, None included. Turns are serialized per connection,
+    # so writing to the shared adapter is safe — but skipping the write when
+    # the caller passes None left the *previous* call's value in place: the
+    # planning call runs at the cheapest effort, so a rung that names no
+    # effort of its own silently answered at planning effort for the rest of
+    # the turn. None means "let the CLI decide", which is a value, not an
+    # absence.
+    if hasattr(adapter, "model"):
         adapter.model = model
-    if effort is not None and hasattr(adapter, "effort"):
+    if hasattr(adapter, "effort"):
         adapter.effort = effort
     return adapter
 
@@ -514,8 +559,10 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     }
                 )
 
-            merge_lock = asyncio.Lock()
             workspace_dir = configurable.get("workspace_dir")
+            # Per workspace, not per turn: two conversations open on the same
+            # folder merge into the same git index.
+            merge_lock = worktrees.merge_lock_for(workspace_dir or ".")
 
             async def run_worker(task, upstream=()):
                 # Workers do the actual work, so they get the worker ladder —
@@ -543,59 +590,56 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 prompt = base_prompt
                 run = None
                 checked = None
-                for attempt in range(verification.max_retries() + 1):
-                    run = await _run_worker(
-                        worker_factory(
-                            worker_route.agent,
-                            worker_route.model,
-                            worker_route.effort,
-                            task.scope,
-                            cwd,
-                        ),
-                        prompt,
+                merged = None
+                try:
+                    run, checked = await _work_the_task(
+                        task, prompt, base_prompt, cwd, worker_route, worker_factory, writer
                     )
-                    if not task.verify:
-                        break
-                    checked = await verification.verify(task.verify, cwd or ".")
-                    if not checked.failed or attempt >= verification.max_retries():
-                        break
-                    # The check is the fact; the worker's summary is a claim.
-                    # Send it back once with the failure output attached.
-                    writer(
-                        {
-                            "type": "subagent",
-                            "text": f"검증 실패, 재시도: {checked.command}",
-                            "session_id": None,
-                            "is_error": True,
-                            "agent": task.agent,
-                            "task": {**_task_frame(task), "status": "running"},
-                        }
-                    )
-                    prompt = verification.retry_prompt(base_prompt, checked)
-
-                if checked is not None:
+                finally:
+                    if tree is not None:
+                        # In `finally`: a worker that raised, or a turn the
+                        # user cancelled, used to leave its checkout and its
+                        # branch behind — one leaked worktree per failure,
+                        # accumulating in the workspace nobody asked to keep
+                        # them.
+                        try:
+                            merged = await worktrees.merge(
+                                tree, f"ANA {task.id}: {task.title}", lock=merge_lock
+                            )
+                        except Exception as exc:  # noqa: BLE001 - a merge that
+                            # cannot even run is reported, not swallowed: the
+                            # work is still on its branch and the user has to
+                            # be told which one.
+                            merged = worktrees.MergeResult(
+                                merged=False,
+                                reason=f"병합을 실행하지 못함: {exc}",
+                                branch=tree.branch,
+                            )
+                        # A conflicted branch is the only copy of that work, so
+                        # it outlives the worktree that made it. Removal itself
+                        # is best-effort: failing to tidy up must not turn a
+                        # finished task into a failed one.
+                        with contextlib.suppress(Exception):
+                            await worktrees.remove(
+                                tree, keep_branch=not merged.merged
+                            )
+                if checked is not None and run is not None:
                     run.extras["verification"] = checked.as_dict()
-
-                if tree is not None:
-                    merged = await worktrees.merge(
-                        tree, f"ANA {task.id}: {task.title}", lock=merge_lock
-                    )
+                if merged is not None and run is not None:
                     run.extras["merge"] = {
                         "merged": merged.merged,
                         "empty": merged.empty,
                         "branch": merged.branch,
                         "reason": merged.reason,
                     }
-                    # A conflicted branch is the only copy of that work, so it
-                    # outlives the worktree that produced it.
-                    await worktrees.remove(tree, keep_branch=not merged.merged)
                 return run
+
 
             with tracer.span(trace, name="subagents", metadata={"count": len(plan.tasks)}):
                 results = await run_tasks(
                     plan.tasks,
                     run_worker,
-                    max_concurrency=max_tasks(),
+                    max_concurrency=max_concurrency(),
                     timeout_seconds=float(
                         os.environ.get("ANA_SUBAGENT_TIMEOUT_SECONDS", 600)
                     ),
