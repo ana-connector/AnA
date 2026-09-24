@@ -86,7 +86,12 @@ async def lifespan(app: FastAPI):
         app.state.tracer = Tracer.from_env()
         app.state.usage_tracker = UsageTracker()
         app.state.gate_registry = GateRegistry(
-            approval_timeout=float(os.environ.get("ANA_APPROVAL_TIMEOUT_SECONDS", 300))
+            approval_timeout=float(os.environ.get("ANA_APPROVAL_TIMEOUT_SECONDS", 300)),
+            # Longer than an approval on purpose: an approval interrupts someone
+            # who is watching the agent work, a question can arrive when they
+            # have walked away. A timeout here is a result, not a failure — the
+            # agent is told to state its assumption and carry on.
+            question_timeout=float(os.environ.get("ANA_QUESTION_TIMEOUT_SECONDS", 900)),
         )
 
         yield

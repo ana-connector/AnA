@@ -21,6 +21,19 @@ rules:
     patterns:
       - '^\s*git\s+(status|diff|log|show|branch)\b'
 
+  # Asking the user a question is not a tool call to be approved: the approval
+  # card exists so a human decides, and this *is* the agent asking a human to
+  # decide. Listed before the blocks below because the question text itself can
+  # contain anything — "git push 해도 되나?" would otherwise match the
+  # git-history-rewrite rule and hold the question behind an approval for the
+  # question.
+  - id: ask-user
+    category: allowlist
+    action: allow
+    tools: [mcp__ask__ask_user, ask__ask_user, askask_user]
+    patterns:
+      - '[\s\S]*'
+
   # --- ANA modifying ANA ---------------------------------------------------
   # ANA can be pointed at its own repository (the "ana-self" workspace), which
   # means an agent can edit the rules this gate reads and the hook that calls

@@ -33,7 +33,7 @@ def mcp_enabled() -> bool:
     return os.environ.get("ANA_MCP", "on").lower() != "off"
 
 
-def process_role(role: str) -> str:
+def process_role(role: str):
     """Whose servers the CLI *process* is started with.
 
     Not the same question as "what may this agent call". A lead CLI process is
@@ -45,9 +45,14 @@ def process_role(role: str) -> str:
     this ran for real.
 
     The lead itself is still kept away from them by the gate, which refuses it
-    every tool call but delegation and the clock. Flags decide what exists;
-    the gate decides who may use it."""
-    return WORKER if role == LEAD else role
+    every tool call but delegation, the clock, and asking the user. Flags decide
+    what exists; the gate decides who may use it.
+
+    So a lead process gets both sets: the worker servers its native sub-agents
+    need, and the servers scoped to the lead itself — `ask`, which is the lead's
+    own way of reaching the user. Returning only WORKER here meant a
+    lead-scoped server was configured for nobody and never spawned at all."""
+    return (WORKER, LEAD) if role == LEAD else (role,)
 
 
 def resolve_for_role(

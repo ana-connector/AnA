@@ -27,16 +27,21 @@ def test_mcp_servers_reports_active_and_why_not(client):
     names = {entry["name"] for entry in body["active"]} | {
         entry["name"] for entry in body["inactive"]
     }
-    assert names == {"git", "postgres", "github"}
+    assert names == {"git", "postgres", "github", "ask"}
+    # `ask` is the lead's own server, so a worker sees it listed with the reason
+    # it does not have it rather than not at all.
+    assert "ask" in {entry["name"] for entry in body["inactive"]}
     # Every inactive server says why, so the settings page never shows a
     # server that is simply missing with no explanation.
     assert all(entry["reason"] for entry in body["inactive"])
 
 
-def test_lead_has_no_mcp_servers(client):
+def test_the_leads_only_mcp_server_is_asking_the_user(client):
+    """The lead does no work of its own, so it gets no tooling — except the one
+    server that is not tooling: `ask`, which reaches the user."""
     body = client.get("/mcp/servers?role=lead").json()
 
-    assert body["active"] == []
+    assert [entry["name"] for entry in body["active"]] == ["ask"]
 
 
 def test_skills_lists_the_library_with_schemas(client):

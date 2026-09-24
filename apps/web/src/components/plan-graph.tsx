@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTheme } from "next-themes";
 import {
   Background,
@@ -11,7 +11,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Badge } from "@/components/ui/badge";
-import { ChevronRightIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import type { PlanState, SubagentTask } from "@/hooks/useChatSocket";
 
 const STATUS_LABEL: Record<SubagentTask["status"], string> = {
@@ -66,6 +67,8 @@ function nodeStyle(status?: SubagentTask["status"]): React.CSSProperties {
 export function PlanGraph({
   plan,
   onSelectTask,
+  defaultOpen = true,
+  autoCollapse = false,
 }: {
   plan: PlanState;
   /** Opens one sub-agent's own transcript. The task you want to read is the
@@ -73,8 +76,24 @@ export function PlanGraph({
    *  ask for it — this used to be a dropdown in the window's title bar,
    *  listing every task of every turn by number. */
   onSelectTask?: (task: SubagentTask) => void;
+  /** Finished turns start folded: scrolling back through a conversation should
+   *  show what was said, not a stack of canvases. */
+  defaultOpen?: boolean;
+  /** Folds the card while it is still the live plan — set once the lead starts
+   *  writing its answer. The 200px canvas plus the task list used to sit below
+   *  the streaming reply and push it out of the viewport, so you watched the
+   *  graph and read the answer by scrolling up. A manual toggle wins over this.
+   */
+  autoCollapse?: boolean;
 }) {
   const { resolvedTheme } = useTheme();
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  const open = toggled ?? (autoCollapse ? false : defaultOpen);
+  const running = plan.tasks.filter((task) => task.status === "running").length;
+  const done = plan.tasks.filter((task) => task.status === "done").length;
+  const failed = plan.tasks.filter(
+    (task) => task.status === "error" || task.status === "timeout"
+  ).length;
 
   const { nodes, edges } = useMemo(() => {
     const laneHeight = 56;
@@ -125,7 +144,11 @@ export function PlanGraph({
           x: 260 + (placement.get(task.id)?.column ?? 0) * columnWidth,
           y: (placement.get(task.id)?.row ?? 0) * laneHeight,
         },
-        data: { label: `${task.title}\n${task.agent} · ${STATUS_LABEL[task.status]}` },
+        // The model that ran it, when the CLI said which — "codex" alone does
+        // not say what answered, and a plan routes tasks to different models.
+        data: {
+          label: `${task.title}\n${task.model ?? task.agent} · ${STATUS_LABEL[task.status]}`,
+        },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         style: { ...nodeStyle(task.status), whiteSpace: "pre-line" as const },
@@ -159,14 +182,27 @@ export function PlanGraph({
 
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border p-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setToggled(!open)}
+        aria-expanded={open}
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-sm text-left hover:opacity-80"
+      >
+        <ChevronDownIcon
+          className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")}
+        />
         <Badge variant="secondary">Planner-Worker</Badge>
         <span className="text-xs text-muted-foreground">
-          서브에이전트 {plan.tasks.length}개 병렬 실행
+          서브에이전트 {plan.tasks.length}개
+          {running > 0 ? ` · 실행 중 ${running}` : ""}
+          {done > 0 ? ` · 완료 ${done}` : ""}
+          {failed > 0 ? ` · 실패 ${failed}` : ""}
           {plan.note ? ` · ${plan.note}` : ""}
         </span>
-      </div>
+      </button>
 
+      {!open ? null : (
+      <>
       <div className="h-[200px] w-full">
         <ReactFlow
           nodes={nodes}
@@ -203,6 +239,11 @@ export function PlanGraph({
               title={onSelectTask ? `${task.title} 하위 에이전트 기록 보기` : undefined}
             >
               <Badge variant="outline">{task.agent}</Badge>
+              {task.model && task.model !== task.agent && (
+                <span className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
+                  {task.model}
+                </span>
+              )}
               {scopeLabel(task) && (
                 <Badge variant="outline" title="대장이 이 하위 에이전트에게 준 권한 범위">
                   {scopeLabel(task)}
@@ -218,6 +259,8 @@ export function PlanGraph({
           </li>
         ))}
       </ul>
+      </>
+      )}
     </div>
   );
 }

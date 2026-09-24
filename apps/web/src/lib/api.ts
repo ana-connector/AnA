@@ -51,6 +51,7 @@ export type HistoryTurn = {
       title: string;
       prompt?: string;
       agent: string;
+      model?: string | null;
       status: string;
       error?: string;
       output?: string;

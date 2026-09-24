@@ -17,6 +17,7 @@ export type ChatEvent =
         | "thread_id"
         | "cancelled"
         | "approval_request"
+        | "question"
         | "failover"
         | "plan"
         | "subagent"
@@ -44,6 +45,9 @@ export type ChatEvent =
         needs?: string[];
       }[];
       task?: SubagentTask;
+      questions?: AgentQuestion[];
+      role?: string;
+      request_id?: string;
       rule_id?: string | null;
       tool?: ToolEvent;
       cost_usd?: number | null;
@@ -91,6 +95,29 @@ export type ApprovalRequest = {
   cwd: string | null;
 };
 
+/** One question the agent asked the user, waiting for an answer.
+ *
+ *  The counterpart of an approval: an approval is the machine asking permission
+ *  for something it already decided to do, a question is the agent admitting it
+ *  cannot decide without the person. Both reach the browser over this socket
+ *  and block the turn until they are answered. */
+export type AgentQuestion = {
+  question: string;
+  /** Choices to pick from. Empty means a free-text answer. */
+  options: string[];
+  /** Whether several options may be picked at once. */
+  multi: boolean;
+  /** Why it is being asked, or what the options imply. */
+  note: string;
+};
+
+export type QuestionRequest = {
+  request_id: string;
+  questions: AgentQuestion[];
+  agent: string | null;
+  role: string;
+};
+
 /** One planned sub-task and how it is going. The lead plans them; the
  *  supervisor runs them with a concurrency cap. */
 export type SubagentTask = {
@@ -103,6 +130,10 @@ export type SubagentTask = {
   scope?: { mode: string; paths: string[] };
   /** Task ids this one waited for. Empty means it started immediately. */
   needs?: string[];
+  /** The model that answered this task, as its CLI reported it (or the one the
+   *  ladder asked for). A plan routes its tasks to different models on purpose,
+   *  so "codex" alone does not say what ran. */
+  model?: string;
   status: "running" | "done" | "error" | "timeout" | "blocked" | "unknown";
   error?: string;
   output?: string;
@@ -181,6 +212,9 @@ export function useChatSocket() {
   const [streaming, setStreaming] = useState(false);
   const [usage, setUsage] = useState<UsageTotals>({ totalCostUsd: 0, totalTokens: 0 });
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  // Questions the agent is waiting on. Plural because one call can ask several,
+  // and a second call can arrive while the first is unanswered.
+  const [questions, setQuestions] = useState<QuestionRequest[]>([]);
   // The current turn's fan-out, or null when the turn is running solo.
   const [plan, setPlan] = useState<PlanState | null>(null);
   const planRef = useRef<PlanState | null>(null);
@@ -313,6 +347,7 @@ export function useChatSocket() {
                       title: task.title,
                       prompt: task.prompt,
                       agent: task.agent,
+                      model: task.model ?? undefined,
                       status: (task.status as SubagentTask["status"]) ?? "done",
                       error: task.error,
                       output: task.output,
@@ -394,9 +429,19 @@ export function useChatSocket() {
               : -1;
             if (toolIndex >= 0) tools[toolIndex] = tool;
             else tools.push(tool);
+            const agent = event.agent ?? "codex";
             const task: SubagentTask = existing
               ? { ...existing, tools }
-              : { id, title: "하위 에이전트", agent: event.agent ?? "codex", status: "running", tools };
+              : {
+                  id,
+                  title: "하위 에이전트",
+                  agent,
+                  // A native sub-agent runs inside the lead's own process, so
+                  // the model the lead reported is the one it runs on.
+                  model: modelsRef.current[agent],
+                  status: "running",
+                  tools,
+                };
             planRef.current = {
               ...current,
               tasks: existing
@@ -493,6 +538,19 @@ export function useChatSocket() {
 
         if (event.type === "approval_request") {
           setApprovals((prev) => [...prev, event as unknown as ApprovalRequest]);
+          return;
+        }
+
+        if (event.type === "question") {
+          const request: QuestionRequest = {
+            request_id: event.request_id ?? "",
+            questions: event.questions ?? [],
+            agent: event.agent ?? null,
+            role: event.role ?? "lead",
+          };
+          if (request.request_id && request.questions.length) {
+            setQuestions((prev) => [...prev, request]);
+          }
           return;
         }
 
@@ -635,6 +693,16 @@ export function useChatSocket() {
     socketRef.current?.send(JSON.stringify({ type: "cancel" }));
   }, []);
 
+  /** Sends the user's answers back to the agent that asked. Removed locally
+   *  rather than on an ack, for the same reason an approval is: the reply goes
+   *  to the waiting tool call, not back to the browser. */
+  const answerQuestion = useCallback((requestId: string, answers: (string | string[])[]) => {
+    socketRef.current?.send(
+      JSON.stringify({ type: "answer", request_id: requestId, answers })
+    );
+    setQuestions((prev) => prev.filter((item) => item.request_id !== requestId));
+  }, []);
+
   const answerApproval = useCallback((requestId: string, decision: "allow" | "deny") => {
     socketRef.current?.send(
       JSON.stringify({ type: "approval", request_id: requestId, decision })
@@ -658,6 +726,7 @@ export function useChatSocket() {
     pendingReasoningRef.current = "";
     setMessages([]);
     setApprovals([]);
+    setQuestions([]);
     setPlan(null);
     planRef.current = null;
     // The previous conversation's planning result and route would otherwise
@@ -689,6 +758,7 @@ export function useChatSocket() {
     workspaceName,
     threadId,
     approvals,
+    questions,
     plan,
     planOutcome,
     models,
@@ -696,6 +766,7 @@ export function useChatSocket() {
     sendMessage,
     cancel,
     answerApproval,
+    answerQuestion,
     openThread,
   };
 }
