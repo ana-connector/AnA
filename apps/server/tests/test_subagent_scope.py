@@ -132,3 +132,41 @@ def test_plan_tasks_carry_the_scope_the_lead_chose():
     # Unstated means the default, which is what every task got before scopes
     # existed.
     assert plan.tasks[1].scope.unrestricted
+
+
+WORKTREE = f"{WORKSPACE}/.ana/worktrees/th-t1"
+
+
+def test_a_path_scope_follows_the_worker_into_its_worktree():
+    """Sub-agent isolation gives each task its own checkout under
+    `.ana/worktrees/`. Resolving the scope only against the workspace root
+    denied the worker its own copy of the very directory it was granted."""
+    scope = Scope(paths=("docs",))
+
+    assert violation(
+        "Read", {"file_path": f"{WORKTREE}/docs/plan.md"}, scope, WORKSPACE, WORKTREE
+    ) is None
+    # The same file in the main tree is still fine, and so is a relative path.
+    assert violation(
+        "Read", {"file_path": f"{WORKSPACE}/docs/plan.md"}, scope, WORKSPACE, WORKTREE
+    ) is None
+    assert violation("Read", {"file_path": "docs/plan.md"}, scope, WORKSPACE, WORKTREE) is None
+
+
+def test_the_scope_still_holds_inside_the_worktree():
+    scope = Scope(paths=("docs",))
+
+    assert violation(
+        "Edit", {"file_path": f"{WORKTREE}/src/app.py"}, scope, WORKSPACE, WORKTREE
+    ) is not None
+
+
+def test_a_cwd_outside_the_workspace_is_not_a_second_root():
+    """cwd comes from the hook payload, which is the CLI's word for where it
+    is running. A value outside the session workspace must not widen the
+    scope."""
+    scope = Scope(paths=("docs",))
+
+    assert violation(
+        "Read", {"file_path": "/elsewhere/docs/a.md"}, scope, WORKSPACE, "/elsewhere"
+    ) is not None

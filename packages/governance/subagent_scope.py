@@ -178,6 +178,7 @@ def violation(
     tool_input: dict,
     scope: Scope,
     workspace: Optional[str] = None,
+    cwd: Optional[str] = None,
 ) -> Optional[str]:
     """Why this call is outside the sub-agent's scope, or None if it is inside."""
     if scope.unrestricted:
@@ -199,7 +200,7 @@ def violation(
                     "변경이 필요하면 대장에게 보고해라."
                 )
     if scope.paths and workspace:
-        outside = _outside_paths(tool_input, scope.paths, workspace)
+        outside = _outside_paths(tool_input, scope.paths, workspace, cwd)
         if outside:
             allowed = ", ".join(scope.paths)
             return (
@@ -253,21 +254,45 @@ def _is_mutating(tool_name: str) -> bool:
     return normalized in {_normalize_name(name) for name in MUTATING_MCP_TOOLS}
 
 
-def _outside_paths(tool_input: dict, paths: Iterable[str], workspace: str) -> list[str]:
+def _outside_paths(
+    tool_input: dict,
+    paths: Iterable[str],
+    workspace: str,
+    cwd: Optional[str] = None,
+) -> list[str]:
     """Paths this call names that fall outside the allowed sub-directories.
 
     Unlike the workspace-escape check this *does* resolve relative paths: a
     worker scoped to `docs/` says `docs/plan.md`, and "it was relative so it
-    must be fine" is exactly the hole this closes."""
-    allowed = [os.path.normpath(os.path.join(workspace, path)) for path in paths]
+    must be fine" is exactly the hole this closes.
+
+    The scope is relative to wherever the worker is actually working, which
+    since sub-agent isolation is its own git worktree inside the workspace
+    (`.ana/worktrees/<task>/`). Resolving only against the workspace root
+    denied `<workspace>/.ana/worktrees/th-t1/docs/a.md` — the worker's own
+    copy of the very directory it was granted."""
+    bases = [os.path.normpath(workspace)]
+    if cwd:
+        resolved_cwd = os.path.normpath(os.path.expanduser(cwd))
+        if resolved_cwd not in bases and is_within(resolved_cwd, workspace):
+            bases.append(resolved_cwd)
+
+    allowed = [
+        os.path.normpath(os.path.join(base, path)) for base in bases for path in paths
+    ]
     outside: list[str] = []
     for raw in extract_paths(tool_input):
         candidate = os.path.expanduser(raw)
         if candidate.startswith(IGNORED_PREFIXES):
             continue
-        if not os.path.isabs(candidate):
-            candidate = os.path.join(workspace, candidate)
-        candidate = os.path.normpath(candidate)
-        if not any(is_within(candidate, root) for root in allowed):
-            outside.append(candidate)
+        if os.path.isabs(candidate):
+            candidates = [os.path.normpath(candidate)]
+        else:
+            candidates = [
+                os.path.normpath(os.path.join(base, candidate)) for base in bases
+            ]
+        if not any(
+            is_within(option, root) for option in candidates for root in allowed
+        ):
+            outside.append(candidates[0])
     return outside

@@ -13,6 +13,8 @@ import os
 import re
 from pathlib import Path
 
+from packages.governance import atomic
+
 HOOK_SCRIPT = Path(__file__).resolve().parent / "hook.py"
 
 
@@ -38,10 +40,10 @@ def _hook_entry(python_executable: str) -> dict:
 
 def write_claude_settings(directory: os.PathLike | str, python_executable: str = "python3") -> Path:
     """Writes the `--settings` file for one session and returns its path."""
-    path = Path(directory) / "claude_settings.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_hook_entry(python_executable), indent=2), encoding="utf-8")
-    return path
+    return atomic.write_text(
+        Path(directory) / "claude_settings.json",
+        json.dumps(_hook_entry(python_executable), indent=2),
+    )
 
 
 def prepare_codex_home(
@@ -68,8 +70,8 @@ def prepare_codex_home(
         if target.exists():
             link.symlink_to(target)
 
-    (home / "hooks.json").write_text(
-        json.dumps(_hook_entry(python_executable), indent=2), encoding="utf-8"
+    atomic.write_text(
+        home / "hooks.json", json.dumps(_hook_entry(python_executable), indent=2)
     )
     return home
 
@@ -142,7 +144,7 @@ def prepare_kimi_home(
     if effort:
         text = _with_thinking_effort(text, effort)
     text += KIMI_HOOKS_TEMPLATE.format(command=f"{python_executable} {HOOK_SCRIPT}")
-    (home / "config.toml").write_text(text, encoding="utf-8")
+    atomic.write_text(home / "config.toml", text)
     return home
 
 

@@ -606,10 +606,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                 adapters[f"claude/{auth_mode}"] = extra
                 return extra
             adapter = adapters[agent]
-            if model is not None:
-                adapter.model = model
-            if effort is not None:
-                adapter.effort = effort
+            # Assigned even when None: the value is what this rung asked for,
+            # and leaving the previous call's setting in place is how the
+            # planning call's cheap effort used to leak into the answer.
+            adapter.model = model
+            adapter.effort = effort
             return adapter
 
         def worker_factory(

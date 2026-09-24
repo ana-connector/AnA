@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
+from packages.governance import atomic
 from packages.mcp.launcher import write_launchers
 from packages.mcp.registry import ResolvedServer
 
@@ -37,9 +38,9 @@ def write_claude_mcp_config(
     }
     directory = Path(state_dir) / CONFIG_DIRNAME
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"claude.{role}.json"
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return path
+    return atomic.write_text(
+        directory / f"claude.{role}.json", json.dumps(payload, indent=2)
+    )
 
 
 def write_kimi_mcp_config(
@@ -63,9 +64,7 @@ def write_kimi_mcp_config(
     }
     path = Path(kimi_home)
     path.mkdir(parents=True, exist_ok=True)
-    target = path / "mcp.json"
-    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return target
+    return atomic.write_text(path / "mcp.json", json.dumps(payload, indent=2))
 
 
 def codex_mcp_args(
