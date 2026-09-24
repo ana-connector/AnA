@@ -109,8 +109,8 @@ export function UsageEstimateEditor() {
       <Field>
         <FieldLabel>현재 사용량 추정치</FieldLabel>
         <FieldDescription>
-          이미 쓴 양을 %로 입력하면 다음 자동 라우팅부터 반영됩니다. 비우면 ANA가 관측한 토큰만 사용합니다.
-          이후 ANA에서 쓴 토큰은 입력값에 더해집니다. 제공자가 보고한 수치가 있으면 그 수치가 우선합니다.
+          이미 쓴 양을 %로 입력하면 다음 자동 라우팅부터 반영됩니다. 비우면 AnA가 관측한 토큰만 사용합니다.
+          이후 AnA에서 쓴 토큰은 입력값에 더해집니다. 제공자가 보고한 수치가 있으면 그 수치가 우선합니다.
         </FieldDescription>
         <FieldDescription>
           초기화 시각을 함께 넣으면 그 시점에 입력값이 사라집니다(창이 리셋되므로).

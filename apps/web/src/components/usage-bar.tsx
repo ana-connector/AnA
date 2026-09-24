@@ -114,7 +114,7 @@ export function UsageBar({
                       ? "제공자가 보고한 실제 사용률"
                       : window.source === "manual"
                         ? "직접 입력한 값에 이후 사용량을 더한 추정"
-                        : "ANA가 집계한 토큰 기준 추정"}
+                        : "AnA가 집계한 토큰 기준 추정"}
                   </span>
                   {resetLabel(window.resets_at) ? (
                     <span className="text-muted-foreground">

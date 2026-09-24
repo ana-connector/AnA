@@ -1,8 +1,8 @@
-# ANA
+# AnA
 
-ANA is Not Agent.
+AnA is Not Agent.
 
-ANA is an orchestrator around agent CLIs. It drives the **Claude Code CLI**
+AnA is an orchestrator around agent CLIs. It drives the **Claude Code CLI**
 (`claude`) and the **Codex CLI** (`codex`), routes each message to whichever
 one suits it, and carries the conversation context across the switch so the
 incoming CLI continues the work instead of starting cold.
@@ -83,7 +83,7 @@ boundary that makes this acceptable; do not expose port 8000 publicly. Set
 
 ## How the handoff works
 
-Each CLI keeps its own native session, and ANA keeps one session id per agent
+Each CLI keeps its own native session, and AnA keeps one session id per agent
 per thread (checkpointed in Postgres). When you switch agents mid-thread, the
 incoming CLI gets:
 
@@ -119,16 +119,16 @@ want to scrape it from somewhere else.
 ## Governance
 
 Neither CLI runs with blanket approval any more. Every tool call they make is
-screened by ANA before it executes:
+screened by AnA before it executes:
 
-1. The CLI's `PreToolUse` hook posts the call to ANA (`POST /gate/tool-call`).
-2. ANA writes an **append-only audit row**, then matches the call against
+1. The CLI's `PreToolUse` hook posts the call to AnA (`POST /gate/tool-call`).
+2. AnA writes an **append-only audit row**, then matches the call against
    `config/governance.yaml`.
 3. `deny` never runs and the agent is told which rule blocked it; `ask` raises
    an approval card in the chat and waits; `allow` proceeds. Every outcome is
    audited.
 
-The hook **fails closed**: if ANA is unreachable, answers oddly, or the token
+The hook **fails closed**: if AnA is unreachable, answers oddly, or the token
 is unknown, the call is denied. `GET /audit` reads the log back (the table
 refuses UPDATE, DELETE and TRUNCATE at the database level).
 
@@ -143,7 +143,7 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_QUESTION_TIMEOUT_SECONDS` | How long the agent's own question waits for an answer (default 900). A timeout is a result, not a failure: the agent states its assumption and carries on |
 | `CODEX_SANDBOX` | Codex's own sandbox mode. Leave unset under Docker: codex sandboxes through bubblewrap, which cannot start in a container ("bwrap: No permissions to create a new namespace"). The hook still runs and still denies, so the gate plus the container stays the enforcement boundary |
 | `ANA_WORKSPACE_ROOT` | Root new workspaces are created under (default `$ANA_WORKSPACE_DIR/sessions`) |
-| `ANA_SELF_WORKSPACE` | Absolute host path of ANA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
+| `ANA_SELF_WORKSPACE` | Absolute host path of AnA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
 | `ANA_ROUTING_RULES` | Path to the routing rules (default `config/routing.yaml`) |
 | `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own |
 | `ANA_BACKGROUND_TURNS` | `off` ties a turn's life to the connection that asked for it (the old behavior); anything else keeps it running when the browser leaves |
@@ -177,10 +177,10 @@ behind one name.
 - An id that was never registered is adopted rather than rejected, so
   conversations from before workspaces existed keep working.
 
-### The recursive workspace (ANA on ANA)
+### The recursive workspace (AnA on AnA)
 
-Mount ANA's own checkout and it appears in the list as an ordinary workspace,
-`ana-self`, so the agent that edits ANA is reached the same way as any other
+Mount AnA's own checkout and it appears in the list as an ordinary workspace,
+`ana-self`, so the agent that edits AnA is reached the same way as any other
 project — same gate, same worktree-per-sub-agent isolation, same audit log:
 
 ```yaml
@@ -216,7 +216,7 @@ ports, so a dev server the agent starts is reachable from the browser:
 - The workspace folder is mounted at the same path inside, so every path the
   agent, the gate and the audit log mention means one thing.
 - The CLIs are still screened by the gate: the hook inside the container
-  reaches ANA at `ANA_CONTAINER_GATE_URL` (the service name on the compose
+  reaches AnA at `ANA_CONTAINER_GATE_URL` (the service name on the compose
   network), and fails closed if it cannot.
 - A container whose image, ports or mounts no longer match its workspace is
   replaced rather than reused.
@@ -239,7 +239,7 @@ Everything else here flows one way — you ask, the agents work, the gate
 interrupts when a tool call needs a decision. So a lead facing a real fork in
 the requirements had to guess, and a wrong guess surfaces at the end.
 
-`ask_user` is ANA's own MCP server (`packages/mcp/servers/ask_user.py`), scoped
+`ask_user` is AnA's own MCP server (`packages/mcp/servers/ask_user.py`), scoped
 to the lead alone. The lead calls it with up to four questions, each with
 optional choices; the question appears in the chat as a card, the turn waits,
 and the answers come back as the tool's result.
@@ -275,7 +275,7 @@ workspace or change settings from Discord; the bot carries the two things that
 block an agent mid-work, plus a short note when a turn ends.
 
 - **Why a bot, not a webhook**: the Discord gateway is an outbound WebSocket.
-  ANA dials Discord and button clicks arrive back down the same socket, so
+  AnA dials Discord and button clicks arrive back down the same socket, so
   there is no public inbound, no tunnel and no auth system to design. The
   allowlist is a set of Discord user ids.
 - **Who may answer**: only ids in `ANA_DISCORD_ALLOWED_USER_IDS`, and only in
@@ -343,7 +343,7 @@ Built from shadcn/ui components (`base-nova` style, Base UI primitives):
 - **Tool calls** appear under each reply as the gate screens them, and
   `/tools` is the full append-only log with a verdict filter.
 - **Status bar** shows each CLI's 5-hour and 7-day windows: Claude's are the
-  provider's own numbers, the Codex ones are ANA's estimate against
+  provider's own numbers, the Codex ones are AnA's estimate against
   `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` and are labeled as
   estimates.
 - **Markdown** replies, and a light/dark toggle.
@@ -375,7 +375,7 @@ recurring job, optionally with declared inputs and an output shape. They live in
 `packages/skills/library/` in either of two forms, both validated by Pydantic (a
 broken file is reported, not fatal):
 
-- `*.yaml` — ANA's own form, where the procedure is a field and inputs are
+- `*.yaml` — AnA's own form, where the procedure is a field and inputs are
   declared and substituted.
 - `*.md` — the Agent Skills form: YAML frontmatter, then the procedure as the
   body. A published `SKILL.md` drops in as it was written, which is the point:
@@ -392,7 +392,7 @@ name.
 | `code-review` | Review a change for correctness and report only findings |
 | `git-commit` | Read the diff and commit one intent, Conventional Commits |
 | `github-pr` | Open or handle a PR / issue |
-| `db-inspect` | Read ANA's own memory database |
+| `db-inspect` | Read AnA's own memory database |
 | `ponytail` | Reuse what exists, stdlib and platform features before new code; the shortest working diff ([DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail), MIT) |
 | `kill-ai-slop` | Find and strip the machine-default UI and copy tics (gradients, emoji, badge spam, AI voice) ([yetone/kill-ai-slop](https://github.com/yetone/kill-ai-slop)) |
 | `caveman` | Compress a report to its technical substance, negations and numbers intact ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman)) |
@@ -400,23 +400,23 @@ name.
 The last three are working-style skills: they change how a worker builds or
 writes, not which tools it may call, so they carry no MCP requirement and apply
 to any task. They are vendored as their upstream `SKILL.md`, body verbatim —
-only the frontmatter is ANA's (a Korean `title` for the settings page, a
+only the frontmatter is AnA's (a Korean `title` for the settings page, a
 one-line `description` for the catalog, and `roles`), and `kill-ai-slop` carries
-a marked ANA addendum because its upstream scanner and reference files are not
+a marked AnA addendum because its upstream scanner and reference files are not
 part of a one-file library. `packages/skills/library` is mounted read-only into
 the server, so adding a file is live on the next turn — no rebuild.
 
 ## Planner-Worker (sub-agents)
 
 The lead first decides whether to answer directly or make a plan of sub-tasks.
-Each task is routed automatically through the worker model ladder. ANA runs those workers as separate
+Each task is routed automatically through the worker model ladder. AnA runs those workers as separate
 CLI sessions, then hands their results back to the lead to synthesize one
 answer. The chat draws the fan-out with React Flow as each worker starts and
 finishes.
 
 - Workers share the thread's workspace and gate token, so every tool call they
   make is screened and confined exactly like the lead's.
-- If a worker hits a session or usage limit, ANA retries that task on the next
+- If a worker hits a session or usage limit, AnA retries that task on the next
   worker model in `config/routing.yaml`.
 - `ANA_MAX_SUBAGENTS` (default 5) caps concurrency; extra tasks queue.
 - `ANA_SUBAGENT_TIMEOUT_SECONDS` (default 600) bounds each worker. A timeout or
@@ -424,7 +424,7 @@ finishes.
   and still answers.
 - Planning is on for every turn by default; `ANA_PLANNER=off` disables it for
   debugging. If a lead reaches a session limit while planning, replanning, or
-  synthesizing, ANA switches models and preserves the worker results.
+  synthesizing, AnA switches models and preserves the worker results.
 
 **The plan is not fixed when it is written.** A plan made before anything has
 run is a guess about what the work will turn out to need, so after each round of
