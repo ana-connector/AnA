@@ -450,8 +450,7 @@ export default function ChatPage() {
           value={draft}
           onChange={setDraft}
           onSubmit={() => {
-            sendMessage(draft, agent);
-            setDraft("");
+            if (sendMessage(draft, agent)) setDraft("");
           }}
           onCancel={cancel}
           streaming={streaming}
