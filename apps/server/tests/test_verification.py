@@ -160,7 +160,7 @@ def test_a_task_can_name_a_skill_and_gets_its_procedure():
     prompt = build_task_prompt(plan.tasks[0], [])
 
     assert plan.tasks[0].skill == "code-review"
-    assert "[스킬: code-review]" in prompt
+    assert "[SKILL: code-review]" in prompt
     assert "이 diff를 봐라" in prompt
     # The skill's own input placeholders never reach the agent verbatim.
     assert "{{" not in prompt

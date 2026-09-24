@@ -40,7 +40,7 @@ def test_server_nobody_registered_is_denied():
     """A host-level MCP config or a resumed session can surface a server ANA
     never granted; it is refused rather than judged by the command rules."""
     reason = scope_denial("mcp__slack__post", "worker", ["git"], KNOWN)
-    assert reason is not None and "등록되지 않은" in reason
+    assert reason is not None and "unregistered" in reason
 
 
 def test_lead_gets_no_mcp_tools():

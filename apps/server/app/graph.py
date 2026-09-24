@@ -38,11 +38,13 @@ from packages.orchestrator.routing import (
 )
 from packages.orchestrator.planner import (
     build_planning_prompt,
+    build_replan_prompt,
     build_task_prompt,
     build_synthesis_prompt,
     max_concurrency,
     max_tasks,
     parse_plan,
+    plan_rounds,
 )
 from packages.orchestrator.supervisor import (
     WorkerRun,
@@ -236,17 +238,44 @@ def _task_frame(task) -> dict:
 async def _plan_turn(adapter, prompt: str, *, tracer, trace):
     """Asks the lead for a plan. A planning call that fails costs latency, not
     the turn: parse_plan() falls back to a direct answer."""
+    return await _ask_for_plan(adapter, build_planning_prompt(prompt), tracer=tracer,
+                               trace=trace, span="plan")
+
+
+async def _replan_turn(adapter, prompt: str, results: list[dict], existing_ids, *,
+                       tracer, trace, round_index: int):
+    """Between rounds: shown what came back, does the lead want another step?
+
+    A plan written before anything ran is a guess about what the work will need.
+    This is where the guess gets corrected — and it uses the same parser, so
+    "done" needs no special case: anything that is not a delegation with tasks
+    ends the fan-out."""
+    return await _ask_for_plan(
+        adapter,
+        build_replan_prompt(prompt, results, existing_ids),
+        tracer=tracer,
+        trace=trace,
+        span=f"replan-{round_index}",
+        # ANA numbers the tasks, so a later round continues the numbering
+        # instead of colliding with the round that already ran, and may name
+        # those finished ids in `needs`.
+        id_offset=len(tuple(existing_ids)),
+        known_ids=existing_ids,
+    )
+
+
+async def _ask_for_plan(adapter, prompt: str, *, tracer, trace, span: str,
+                        id_offset: int = 0, known_ids=()):
     planning = WorkerRun()
-    with tracer.span(trace, name="plan"):
+    with tracer.span(trace, name=span):
         try:
-            async for event in adapter.run_stream(
-                build_planning_prompt(prompt), session_id=None
-            ):
+            async for event in adapter.run_stream(prompt, session_id=None):
                 if event.type == "text":
                     planning.output += event.text
-        except Exception as exc:  # noqa: BLE001 - see docstring
+        except Exception as exc:  # noqa: BLE001 - a planning call that fails
+            # costs latency, not the turn.
             planning.error = str(exc)
-    return parse_plan(planning.output)
+    return parse_plan(planning.output, id_offset=id_offset, known_ids=known_ids)
 
 
 def _resolve_adapter(
@@ -585,8 +614,18 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     else None
                 )
                 cwd = tree.path if tree is not None else workspace_dir
+                # `upstream` is what the supervisor waited for *in this round*.
+                # A task planned in a later round can depend on one that already
+                # finished, so those results are carried in from `finished` —
+                # otherwise the dependency would be silently dropped and the
+                # worker would invent the handover.
+                carried = [
+                    finished[need].as_dict()
+                    for need in task.needs
+                    if need in finished and need not in {r.task.id for r in upstream}
+                ]
                 base_prompt = build_handoff_prompt(
-                    build_task_prompt(task, [r.as_dict() for r in upstream]),
+                    build_task_prompt(task, carried + [r.as_dict() for r in upstream]),
                     incoming_agent=task.agent,
                     previous_agent="lead",
                     turns=await recent_turns(pool, thread_id=thread_id, limit=2),
@@ -650,15 +689,71 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 return run
 
 
-            with tracer.span(trace, name="subagents", metadata={"count": len(plan.tasks)}):
-                results = await run_tasks(
-                    plan.tasks,
-                    run_worker,
-                    max_concurrency=max_concurrency(),
-                    timeout_seconds=float(
-                        os.environ.get("ANA_SUBAGENT_TIMEOUT_SECONDS", 600)
+            # Rounds, not one shot: the plan is a guess until something has
+            # run. After each round the lead sees the results and may add the
+            # step they revealed — a dependency nobody could see beforehand, a
+            # failure that needs another approach, a follow-up the first plan
+            # could not know about. Bounded by ANA_PLAN_ROUNDS, because a lead
+            # that can always add one more task can also never finish.
+            results: list = []
+            finished: dict = {}
+            round_tasks = list(plan.tasks)
+            planned_ids = {task.id for task in plan.tasks}
+            all_tasks = list(plan.tasks)
+            rounds = plan_rounds()
+
+            for round_index in range(rounds):
+                with tracer.span(
+                    trace,
+                    name="subagents",
+                    metadata={"count": len(round_tasks), "round": round_index + 1},
+                ):
+                    round_results = await run_tasks(
+                        round_tasks,
+                        run_worker,
+                        max_concurrency=max_concurrency(),
+                        timeout_seconds=float(
+                            os.environ.get("ANA_SUBAGENT_TIMEOUT_SECONDS", 600)
+                        ),
+                        on_update=announce,
+                    )
+                results.extend(round_results)
+                for result in round_results:
+                    finished[result.task.id] = result
+
+                if round_index + 1 >= rounds:
+                    break
+
+                follow_up = await _replan_turn(
+                    _resolve_adapter(
+                        configurable, agent, model=lead_model,
+                        effort=planning_effort(agent),
                     ),
-                    on_update=announce,
+                    state["prompt"],
+                    [r.as_dict() for r in results],
+                    sorted(planned_ids),
+                    tracer=tracer,
+                    trace=trace,
+                    round_index=round_index + 1,
+                )
+                round_tasks = list(follow_up.tasks) if follow_up.delegating else []
+                if not round_tasks:
+                    break
+                planned_ids.update(task.id for task in round_tasks)
+                all_tasks.extend(round_tasks)
+                writer(
+                    {
+                        "type": "plan",
+                        "text": follow_up.note,
+                        "session_id": None,
+                        "is_error": False,
+                        "agent": agent,
+                        "mode": "delegate",
+                        # The whole graph, not just the new tasks: the browser
+                        # merges by id and keeps the statuses it already has.
+                        "tasks": [_task_frame(t) for t in all_tasks],
+                        "round": round_index + 2,
+                    }
                 )
 
             subagent_results = [r.as_dict() for r in results]
@@ -675,7 +770,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                         "is_error": turn_check.failed,
                         "agent": agent,
                         "mode": plan.mode,
-                        "tasks": [_task_frame(t) for t in plan.tasks],
+                        "tasks": [_task_frame(t) for t in all_tasks],
                         "verification": turn_check.as_dict(),
                     }
                 )

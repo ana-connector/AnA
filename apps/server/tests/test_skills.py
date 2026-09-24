@@ -104,9 +104,9 @@ def test_the_lead_sees_the_catalog_as_its_sub_agents_capabilities(user_library):
     ever sees. It is labeled as theirs, not the lead's own."""
     catalog = catalog_text("lead", {"git", "postgres", "github"})
 
-    assert "하위 에이전트가 쓸 수 있는 스킬" in catalog
+    assert "SKILLS YOUR SUB-AGENTS CAN USE" in catalog
     assert "git-commit" in catalog
-    assert "직접\n실행하지는 마라" in catalog
+    assert "Do not carry one out yourself" in catalog
 
 
 def test_with_catalog_appends_rather_than_replaces(user_library):

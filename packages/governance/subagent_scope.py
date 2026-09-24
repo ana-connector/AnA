@@ -153,16 +153,18 @@ def instructions(scope: Scope) -> str:
     changing instead of discovering the limit one denial at a time."""
     if scope.unrestricted:
         return ""
-    lines = ["[권한 스코프] 대장이 이 작업에 다음 제한을 걸었다."]
+    lines = ["[PERMISSION SCOPE] The lead limited this task as follows."]
     if scope.mode == READ:
         lines.append(
-            "- 읽기 전용이다. 파일 수정·생성·삭제, 커밋, 설치 명령은 차단된다."
-            " 조회는 얼마든지 해도 된다: ls, cat, head, grep, rg, find, wc,"
-            " git log/status/diff 같은 읽기 전용 셸 명령과 파일 읽기 도구는 그대로"
-            " 쓸 수 있다. 변경이 필요하면 무엇을 어떻게 바꿔야 하는지 보고만 해라."
+            "- Read-only. Editing, creating or deleting files, committing and"
+            " installing are blocked. Reading is unlimited: ls, cat, head, grep,"
+            " rg, find, wc, git log/status/diff and the file-reading tools all"
+            " work. If something needs changing, report what and how instead."
         )
     if scope.paths:
-        lines.append(f"- 작업 가능한 경로: {', '.join(scope.paths)} (그 밖은 차단된다)")
+        lines.append(
+            f"- Paths you may work in: {', '.join(scope.paths)} (anything else is blocked)"
+        )
     return "\n".join(lines)
 
 
@@ -186,8 +188,8 @@ def violation(
     if scope.mode == READ:
         if _is_mutating(tool_name):
             return (
-                f"읽기 전용 스코프의 하위 에이전트는 '{tool_name}'을(를) 쓸 수 없다. "
-                "변경이 필요하면 대장에게 보고해라."
+                f"a read-only sub-agent cannot use '{tool_name}'. "
+                "Report what needs changing to the lead instead."
             )
         if _normalize_name(tool_name) in SHELL_TOOLS:
             command = tool_input.get("command")
@@ -195,16 +197,16 @@ def violation(
             offending = _writing_segment(command)
             if offending is not None:
                 return (
-                    f"읽기 전용 스코프에서는 조회 명령만 쓸 수 있다: '{offending}'은(는) "
-                    "변경일 수 있다. 읽기만 하는 명령(ls, cat, grep, git log 등)을 쓰거나, "
-                    "변경이 필요하면 대장에게 보고해라."
+                    f"a read-only scope allows read commands only: '{offending}' may "
+                    "change something. Use a reading command (ls, cat, grep, git log, "
+                    "…) or report the change the lead has to make."
                 )
     if scope.paths and workspace:
         outside = _outside_paths(tool_input, scope.paths, workspace, cwd)
         if outside:
             allowed = ", ".join(scope.paths)
             return (
-                f"이 하위 에이전트에게 허용된 경로는 {allowed} 뿐이다: "
+                f"this sub-agent may only work in {allowed}; outside it: "
                 f"{', '.join(outside[:3])}"
             )
     return None

@@ -117,7 +117,7 @@ class SkillDefinition(BaseModel):
     def summary(self) -> str:
         """The one-line form used in a catalog."""
         required = [field.name for field in self.inputs if field.required]
-        arguments = f" (입력: {', '.join(required)})" if required else ""
+        arguments = f" (inputs: {', '.join(required)})" if required else ""
         servers = f" [MCP: {', '.join(self.mcp)}]" if self.mcp else ""
         return f"- {self.name}: {self.description}{arguments}{servers}"
 

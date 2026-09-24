@@ -1,13 +1,13 @@
 name: github-pr
 title: GitHub PR/이슈 처리
-description: GitHub 이슈나 PR의 내용을 읽고 요약하거나 코멘트를 남긴다
+description: Read a GitHub issue or PR and summarize it, or leave a comment
 roles: [worker]
 mcp: [github]
 inputs:
   - name: target
     type: string
     required: true
-    description: "저장소와 번호 (예: owner/repo#123)"
+    description: "Repository and number (e.g. owner/repo#123)"
   - name: action
     type: string
     required: false
@@ -16,16 +16,18 @@ inputs:
   - name: body
     type: string
     required: false
-    description: action이 comment일 때 남길 내용
+    description: What to post when action is comment
 output:
   type: string
-  description: 요약문 또는 남긴 코멘트의 링크
+  description: The summary, or a link to the comment left
 instructions: |
-  github MCP 서버로 {{target}} 을(를) 처리해라. 수행할 동작: {{action}}
+  Handle {{target}} with the github MCP server. Action: {{action}}
 
-  1. 대상의 본문과 최신 코멘트, 변경 파일 목록을 읽는다.
-  2. summarize면: 무엇을 요구하는지, 지금 상태가 무엇인지, 막힌 지점이 무엇인지 3~5줄로 정리한다.
-  3. comment면: 아래 내용을 그대로 남긴다. 내용을 각색하지 마라.
+  1. Read the body, the latest comments and the list of changed files.
+  2. For summarize: in 3-5 lines, what it asks for, where it stands, and what it
+     is blocked on.
+  3. For comment: post the following text as given. Do not rewrite it.
      {{body}}
 
-  하지 말 것: 머지, 브랜치/이슈 닫기, 리뷰 승인. 그런 동작이 필요하면 사람에게 넘겨라.
+  Do not: merge, close a branch or issue, or approve a review. If one of those is
+  needed, hand it back to a person.

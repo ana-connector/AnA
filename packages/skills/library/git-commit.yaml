@@ -1,28 +1,30 @@
 name: git-commit
 title: 변경사항 커밋
-description: 작업 디렉토리의 변경사항을 검토하고 의도 단위로 커밋한다
+description: Read the working tree and commit one intent, Conventional Commits
 roles: [worker]
 mcp: [git]
 inputs:
   - name: intent
     type: string
     required: true
-    description: 이번 변경으로 무엇을 하려 했는지 한 줄로
+    description: What this change was trying to do, in one line
   - name: scope
     type: string
     required: false
-    description: 커밋에 포함할 경로 범위(비우면 전체 변경)
+    description: Paths to include (empty means every change)
 output:
   type: string
-  description: 커밋 메시지와 커밋 해시
+  description: The commit message and the commit hash
 instructions: |
-  git MCP 서버로 다음을 순서대로 수행해라.
+  Use the git MCP server, in this order.
 
-  1. status와 diff를 읽어 실제로 무엇이 바뀌었는지 확인한다.
-     범위 제한: {{scope}} (비어 있으면 전체 변경)
-  2. 변경이 여러 의도를 섞고 있으면 나누지 말고, 무엇이 섞여 있는지 보고만 하고 멈춘다.
-  3. 한 가지 의도라면 Conventional Commits 형식으로 메시지를 쓴다.
-     제목은 명령형 한 줄, 본문은 왜 바꿨는지. 의도: {{intent}}
-  4. 커밋하고 해시를 보고한다.
+  1. Read status and diff to see what actually changed.
+     Limit to: {{scope}} (empty means every change)
+  2. If the change mixes several intents, do not split it — report what is mixed
+     and stop.
+  3. If it is one intent, write the message in Conventional Commits form: an
+     imperative one-line subject, and a body saying why. Intent: {{intent}}
+  4. Commit, and report the hash.
 
-  하지 말 것: push, 브랜치 변경, 이력 재작성, 커밋되지 않은 남의 변경 되돌리기.
+  Do not: push, change branches, rewrite history, or revert someone else's
+  uncommitted work.

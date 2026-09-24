@@ -32,11 +32,16 @@ SERVER_NAME = "ana-ask"
 SERVER_VERSION = "1.0.0"
 
 TOOL_NAME = "ask_user"
+# English, like every other text a model reads here; the questions themselves are
+# read by a person, so the description says to write those in Korean.
 TOOL_DESCRIPTION = (
-    "사용자에게 직접 묻고 답을 기다린다. 답이 결과를 바꿀 때만 쓴다: 요구사항이 "
-    "갈리는 지점, 되돌리기 어려운 선택, 사용자만 아는 값(대상 환경, 우선순위). "
-    "코드나 파일을 읽어 알 수 있는 것은 묻지 말고 하위 에이전트에게 확인시켜라. "
-    "사용자가 답하지 않으면 시간 초과가 결과로 돌아온다 — 그때는 가정을 적고 진행해라."
+    "Ask the user directly and wait for the answer. Use it only when the answer "
+    "changes what gets built: a fork in the requirements, a choice that is hard "
+    "to undo, a value only they know (target environment, priorities). Do not ask "
+    "what could be found by reading the code — have a sub-agent check instead. "
+    "Write the questions and options in Korean: the user reads them. If nobody "
+    "answers, a timeout comes back as the result — then state your assumption and "
+    "carry on."
 )
 
 TOOL_SCHEMA = {
@@ -46,23 +51,23 @@ TOOL_SCHEMA = {
             "type": "array",
             "minItems": 1,
             "maxItems": 4,
-            "description": "한 번에 물을 질문들. 많을수록 답을 받기 어려워진다.",
+            "description": "Questions to ask at once. The more you ask, the less likely you get an answer.",
             "items": {
                 "type": "object",
                 "properties": {
-                    "question": {"type": "string", "description": "질문 한 문장"},
+                    "question": {"type": "string", "description": "One question, in Korean"},
                     "options": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "고를 선택지. 비우면 자유 입력",
+                        "description": "Options to pick from, in Korean. Empty means free text",
                     },
                     "multi": {
                         "type": "boolean",
-                        "description": "여러 개를 함께 고를 수 있는지",
+                        "description": "Whether several options may be picked at once",
                     },
                     "note": {
                         "type": "string",
-                        "description": "왜 묻는지, 또는 선택지가 각각 무엇을 뜻하는지",
+                        "description": "Why you are asking, or what each option implies (Korean)",
                     },
                 },
                 "required": ["question"],
@@ -107,14 +112,14 @@ def _answer_text(payload: dict, questions: list) -> str:
     Questions and answers paired up in order, because an answer on its own
     ("두 번째") is not usable by a model that has since written other things."""
     if not payload.get("answered"):
-        return payload.get("note") or "사용자가 답하지 않았다."
+        return payload.get("note") or "The user did not answer."
     lines = []
     for index, question in enumerate(questions):
         answers = payload.get("answers") or []
         given = answers[index] if index < len(answers) else None
         if isinstance(given, list):
             given = ", ".join(str(item) for item in given)
-        lines.append(f"Q: {question.get('question', '')}\nA: {given or '(답 없음)'}")
+        lines.append(f"Q: {question.get('question', '')}\nA: {given or '(no answer)'}")
     return "\n\n".join(lines)
 
 
@@ -122,7 +127,7 @@ def _call_tool(arguments: dict) -> dict:
     questions = arguments.get("questions")
     if not isinstance(questions, list) or not questions:
         return {
-            "content": [{"type": "text", "text": "questions는 최소 한 개가 필요하다."}],
+            "content": [{"type": "text", "text": "questions needs at least one entry."}],
             "isError": True,
         }
     try:
@@ -130,13 +135,13 @@ def _call_tool(arguments: dict) -> dict:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
         return {
-            "content": [{"type": "text", "text": f"질문을 전달하지 못했다: {exc.code} {detail}"}],
+            "content": [{"type": "text", "text": f"could not deliver the question: {exc.code} {detail}"}],
             "isError": True,
         }
     except Exception as exc:  # noqa: BLE001 - a broken question must not look
         # like a crashed server: the agent gets a readable failure and decides.
         return {
-            "content": [{"type": "text", "text": f"질문을 전달하지 못했다: {exc}"}],
+            "content": [{"type": "text", "text": f"could not deliver the question: {exc}"}],
             "isError": True,
         }
     return {"content": [{"type": "text", "text": _answer_text(payload, questions)}]}

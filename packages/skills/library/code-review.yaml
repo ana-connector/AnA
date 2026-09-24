@@ -1,26 +1,30 @@
 name: code-review
 title: 변경 리뷰
-description: 주어진 변경을 정확성 위주로 리뷰하고 발견한 문제만 보고한다
+description: Review a change for correctness and report only what is wrong
 roles: [worker]
 inputs:
   - name: target
     type: string
     required: true
-    description: 리뷰할 대상(파일 경로, 디렉토리, diff 범위)
+    description: What to review (a path, a directory, a diff range)
   - name: focus
     type: string
     required: false
-    description: 특히 볼 부분(비우면 정확성 전반)
+    description: What to look at in particular (empty means correctness overall)
 output:
   type: string
-  description: "한 줄에 하나씩 `경로:줄: 문제. 고치는 법.` 형태의 발견 목록"
+  description: "One finding per line: `path:line: problem. fix.`"
 instructions: |
-  {{target}} 의 변경을 리뷰해라. 중점: {{focus}}
+  Review the change in {{target}}. Focus: {{focus}}
 
-  1. 변경된 코드와 그 코드가 호출되는 지점을 함께 읽는다. 바뀐 줄만 보고 판단하지 마라.
-  2. 다음 순서로 본다: 정확성(잘못된 결과/크래시) → 누락된 에러 처리 → 중복/과한 복잡도.
-  3. 발견은 `경로:줄: 문제. 고치는 법.` 한 줄씩. 칭찬, 요약, 스타일 지적은 쓰지 마라.
-  4. 실제로 재현 경로를 설명할 수 있는 것만 보고한다. 확신이 없으면 "확인 필요"라고 명시한다.
-  5. 문제가 없으면 없다고 한 줄로 답한다.
+  1. Read the changed code together with the places that call it. Do not judge
+     from the changed lines alone.
+  2. In this order: correctness (wrong result, crash) → missing error handling →
+     duplication and excess complexity.
+  3. One finding per line, as `path:line: problem. fix.` No praise, no summary,
+     no style notes.
+  4. Report only what you can explain a reproduction path for. If you are not
+     sure, say so explicitly.
+  5. If there is nothing wrong, say so in one line.
 
-  코드를 고치지는 마라. 이 작업은 리뷰까지다.
+  Do not fix the code. This task ends at the review.

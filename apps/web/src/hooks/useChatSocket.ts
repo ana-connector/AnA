@@ -510,12 +510,25 @@ export function useChatSocket() {
             note: event.text ?? "",
             taskCount: event.tasks?.length ?? 0,
           });
-          const nativeTasks = planRef.current?.tasks.filter((task) => task.id.startsWith("native:")) ?? [];
+          const existing = planRef.current?.tasks ?? [];
+          const nativeTasks = existing.filter((task) => task.id.startsWith("native:"));
+          // A turn can plan more than once: the lead is shown the first round's
+          // results and may add the step they revealed, and the server resends
+          // the whole graph. Tasks already on screen keep their own state —
+          // replacing the list wholesale reset finished tasks to "running".
           planRef.current = event.mode === "delegate" && event.tasks?.length
             ? {
                 mode: event.mode,
                 note: event.text,
-                tasks: [...event.tasks.map((t) => ({ ...t, status: "running" as const })), ...nativeTasks],
+                tasks: [
+                  ...event.tasks.map((task) => {
+                    const known = existing.find((item) => item.id === task.id);
+                    return known
+                      ? { ...known, ...task, status: known.status, tools: known.tools }
+                      : { ...task, status: "running" as const };
+                  }),
+                  ...nativeTasks,
+                ],
               }
             : nativeTasks.length ? { mode: "delegate", note: "", tasks: nativeTasks } : null;
           setPlan(planRef.current);

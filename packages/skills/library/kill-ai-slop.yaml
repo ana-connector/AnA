@@ -1,76 +1,81 @@
 name: kill-ai-slop
 title: AI 슬롭 제거
-description: 기계 기본값으로 만들어진 UI·카피의 전형(그라디언트, 이모지, 배지 도배, AI 문체)을 찾아 보고하고 고친다
+description: Find and strip the machine-default UI and copy tics (gradients, emoji, badge spam, AI voice)
 roles: [worker]
 inputs:
   - name: target
     type: string
     required: true
-    description: 훑을 범위(앱 소스 디렉토리, 특정 파일, 마크다운 카피)
+    description: What to scan (an app source directory, a file, Markdown copy)
   - name: apply
     type: boolean
     required: false
     default: false
-    description: true면 보고 후 승인된 항목을 고치고, false면 보고까지만
+    description: true fixes the approved groups after reporting; false reports only
 output:
   type: string
-  description: "`슬롭  경로:줄  무엇  → 고칠 방법` 목록과 그룹별 건수"
+  description: "`slop  path:line  what  → fix` lines, grouped, with counts"
 # Adapted from yetone/kill-ai-slop (killaislop.com).
 instructions: |
-  범위: {{target}}
-  수정까지 진행: {{apply}} (false거나 비어 있으면 보고까지)
+  Scope: {{target}}
+  Apply fixes: {{apply}} (false or empty means report only)
 
-  AI 슬롭은 특정한 방식으로 못생겼다: 초점을 정하지 않고 가능한 모든 스타일을
-  한 번에 켜 둔 상태다. 할 일은 사람이 실제로 선택했을 만한 상태로 덜어내는 것이다.
+  AI slop is ugly in a specific way: every possible style switched on at once
+  with nothing chosen. The job is to strip it back to what a person would pick.
 
-  [원칙] 장식하기 전에 결정한다 · 강조색 하나, 목소리 하나 · 위계는 크기와
-  공백에서 나온다(색·서체 교체는 편법) · 먼저 뺀다 · 카피는 세지 않고 구체적으로 ·
-  장식은 의미가 있을 때만.
+  [PRINCIPLES] Decide before you decorate · one accent, one voice · hierarchy
+  from scale and space (coloring words or swapping fonts is a shortcut) ·
+  subtract first · copy is specific, not punchy · decoration only when it means
+  something.
 
-  [1. 범위 확인] 앱/사이트 소스만. node_modules, dist, build, .git, vendor,
-  lock 파일, 압축된 파일은 제외. 여러 앱이 섞여 있으면 어디를 볼지 되묻는다.
+  [1. SCOPE] App or site source only. Skip node_modules, dist, build, .git,
+  vendor, lockfiles and minified files. If several apps are mixed, ask which.
 
-  [2. 훑기] grep으로 각 전형의 코드 신호를 찾는다. 새 의존성은 쓰지 않는다.
-  - 색: `#6366f1`, `indigo-500.*purple`, `violet-`, `from-indigo.*to-purple`,
-    `bg-clip-text`, `gradient`, 상태 박스가 테두리·글자·배경 모두 한 색조인 곳,
-    info=파랑 / tip=노랑 / warning=주황 같은 기본 의미 팔레트,
-    거의 검은 배경 위 은은한 광원(`radial-gradient`, `blur-3xl`, `opacity-20`)
-  - 서체: 한 단어만 serif-italic(`font-serif italic`), sans 자리의 Playfair/
-    Lora/Cormorant, 제목 위 전부에 붙은 작은 대문자 kicker(`uppercase
-    tracking-wide text-xs`), 14~24px 사이에 모든 크기가 몰린 평평한 위계
-  - 카피: 흩뿌린 단어 강조, "단순한 X가 아니라 Y입니다", "~와 작별하세요",
-    "판을 바꾸는", 제목·버튼·불릿마다 붙은 이모지(🚀✨🔥)
-  - 컴포넌트: 빛나는 상태 점(`animate-ping`), 왼쪽 4px 컬러 테두리 콜아웃
-    (`border-l-4`), 기능마다 둥근 사각 아이콘 타일, 전부 최대 라운드 +
-    glassmorphism(`backdrop-blur` + `bg-white/10`), 과한 그림자
-    (`shadow-2xl`), 레이어마다 같은 반경(중첩되지 않는 코너), 장식 배지·필 도배,
-    모델이 그린 SVG 아이콘, 아이콘을 자기 색 틴트 사각형에 담은 것
-  - 모션: 모든 카드에 붙은 스프링 hover(`hover:scale-105 transition-transform`),
-    중심이 안 맞아 흔들리는 스피너
-  - 레이아웃: ALL-CAPS 라벨 + 숫자 카드 격자, 근거 없는 지표 행("10k+ 개발자"),
-    01/02/03 섹션 번호, 카드 안의 카드, 전부 `gap-4`/`p-4` 한 값,
-    Inter+Space Grotesk 기본 조합, "고급스러운 터미널"(mono 도배), 운영 화면을
-    잡지처럼 꾸민 것
-  grep 결과는 지도이지 판결이 아니다. 각 히트는 코드를 열어 확인한다.
+  [2. SCAN] grep for the code-level signal of each tell. Add no dependency.
+  - Color: `#6366f1`, `indigo-500.*purple`, `violet-`, `from-indigo.*to-purple`,
+    `bg-clip-text`, `gradient`; status boxes whose border, text and background
+    are one hue; the default semantic palette (info blue / tip amber / warning
+    orange); a near-black page with a soft glow (`radial-gradient`, `blur-3xl`,
+    `opacity-20`)
+  - Type: one word in serif italic (`font-serif italic`); Playfair/Lora/
+    Cormorant where sans belongs; a small uppercase kicker over every heading
+    (`uppercase tracking-wide text-xs`); every size crammed between 14 and 24px
+  - Copy: scattered highlighted keywords; "not just X — it's Y", "say goodbye
+    to", "game-changing"; an emoji on every heading, button and bullet
+  - Components: glowing status dots (`animate-ping`); `border-l-4` colored
+    callouts; a rounded-square icon tile per feature; max radius plus
+    glassmorphism (`backdrop-blur` + `bg-white/10`); oversized shadows
+    (`shadow-2xl`); the same radius on every nested layer; badge and pill spam;
+    model-drawn SVG icons; an icon wrapped in a tint of itself
+  - Motion: springy hover on everything (`hover:scale-105
+    transition-transform`); a spinner that wobbles off its center
+  - Layout: ALL-CAPS label plus number card grids; invented stat rows ("10k+
+    developers"); 01/02/03 section markers; cards inside cards; one spacing
+    value everywhere (`gap-4`, `p-4`); the Inter + Space Grotesk default; the
+    "tasteful terminal" (mono everywhere); an operational UI dressed as a
+    magazine
+  grep output is a map, not a verdict. Open each hit and read it.
 
-  [3. 선별] 히트마다 슬롭인지 의도인지 판단한다. 이 단계가 린트 규칙과의
-  차이다. 그라디언트·serif·이모지도 실제로 선택한 결과일 수 있다. 브랜드 토큰,
-  로고, 의도적 일러스트는 남긴다. 기본값만 지적한다.
+  [3. TRIAGE] Per hit, decide slop or intentional. This is what separates this
+  from a lint rule: a gradient, a serif or an emoji can be a real choice. Keep
+  brand tokens, logos and deliberate illustration. Flag defaults only.
 
-  [4. 보고] 아무것도 바꾸기 전에 그룹으로 묶어 보고한다.
-    슬롭  src/Hero.tsx:12  indigo→violet 그라디언트   → 단색 강조 하나
-    슬롭  src/Hero.tsx:31  그라디언트 제목 글자       → 단색, 크기로 위계
-    슬롭  copy.md:1        "단순한 X가 아니라 Y"      → 구체적인 사실로
-    → 3그룹 11건
-  그리고 어느 그룹을 고칠지 묻는다.
+  [4. REPORT] Before changing anything, group the confirmed hits:
+    slop  src/Hero.tsx:12  indigo→violet gradient   → one solid accent
+    slop  src/Hero.tsx:31  gradient-clip headline   → solid ink, scale up
+    slop  copy.md:1        "not just X — it's Y"    → say the specific thing
+    → 3 groups, 11 hits
+  Then ask which groups to apply.
 
-  [5. 수정] 승인된 것만, 전형을 없애는 최소 변경으로. 호출 지점마다 고치는 대신
-  공용 토큰·컴포넌트를 고친다. 새 브랜드 색을 발명하지 않는다(팔레트를 바꿔야
-  하면 중립색 + 기존 강조색을 제안하고 확인받는다). 카피는 지우지 말고 구체적으로
-  바꾼다. 고친 뒤 다시 훑어 건수가 줄었는지 확인하고, 일부러 남긴 것은 이유와
-  함께 적는다.
+  [5. FIX] Approved groups only, with the smallest change that removes the tell.
+  Edit shared tokens and components rather than every call site. Invent no brand
+  colors (propose neutrals plus the existing accent and let them confirm). Keep
+  the meaning of copy — make it specific rather than deleting it. Re-scan
+  afterwards to confirm the count dropped, and note anything you left on purpose
+  with the reason.
 
-  [지킬 것] 남의 선택은 존중한다. 애매하면 벗기지 말고 묻는다. diff는 작고
-  리뷰 가능하게, 관련 없는 코드는 재포맷하지 않는다. `git add -A`는 쓰지 말고
-  건드린 파일만 스테이징한다. 새 의존성 없음. 개발 서버가 있으면 전후를 눈으로
-  확인한다 — 훑기 통과가 더 나은 화면과 같은 말은 아니다.
+  [GUARDRAILS] Respect authorship: treat unfamiliar files and deliberate
+  flourishes as someone's choice, and ask rather than strip when unsure. Small
+  reviewable diffs; never reformat unrelated code; never `git add -A` — stage the
+  files you touched. No new dependencies. If a dev server exists, look at the
+  before and after: a passing scan is not the same as a better page.

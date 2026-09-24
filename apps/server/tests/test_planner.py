@@ -119,7 +119,9 @@ def test_malformed_shapes_are_direct(payload):
 def test_planning_prompt_states_the_cap_and_the_request():
     prompt = build_planning_prompt("리팩터링 해줘", limit=4)
 
-    assert "최대 4개" in prompt
+    # The prompt itself is English (it is read by a model, not a person); the
+    # user's request inside it is whatever they typed.
+    assert "At most 4 tasks" in prompt
     assert "리팩터링 해줘" in prompt
     assert '{"mode": "direct"}' in prompt
 

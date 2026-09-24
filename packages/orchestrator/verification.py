@@ -162,12 +162,13 @@ def retry_prompt(prompt: str, result: VerificationResult) -> str:
     rather than as a new opinion to argue with."""
     return (
         f"{prompt}\n\n"
-        f"[검증 실패] 이전 시도 후 ANA가 다음 명령으로 확인했고, 실패했다:\n"
+        f"[CHECK FAILED] After your last attempt ANA ran this command itself, and "
+        f"it failed:\n"
         f"$ {result.command}\n"
         f"{result.reason}\n"
-        f"{result.output or '(출력 없음)'}\n\n"
-        "이 실패를 고쳐라. 같은 명령이 통과해야 끝난 것이다. "
-        "고칠 수 없다면 무엇이 왜 막혔는지 밝혀라."
+        f"{result.output or '(no output)'}\n\n"
+        "Fix this failure. The task is done when that same command passes. "
+        "If you cannot fix it, say what is blocking it and why."
     )
 
 

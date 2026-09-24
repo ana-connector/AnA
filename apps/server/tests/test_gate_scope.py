@@ -135,7 +135,9 @@ def test_the_clis_own_subagent_tooling_is_refused(client, tmp_path):
     body = response.json()
     assert body["decision"] == "deny"
     assert body["rule_id"] == "native-subagents-disabled"
-    assert "계획" in body["reason"]
+    # The reason is what the agent reads, so it is English and names the path
+    # ANA wants it to take instead.
+    assert "plan" in body["reason"]
 
 
 def test_a_sub_agent_cannot_spawn_its_own_either(client, tmp_path):
