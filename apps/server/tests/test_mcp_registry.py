@@ -118,8 +118,7 @@ def test_broken_registry_file_yields_an_empty_registry_not_an_exception(tmp_path
 
 def test_shipped_registry_scopes_the_tooling_to_workers():
     """The lead plans and delegates, so every server that touches the machine is
-    worker-scoped. The one exception is ANA's own `ask`, which touches nothing —
-    it puts a question to the user — and is the lead's alone."""
+    worker-scoped. ANA's own `ask` is available to both roles."""
     registry = load_registry()
     assert registry.names_for("lead") == ("ask",)
-    assert set(registry.names_for("worker")) == {"git", "postgres", "github"}
+    assert set(registry.names_for("worker")) == {"git", "postgres", "github", "ask"}

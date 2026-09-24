@@ -39,7 +39,8 @@ TOOL_DESCRIPTION = (
     "changes what gets built: a fork in the requirements, a choice that is hard "
     "to undo, a value only they know (target environment, priorities). Do not ask "
     "what could be found by reading the code — have a sub-agent check instead. "
-    "Write the questions and options in Korean: the user reads them. If nobody "
+    "Every question must have at least two fixed options; free-text questions "
+    "are unavailable. Write the questions and options in Korean. If nobody "
     "answers, a timeout comes back as the result — then state your assumption and "
     "carry on."
 )
@@ -58,8 +59,9 @@ TOOL_SCHEMA = {
                     "question": {"type": "string", "description": "One question, in Korean"},
                     "options": {
                         "type": "array",
+                        "minItems": 2,
                         "items": {"type": "string"},
-                        "description": "Options to pick from, in Korean. Empty means free text",
+                        "description": "At least two fixed choices, in Korean",
                     },
                     "multi": {
                         "type": "boolean",
@@ -70,7 +72,7 @@ TOOL_SCHEMA = {
                         "description": "Why you are asking, or what each option implies (Korean)",
                     },
                 },
-                "required": ["question"],
+                "required": ["question", "options"],
             },
         }
     },
@@ -128,6 +130,16 @@ def _call_tool(arguments: dict) -> dict:
     if not isinstance(questions, list) or not questions:
         return {
             "content": [{"type": "text", "text": "questions needs at least one entry."}],
+            "isError": True,
+        }
+    if any(
+        not isinstance(question, dict)
+        or not isinstance(question.get("options"), list)
+        or len(question["options"]) < 2
+        for question in questions
+    ):
+        return {
+            "content": [{"type": "text", "text": "Each question needs at least two fixed options."}],
             "isError": True,
         }
     try:

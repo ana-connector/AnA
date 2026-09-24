@@ -14,6 +14,7 @@ packages/governance/workspace.py) instead of quietly collecting credentials.
 """
 import os
 import shlex
+import hashlib
 from pathlib import Path
 from typing import Iterable
 
@@ -34,6 +35,13 @@ def launcher_dir(state_dir: os.PathLike | str) -> Path:
 def write_launcher(server: ResolvedServer, state_dir: os.PathLike | str) -> Path:
     """Writes (and overwrites) one server's launcher, returning its path."""
     directory = launcher_dir(state_dir)
+    token = server.env.get("ANA_GATE_TOKEN")
+    if token:
+        # Several conversations can prepare MCP configs at once. A shared
+        # ask.env would give one conversation another's token.
+        directory = directory / "sessions" / hashlib.sha256(token.encode()).hexdigest()
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
     env_path = directory / f"{server.name}.env"
     script_path = directory / server.name
 

@@ -78,8 +78,8 @@ def test_calling_the_tool_posts_the_questions_and_pairs_up_the_answers(monkeypat
                 "name": "ask_user",
                 "arguments": {
                     "questions": [
-                        {"question": "어느 DB를 쓸까?"},
-                        {"question": "무엇을 포함할까?", "multi": True},
+                        {"question": "어느 DB를 쓸까?", "options": ["Postgres", "SQLite"]},
+                        {"question": "무엇을 포함할까?", "options": ["a", "b"], "multi": True},
                     ]
                 },
             },
@@ -102,7 +102,7 @@ def test_an_unanswered_question_comes_back_as_a_result(monkeypatch):
 
     responses = _rpc(
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-         "params": {"name": "ask_user", "arguments": {"questions": [{"question": "?"}]}}}
+         "params": {"name": "ask_user", "arguments": {"questions": [{"question": "?", "options": ["a", "b"]}]}}}
     )
 
     assert responses[0]["result"]["content"][0]["text"] == "시간 초과"
@@ -117,11 +117,21 @@ def test_a_gate_that_cannot_be_reached_is_a_readable_failure(monkeypatch):
 
     responses = _rpc(
         {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
-         "params": {"name": "ask_user", "arguments": {"questions": [{"question": "?"}]}}}
+         "params": {"name": "ask_user", "arguments": {"questions": [{"question": "?", "options": ["a", "b"]}]}}}
     )
 
     assert responses[0]["result"]["isError"] is True
     assert "connection refused" in responses[0]["result"]["content"][0]["text"]
+
+
+def test_free_text_question_is_rejected_before_delivery(monkeypatch):
+    monkeypatch.setattr(ask_user, "_ask", lambda _questions: pytest.fail("must not send"))
+    responses = _rpc({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": {"name": "ask_user", "arguments": {"questions": [{"question": "?"}]}},
+    })
+    assert responses[0]["result"]["isError"] is True
+    assert "at least two" in responses[0]["result"]["content"][0]["text"]
 
 
 def test_worker_question_identifies_its_role(monkeypatch):
@@ -161,6 +171,16 @@ def test_the_ask_server_is_available_to_lead_and_worker():
                         registry.names()) is None
     assert scope_denial("mcp__ask__ask_user", LEAD, registry.names_for(LEAD),
                         registry.names()) is None
+
+
+def test_ask_server_receives_its_gate_token_explicitly():
+    from packages.mcp.wiring import resolve_for_role
+
+    servers, _ = resolve_for_role(
+        WORKER, env={"ANA_GATE_TOKEN": "current-thread-token"}, check_command=False
+    )
+    ask = next(server for server in servers if server.name == "ask")
+    assert ask.env["ANA_GATE_TOKEN"] == "current-thread-token"
 
 
 def test_a_lead_process_is_started_with_the_lead_and_worker_servers():
@@ -222,6 +242,21 @@ def test_ask_requires_a_question(registry_client):
         headers={"x-ana-gate-token": session.token},
     )
     assert response.status_code == 422
+
+
+def test_ask_requires_fixed_choices(registry_client):
+    registry: GateRegistry = registry_client.app.state.gate_registry
+
+    async def send(_payload):
+        pytest.fail("invalid question must not reach the browser")
+
+    session = registry.register("fixed-choices", send)
+    response = registry_client.post(
+        "/gate/ask", json={"questions": [{"question": "무엇을 할까요?"}]},
+        headers={"x-ana-gate-token": session.token},
+    )
+    assert response.status_code == 422
+    assert "two options" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
