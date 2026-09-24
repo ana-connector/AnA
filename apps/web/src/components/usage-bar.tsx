@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CircleDotIcon } from "lucide-react";
-import { ClaudeIcon, KimiIcon, OpenAIIcon } from "@/components/agent-icons";
+import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
 import { apiBase } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -22,13 +22,13 @@ type UsageSnapshot = Record<string, { windows: Window[] }>;
 /** One mark per CLI. The row is a glance at how much room is left, not a
  *  legend — the name is one hover away, and three spelled-out names crowded
  *  out the bars they were labelling. */
-const AGENT_ICON: Record<string, (props: { className?: string; "aria-label"?: string }) => React.ReactElement> = {
+type AgentIconProps = { className?: string; "aria-label"?: string; mono?: boolean };
+
+const AGENT_ICON: Record<string, (props: AgentIconProps) => React.ReactElement> = {
   claude: ClaudeIcon,
   codex: OpenAIIcon,
   kimi: KimiIcon,
-  // TAPIE runs the same CLI, so it carries the same mark; the name in the
-  // tooltip is what tells the two accounts apart.
-  tapie: ClaudeIcon,
+  tapie: TapieIcon,
 };
 
 const AGENT_NAME: Record<string, string> = {
@@ -125,6 +125,9 @@ export function UsageBar({
                     <Icon
                       className={cn("size-3.5 shrink-0", failure && "text-destructive")}
                       aria-label={AGENT_NAME[agent] ?? agent}
+                      // The brand marks with fixed fills ignore a text colour,
+                      // so the failing state asks for the monochrome variant.
+                      mono={!!failure}
                     />
                     <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
                       <span

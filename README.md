@@ -148,8 +148,10 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own |
 | `ANA_BACKGROUND_TURNS` | `off` ties a turn's life to the connection that asked for it (the old behavior); anything else keeps it running when the browser leaves |
 | `ANA_RUNNER_IDLE_SECONDS` | How long a conversation's runner — queue, gate token, CLI subprocesses — is kept after the last browser detaches and nothing is running (default 900) |
+| `ANA_PLANNER_TIMEOUT_SECONDS` | How long a planning call may produce *nothing* before ANA moves to the next rung (default 60). It is a silence budget, not a wall clock: a lead still streaming its plan is left alone |
+| `ANA_PLANNER_TOTAL_TIMEOUT_SECONDS` | Ceiling for the whole planning phase across rungs (default 600), for the opposite failure — a model that talks without landing |
 | `ANA_PLAN_ROUNDS` | How many planning rounds one turn may use: the first plan plus that many chances to extend it (default 2; 1 = plan once) |
-| `ANA_SECRET_KEY` | Key that encrypts stored secrets at rest. Changing it makes existing rows unreadable (they are skipped, and listed so you can re-enter them) |
+| `ANA_SECRET_KEY` | Key that encrypts stored secrets at rest. **Set it.** Unset, the cipher takes a random key per process, so every stored secret becomes unreadable at the next restart — the name stays in the list and the agent reports a missing key. Changing it has the same effect on existing rows |
 | `ANA_MAX_THREAD_COST_USD` / `ANA_MAX_THREAD_TOKENS` | Circuit-breaker budget per thread (defaults 5.0 / 2,000,000) |
 | `ANA_RATE_LIMIT_UTILIZATION` | Window utilization that counts as "at the cap" (default 0.95) |
 | `ANA_FAILOVER_COOLDOWN_SECONDS` | How long a thread stays on its fallback before retrying the preferred one (default 900) |

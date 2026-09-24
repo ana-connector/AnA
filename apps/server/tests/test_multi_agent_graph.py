@@ -206,7 +206,7 @@ async def test_stalled_planner_times_out_and_switches_lead(db_pool, monkeypatch)
     frames, values = await _run(graph, config)
 
     assert hanging.terminated == 1
-    assert any(f["type"] == "failover" and "planning exceeded" in f["text"] for f in frames)
+    assert any(f["type"] == "failover" and "planning produced nothing" in f["text"] for f in frames)
     assert values["response_text"] == "바로 답변"
 
 
@@ -596,3 +596,52 @@ async def test_a_direct_turn_still_says_it_is_answering(db_pool):
 
     phases = [f["text"] for f in frames if f["type"] == "status"]
     assert phases == ["planning", "answering"]
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_planner_is_not_cut_off_at_the_timeout(db_pool, monkeypatch):
+    """The planning budget is silence, not wall clock.
+
+    A lead that is still streaming its plan is working; the old wall-clock cap
+    threw the plan away one chunk before it landed."""
+    monkeypatch.setenv("ANA_PLANNER_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("ANA_PLANNER_TOTAL_TIMEOUT_SECONDS", "30")
+
+    class SlowButTalkingPlanner(AgentAdapter):
+        """Takes several times the silence budget, but never goes quiet for it."""
+
+        def __init__(self):
+            self.terminated = 0
+
+        async def run_stream(self, prompt: str, session_id=None):
+            for chunk in ('{"mode":', '"direct"', "}"):
+                await asyncio.sleep(0.6)
+                yield AdapterEvent(type="text", text=chunk, session_id="lead-sid")
+            yield AdapterEvent(type="result", text="", session_id="lead-sid", cost_usd=0.0)
+
+        async def terminate(self) -> None:
+            self.terminated += 1
+
+    planner = SlowButTalkingPlanner()
+    answer = ScriptedAdapter(["바로 답변"], label="lead")
+    calls = {"n": 0}
+
+    def adapter_factory(agent, auth_mode=None, model=None, effort=None):
+        # The planning call first, the answer second: both are the lead.
+        calls["n"] += 1
+        return planner if calls["n"] == 1 else answer
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        raise AssertionError("direct plan must not create a worker")
+
+    config = _config(db_pool, planner, worker_factory, "ma-plan-streaming")
+    config["configurable"]["adapter_factory"] = adapter_factory
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, config)
+
+    # 1.8s of streaming against a 1s budget, and it was left alone.
+    assert planner.terminated == 0
+    assert not [f for f in frames if "planning produced nothing" in (f.get("text") or "")]
+    # The plan it streamed was used, so the turn answered rather than failing over.
+    assert values["response_text"]
+    assert not [f for f in frames if f["type"] == "failover"]
