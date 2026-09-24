@@ -252,6 +252,30 @@ async def test_worker_tokens_are_attributed_to_the_worker_model(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_bad_verify_command_does_not_repeat_worker(db_pool, tmp_path):
+    lead = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"구현","prompt":"build site",'
+        '"verify":"Verify that the site works"}]}',
+        DONE_JSON, "검증 명령 오류",
+    ])
+    workers = []
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        worker = ScriptedAdapter(["구현 완료"], label=agent)
+        workers.append(worker)
+        return worker
+
+    config = _config(db_pool, lead, worker_factory, "ma-bad-check")
+    config["configurable"]["workspace_dir"] = str(tmp_path)
+    graph = build_graph(InMemorySaver())
+    frames, _ = await _run(graph, config)
+
+    assert len(workers) == 1
+    result = next(f["task"] for f in frames if f["type"] == "subagent" and f["task"]["status"] == "error")
+    assert result["verification"]["retryable"] is False
+
+
+@pytest.mark.asyncio
 async def test_subagent_frames_track_each_task(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, DONE_JSON, "done"])
 

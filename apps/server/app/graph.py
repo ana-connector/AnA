@@ -228,7 +228,7 @@ async def _work_the_task(task, prompt, base_prompt, cwd, worker_route, worker_fa
         if not task.verify:
             break
         checked = await verification.verify(task.verify, cwd or ".")
-        if not checked.failed or attempt >= verification.max_retries():
+        if not checked.failed or not checked.retryable or attempt >= verification.max_retries():
             break
         # The check is the fact; the worker's summary is a claim. Send it back
         # once with the failure output attached.
