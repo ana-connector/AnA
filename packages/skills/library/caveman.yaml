@@ -1,54 +1,50 @@
 name: caveman
 title: 압축 보고
-description: 기술적 내용은 그대로 두고 군더더기만 지워, 같은 답을 최소 토큰으로 쓴다
+description: Compress a report to its technical substance, dropping only filler
 roles: [worker]
 inputs:
   - name: subject
     type: string
     required: true
-    description: 무엇에 대한 보고인지(작업 결과, 조사 내용 등)
+    description: What the report is about (a task result, an investigation)
   - name: level
     type: string
     required: false
     default: full
-    description: "lite(군더더기만 제거) | full(기본) | ultra(최대 압축)"
+    description: "lite (filler only) | full (default) | ultra (maximum compression)"
 output:
   type: string
-  description: 압축된 보고문. 코드·에러 문자열·수치는 원문 그대로
+  description: The compressed report. Code, error strings and numbers verbatim
 # Adapted from JuliusBrussee/caveman.
 instructions: |
-  보고 대상: {{subject}}
-  강도: {{level}} (비어 있으면 full)
+  Report on: {{subject}}
+  Level: {{level}} (empty means full)
 
-  기술적 실체는 전부 남기고 군더더기만 지운다. 압축은 문체를 바꾸는 것이고,
-  내용을 줄이는 것이 아니다.
+  Keep every technical fact and drop the filler. Compression changes the style,
+  never the content.
 
-  [지운다] 인사말·사과·"물론입니다"류, 없어도 되는 수식어(그냥, 사실은,
-  기본적으로), 방어적 표현, 장식용 표·이모지, 요청 없는 원본 로그 전체 붙여넣기
-  (가장 결정적인 한 줄만 인용), 도구 호출 예고·중간 보고.
+  [DROP] Greetings, apologies, "certainly"-style openers, hedges, needless
+  qualifiers (just, really, basically, actually, simply), decorative tables and
+  emoji, pasted raw logs nobody asked for (quote the single decisive line), and
+  announcements of what you are about to do.
 
-  [남긴다]
-  - 부정어(아니다/없다/절대/만/제외)는 절대 지우지 않는다. 뜻이 뒤집히는 손실은
-    어떤 토큰 절약보다 크다.
-  - 수치와 단위는 정확히.
-  - 코드 블록, 명령어, API 이름, 에러 문자열은 원문 그대로.
-  - 잘 알려진 약어(DB/API/HTTP)는 쓰되, 새 약어를 만들지 않는다. 토크나이저는
-    줄인 말을 같은 수의 토큰으로 쪼개므로 절약이 없고 읽기만 어려워진다.
-  - 짧아지지 않는 압축은 하지 않는다. 화살표(→)나 이상한 조각 문장을 "압축처럼
-    보이려고" 넣지 마라. 출력이 늘어나는 압축은 압축이 아니다.
+  [KEEP]
+  - Negations (not, never, no, only, except) — never drop one. A flipped meaning
+    costs more than any token saved.
+  - Numbers and units, exactly.
+  - Code blocks, commands, API names and error strings, verbatim.
+  - Well-known acronyms (DB, API, HTTP), but invent no new abbreviations: a
+    shortened word costs the same number of tokens and reads worse.
+  - Plain phrasing where compression saves nothing. Never add a word to sound
+    terse, and never let the output grow.
 
-  [형태] `[대상] [동작] [이유]. [다음 할 일].`
-  예: "auth 미들웨어 버그. 토큰 만료 검사가 `<=` 대신 `<` 씀. 수정:"
+  [SHAPE] `[thing] [action] [reason]. [next step].`
+  Example: "Bug in auth middleware. Token expiry check uses `<` not `<=`. Fix:"
 
-  [언어] 사용자가 쓴 언어로 답한다. 예시 문장의 언어를 따라가지 마라.
+  [WRITE IT OUT IN FULL] for security warnings, confirmations of irreversible
+  actions, multi-step sequences whose order could be misread, and anywhere
+  compression creates technical ambiguity. Resume compressing afterwards.
 
-  [압축을 풀 때] 다음은 평문으로 완전한 문장으로 쓴다.
-  - 보안 경고
-  - 되돌릴 수 없는 작업의 확인 요청
-  - 순서를 잘못 읽으면 위험한 다단계 절차
-  - 압축 자체가 기술적 중의성을 만드는 경우
-  - 사용자가 다시 물어보거나 설명을 요청한 경우
-  그 부분이 끝나면 다시 압축한다.
-
-  [범위] 대화 밖에 남는 글은 압축하지 않는다: 코드, 주석, 커밋 메시지, 문서,
-  이슈/PR 본문, 다른 사람에게 가는 메시지는 평소 문장으로 쓴다.
+  [LANGUAGE] If this report is for the user rather than the lead, write it in
+  their language; otherwise English. Never compress text that outlives the
+  conversation: code, comments, commit messages, docs, issue and PR bodies.

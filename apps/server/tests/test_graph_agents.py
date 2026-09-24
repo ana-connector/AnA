@@ -107,7 +107,7 @@ async def test_agent_switch_hands_over_recent_context(db_pool):
     await _run(graph, config, "이어서 구현해줘", "codex", values)
 
     handoff_prompt = adapters["codex"].calls[0][0]
-    assert "핸드오프" in handoff_prompt
+    assert "ANA HANDOFF" in handoff_prompt
     assert "claude" in handoff_prompt
     # The brief carries the previous turn's actual prompt and response.
     assert "설계를 설명해줘" in handoff_prompt
@@ -125,7 +125,7 @@ async def test_same_agent_turn_gets_no_handoff_block(db_pool):
     values = await _run(graph, config, "first", "claude")
     await _run(graph, config, "second", "claude", values)
 
-    assert "핸드오프" not in adapters["claude"].calls[1][0]
+    assert "ANA HANDOFF" not in adapters["claude"].calls[1][0]
 
 
 @pytest.mark.asyncio

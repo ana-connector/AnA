@@ -9,7 +9,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterable, Optional
 
 from packages.governance.subagent_scope import Scope
 from packages.orchestrator.handoff import AGENTS, DEFAULT_AGENT
@@ -23,72 +23,139 @@ DELEGATE = "delegate"
 # concurrency limit truncated exactly the plans worth making.
 DEFAULT_MAX_TASKS = 10
 DEFAULT_MAX_CONCURRENCY = 5
+# How many planning rounds one turn may use: the first plan, plus this many
+# chances to extend it once the results are in. A plan written before anything
+# ran is a guess about what the work will turn out to need, and the useful
+# version of "dynamic" is being allowed to add the step the first round
+# discovered — bounded, because a lead that can always add one more task can
+# also never finish.
+DEFAULT_PLAN_ROUNDS = 2
 
+# Written in English, unlike the answer it leads to: this prompt, every task
+# instruction and every handoff brief are read only by another model, and the
+# same words cost noticeably fewer tokens in English. What the *user* reads —
+# the final answer, the task titles the UI shows, the questions the lead asks —
+# stays Korean, and the instructions below say so explicitly.
 PLAN_INSTRUCTIONS = """\
-너는 오케스트레이터의 대장 에이전트다. 아래 요청을 보고 **JSON만** 출력해라.
-설명, 코드펜스 밖 텍스트, 사과문 금지.
+You are the lead agent of an orchestrator. Read the request below and output
+**JSON only** — no prose, no text outside the object, no apologies.
 
-도구 없이, 네가 아는 것과 지금까지의 대화만으로 답할 수 있는 요청이면:
+If you can answer from what you already know and this conversation, with no
+tools at all:
 {"mode": "direct"}
 
-기계를 건드려야 하는 요청이면(파일 읽기/쓰기, 명령 실행, 코드 조사, 검색 등):
+If the request needs the machine (reading or writing files, running commands,
+inspecting code, searching):
 {"mode": "delegate", "tasks": [
   {"id": "t1", "title": "짧은 제목", "agent": "codex", "needs": [],
-   "prompt": "그 작업만 수행하도록 쓴 완결된 지시",
+   "prompt": "a self-contained instruction for this task alone",
    "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"},
   {"id": "t2", "title": "다음 단계", "agent": "codex", "needs": ["t1"],
-   "prompt": "t1 결과를 받아 수행할 지시", "skill": "code-review"}
+   "prompt": "what to do with t1's result", "skill": "code-review"}
 ], "verify": "docker compose config -q"}
 
-규칙:
-- agent는 "claude", "codex", "kimi" 중 하나. 코드 생성/리팩터링/구현은 codex,
-  설명/리뷰/조사/기획은 claude, 긴 파일·대용량 맥락을 통째로 훑는 작업은 kimi.
-- scope는 그 하위 에이전트에게 줄 권한이다(생략 가능, 기본은 전체 쓰기).
-  - mode: "read"면 파일 수정·명령 실행이 차단된다. 조사/리뷰/설명 작업은 read로 줘라.
-  - paths: 워크스페이스 기준 상대 경로 목록. 적으면 그 안에서만 작업할 수 있다.
-  - 필요 이상으로 넓게 주지 마라. 좁게 준 스코프는 게이트가 강제한다.
-- verify는 그 작업이 끝났음을 증명할 셸 명령이다(생략 가능). ANA가 직접 실행하고,
-  실패하면 실패 출력을 붙여 그 작업을 한 번 다시 시킨다. 하위 에이전트의 "다 했다"는
-  말은 검증 결과를 이기지 못한다.
-  - 코드 변경이면 테스트/빌드/린트 명령을 써라. 없으면 비워라(없는 명령을 지어내지 마라).
-  - 조사·설명 작업에는 붙이지 마라.
-- 계획 맨 바깥의 verify는 **모든 작업이 끝나고 합쳐진 뒤** ANA가 한 번 실행하는
-  명령이다(생략 가능). 작업별 검증이 각각 통과해도 합친 결과가 깨질 수 있으니,
-  전체가 동작하는지 확인할 명령이 있으면 여기 적어라.
-- skill은 그 작업에 쓸 ANA 스킬 이름이다(생략 가능). 시스템 프롬프트의 스킬 목록에
-  있는 이름만 쓴다. 적으면 그 스킬의 절차가 하위 에이전트 지시에 붙는다.
-- 작업은 최대 %(max_tasks)d개. (동시에 도는 개수는 ANA가 따로 제한한다)
-- **needs로 순서를 표현해라.** needs가 빈 작업들은 동시에 시작하고, needs에 적은
-  작업이 모두 끝나야 그 작업이 시작한다. 앞 작업의 결과는 뒤 작업 지시에 자동으로
-  붙는다. 순서가 필요한 일을 한 작업으로 뭉치지 마라 — 단계마다 나누고 needs로 엮어라.
-  예: 계획(t1) → 백엔드(t2, needs t1) / 디자인(t3, needs t1) → 프론트(t4, needs t3)
-      → 배포(t5, needs t2·t4). t2와 t3는 병렬로 돈다.
-- id는 t1, t2 … 처럼 짧게. needs에는 이미 정의한 id만 쓴다(순환 금지).
-- 각 prompt는 그 작업만 보고도 수행 가능하도록 자족적으로 써라.
-- **direct는 "쉬운 요청"이 아니라 "도구가 필요 없는 요청"에 쓴다.** 너는 파일도
-  못 읽고 명령도 못 돌린다. 파일 내용·실행 결과·저장소 상태가 답에 필요하면
-  작업이 아무리 작아도 delegate로, 작업 1개짜리 계획을 만들어라.
-- 반대로 개념 설명, 방금 대화 정리, 네가 이미 아는 것으로 끝나는 질문은
-  delegate하지 마라 — 하위 에이전트를 띄우는 것도 비용이다.
-- 병렬로 나눌 이유가 없으면 작업 1개짜리 delegate가 정답이다. 억지로 쪼개지 마라.
+Rules:
+- `agent` is one of "claude", "codex", "kimi". Code generation, refactoring and
+  implementation go to codex; explanation, review, investigation and planning to
+  claude; sweeping a long file or a large body of context at once to kimi.
+- `title` is what the user sees in the UI, so **write titles in Korean**.
+  `prompt` is read by a sub-agent, so write it in English.
+- `scope` is the permission you grant that sub-agent (optional, defaults to full
+  write access).
+  - mode "read" blocks file edits and command execution. Give investigation,
+    review and explanation tasks "read".
+  - paths: workspace-relative paths. Listed, the task may only work inside them.
+  - Do not grant more than the task needs. A narrow scope is enforced at the gate.
+- `verify` is a shell command that proves the task is done (optional). ANA runs
+  it itself and, if it fails, re-dispatches that one task once with the failure
+  output attached. A sub-agent saying "done" does not outrank the check.
+  - For code changes use the test, build or lint command. Leave it empty if there
+    is none — do not invent a command that does not exist.
+  - Do not attach one to investigation or explanation tasks.
+- The outermost `verify` runs **once, after every task has finished and merged**
+  (optional). Per-task checks each pass on their own branch, so put a command
+  here if there is one that shows the whole thing still works.
+- `skill` names an ANA skill for that task (optional). Use only names from the
+  skill list in your system prompt; the skill's procedure is prepended to the
+  sub-agent's instruction.
+- At most %(max_tasks)d tasks. (ANA caps how many run at once separately.)
+- **Express order with `needs`.** Tasks with empty `needs` start together; a task
+  with `needs` starts when all of them have finished, and their results are
+  attached to its instruction automatically. Do not collapse a sequence into one
+  task — split it per step and wire it with `needs`.
+  Example: plan(t1) → backend(t2, needs t1) / design(t3, needs t1) →
+  frontend(t4, needs t3) → deploy(t5, needs t2+t4). t2 and t3 run in parallel.
+- Keep ids short (t1, t2 …). `needs` may only name ids you already defined, and
+  cycles are rejected.
+- Write each `prompt` so the task can be carried out from that text alone.
+- **"direct" means "needs no tools", not "easy".** You cannot read files or run
+  commands. If the answer depends on file contents, command output or repository
+  state, delegate — even a one-task plan.
+- Conversely, do not delegate concept explanations, summaries of what was just
+  said, or anything you already know: starting a sub-agent costs something too.
+- If there is no reason to split, a one-task plan is the right answer. Do not
+  break work up for the sake of it.
+- Plan the steps you can actually see now. When these finish you will be shown
+  their results and asked whether anything else is needed, so you do not have to
+  guess at follow-up work the first round will reveal.
+- If the request is genuinely ambiguous — two readings that lead to different
+  work, a choice only the user can make — call `ask_user` **before** planning,
+  in Korean, and plan once you have the answer. Do not ask about anything a
+  sub-agent could find out by reading the repository.
 
-요청:
+Request:
 %(prompt)s
 """
 
 SYNTHESIS_INSTRUCTIONS = """\
-아래는 네가 세운 계획에 따라 서브에이전트들이 병렬로 수행한 결과다.
-계획 단계는 끝났다. **지금은 JSON을 쓰지 마라.** 사용자에게 그대로 보여줄 한국어
-산문으로 최종 답변을 작성해라. 새 계획이나 작업 목록을 만들지 마라.
-실패한 작업이 있으면 숨기지 말고 무엇이 안 됐는지 밝혀라.
+Below is what the sub-agents produced for the plan you made. The planning phase
+is over: **do not output JSON** and do not make a new plan or task list.
 
-괄호 안의 검증/병합 결과는 ANA가 직접 확인한 사실이다. 하위 에이전트가 "다 했다"고
-써도 검증이 실패했으면 그 작업은 실패한 것으로 보고해라.
+Write the final answer for the user **in Korean**, as prose they can read as-is.
+If a task failed, say what failed and why rather than hiding it.
 
-원래 요청:
+Anything in parentheses is a fact ANA checked itself. A sub-agent may have
+written "done" while the check failed — report that task as failed.
+
+Original request:
 %(prompt)s
 
-서브에이전트 결과:
+Sub-agent results:
+%(results)s
+"""
+
+
+REPLAN_INSTRUCTIONS = """\
+These are the results of the tasks you planned. Decide what happens next and
+output **JSON only**.
+
+Nothing further is needed — ANA will ask you for the user's answer next:
+{"mode": "done"}
+
+Something the results revealed still has to be done:
+{"mode": "delegate", "tasks": [
+  {"id": "t9", "title": "짧은 제목", "agent": "codex", "needs": ["t2"],
+   "prompt": "a self-contained instruction", "verify": ""}
+]}
+
+Rules:
+- Same task format as the original plan: Korean `title`, English `prompt`,
+  optional `scope`, `verify` and `skill`.
+- Ids already used, which you may name in `needs` but must not reuse:
+  %(existing_ids)s
+- `needs` may reference a finished task; its result is attached automatically.
+- Add a task **only because of what these results showed**: a dependency nobody
+  could see before running, a failure that needs a different approach, a
+  follow-up step the first plan could not know about. Do not re-run work that is
+  done, and do not add polish nobody asked for.
+- At most %(max_tasks)d more tasks.
+- If the original plan covered the request, answer {"mode": "done"}. That is the
+  normal answer, not a failure.
+
+Original request:
+%(prompt)s
+
+Results so far:
 %(results)s
 """
 
@@ -156,14 +223,51 @@ def build_planning_prompt(prompt: str, limit: Optional[int] = None) -> str:
     return PLAN_INSTRUCTIONS % {"max_tasks": limit or max_tasks(), "prompt": prompt}
 
 
+def plan_rounds() -> int:
+    """How many planning rounds one turn may use (ANA_PLAN_ROUNDS).
+
+    2 by default: plan, run, then one chance to add what the results revealed.
+    Each extra round costs one short planning call whether or not it adds
+    anything, which is why this is 2 and not 5. 1 restores the old behavior —
+    plan once, run, answer."""
+    try:
+        return max(1, int(os.environ.get("ANA_PLAN_ROUNDS", DEFAULT_PLAN_ROUNDS)))
+    except ValueError:
+        return DEFAULT_PLAN_ROUNDS
+
+
+def build_replan_prompt(
+    prompt: str,
+    results: list[dict],
+    existing_ids: Iterable[str],
+    limit: Optional[int] = None,
+) -> str:
+    """The question ANA puts to the lead between rounds: given what came back,
+    is the plan finished or does it need another step?
+
+    The same JSON parser reads the answer, so "done" needs no special case —
+    anything that is not a delegation with tasks ends the fan-out."""
+    rendered = "\n\n".join(
+        f"[{r.get('id', '?')} · {r.get('title', '')} · {r.get('status', '')}]{_verdict(r)}\n"
+        f"{(r.get('output') or '').strip()[:2000]}"
+        for r in results
+    )
+    return REPLAN_INSTRUCTIONS % {
+        "max_tasks": limit or max_tasks(),
+        "existing_ids": ", ".join(existing_ids) or "(none)",
+        "prompt": prompt,
+        "results": rendered or "(no results)",
+    }
+
+
 _SKILL_PLACEHOLDER_RE = re.compile(r"\{\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}\}")
 
 SKILL_INSTRUCTIONS = """\
-[스킬: %(name)s] 이 작업은 아래 절차를 따른다.
+[SKILL: %(name)s] Follow this procedure for this task.
 
 %(instructions)s
 
-[작업 지시]
+[TASK]
 %(prompt)s
 """
 
@@ -183,7 +287,7 @@ def _with_skill(task) -> str:
     # The skill's input placeholders are left unfilled on purpose — the plan
     # supplies the specifics in the task prompt, and "{{target}}" reaching an
     # agent verbatim reads as a template ANA forgot to finish.
-    procedure = _SKILL_PLACEHOLDER_RE.sub("(아래 작업 지시 참고)", skill.instructions.strip())
+    procedure = _SKILL_PLACEHOLDER_RE.sub("(see the task instruction below)", skill.instructions.strip())
     return SKILL_INSTRUCTIONS % {
         "name": skill.name,
         "instructions": procedure,
@@ -192,12 +296,12 @@ def _with_skill(task) -> str:
 
 
 UPSTREAM_INSTRUCTIONS = """\
-[선행 작업 결과] 아래는 네 작업이 기다린 작업들이 실제로 만들어낸 결과다.
-여기 적힌 내용을 전제로 이어서 작업해라. 이미 끝난 일을 다시 하지 마라.
+[UPSTREAM RESULTS] What the tasks yours waited for actually produced. Continue
+from these as given; do not redo work that is already done.
 
 %(results)s
 
-[네 작업]
+[YOUR TASK]
 %(prompt)s
 """
 
@@ -213,7 +317,7 @@ def build_task_prompt(task, upstream: list[dict]) -> str:
         return prompt
     rendered = "\n\n".join(
         f"[{entry['title']} · {entry['status']}]\n"
-        f"{(entry.get('output') or '(출력 없음)').strip()[:3000]}"
+        f"{(entry.get('output') or '(no output)').strip()[:3000]}"
         for entry in upstream
     )
     return UPSTREAM_INSTRUCTIONS % {"results": rendered, "prompt": prompt}
@@ -225,7 +329,7 @@ def build_synthesis_prompt(prompt: str, results: list[dict]) -> str:
         f"{(r.get('output') or '').strip()[:4000]}"
         for r in results
     )
-    return SYNTHESIS_INSTRUCTIONS % {"prompt": prompt, "results": rendered or "(결과 없음)"}
+    return SYNTHESIS_INSTRUCTIONS % {"prompt": prompt, "results": rendered or "(no results)"}
 
 
 def _verdict(result: dict) -> str:
@@ -236,16 +340,16 @@ def _verdict(result: dict) -> str:
     check = result.get("verification") or {}
     if check.get("ran"):
         parts.append(
-            f"검증 {'통과' if check.get('passed') else '실패'}: {check.get('command', '')}"
+            f"check {'passed' if check.get('passed') else 'FAILED'}: {check.get('command', '')}"
             + ("" if check.get("passed") else f" — {check.get('reason', '')}")
         )
     elif check.get("reason"):
-        parts.append(f"검증 실행 못함: {check['reason']}")
+        parts.append(f"check could not run: {check['reason']}")
     merge = result.get("merge") or {}
     if merge and not merge.get("merged", True):
-        parts.append(f"병합 충돌 — 결과는 {merge.get('branch', '')} 브랜치에 있음")
+        parts.append(f"merge conflict — the work is on branch {merge.get('branch', '')}")
     elif merge.get("empty"):
-        parts.append("변경 없음")
+        parts.append("no changes")
     return f" ({'; '.join(parts)})" if parts else ""
 
 
@@ -266,19 +370,26 @@ def _parse_skill(raw) -> str:
         return ""
 
 
-def _parse_needs(raw, id_map: dict[str, str], own_id: str) -> tuple[str, ...]:
+def _parse_needs(
+    raw, id_map: dict[str, str], own_id: str, known_ids: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Dependencies as ANA's own task ids.
 
     Client-of-the-model data: an id nobody defined, or a task naming itself,
     is dropped rather than failing the plan — a dependency ANA cannot resolve
-    would otherwise block the task forever."""
+    would otherwise block the task forever.
+
+    `known_ids` are tasks from an earlier round of the same turn. They are
+    already ANA's own ids, so a later plan may name them directly, and their
+    results are carried into the new task's prompt."""
     if not isinstance(raw, list):
         return ()
     needs = []
     for entry in raw:
         if not isinstance(entry, str):
             continue
-        resolved = id_map.get(entry.strip())
+        name = entry.strip()
+        resolved = id_map.get(name) or (name if name in known_ids else None)
         if resolved and resolved != own_id and resolved not in needs:
             needs.append(resolved)
     return tuple(needs)
@@ -307,13 +418,25 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
+def parse_plan(
+    text: str,
+    limit: Optional[int] = None,
+    *,
+    id_offset: int = 0,
+    known_ids: Iterable[str] = (),
+) -> Plan:
     """Turns the lead's answer into a plan.
 
     Anything unparseable, empty, or not actually a delegation falls back to a
     direct turn: a planning step that fails should cost the user nothing but a
-    little latency, never an error."""
+    little latency, never an error.
+
+    ANA assigns the ids, not the model — so a plan that numbers its tasks its own
+    way still wires its dependencies to the right ones. `id_offset` continues the
+    numbering for a later round of the same turn (t3, t4 … after t1 and t2), and
+    `known_ids` are the tasks from earlier rounds that a new one may depend on."""
     cap = limit or max_tasks()
+    known = tuple(known_ids)
     payload = _extract_json(text or "")
     if payload is None:
         return Plan(note="계획을 JSON으로 읽지 못해 단독 처리")
@@ -333,7 +456,7 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
         if isinstance(raw, dict):
             claimed = raw.get("id")
             if isinstance(claimed, str) and claimed.strip():
-                id_map[claimed.strip()] = f"t{index + 1}"
+                id_map[claimed.strip()] = f"t{id_offset + index + 1}"
 
     for index, raw in enumerate(raw_tasks[:cap]):
         if not isinstance(raw, dict):
@@ -344,9 +467,11 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
         agent = raw.get("agent")
         tasks.append(
             PlanTask(
-                needs=_parse_needs(raw.get("needs"), id_map, f"t{index + 1}"),
-                id=f"t{index + 1}",
-                title=str(raw.get("title") or f"작업 {index + 1}")[:80],
+                needs=_parse_needs(
+                    raw.get("needs"), id_map, f"t{id_offset + index + 1}", known
+                ),
+                id=f"t{id_offset + index + 1}",
+                title=str(raw.get("title") or f"작업 {id_offset + index + 1}")[:80],
                 prompt=task_prompt.strip(),
                 scope=Scope.parse(raw.get("scope")),
                 verify=(raw.get("verify") or "").strip()[:500]

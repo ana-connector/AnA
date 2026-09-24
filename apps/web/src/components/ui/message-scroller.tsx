@@ -73,7 +73,12 @@ function MessageScrollerItem({
       data-slot="message-scroller-item"
       scrollAnchor={scrollAnchor}
       className={cn(
-        "min-w-0 shrink-0 [contain-intrinsic-size:auto_10rem] [content-visibility:auto]",
+        // No content-visibility here (it is in the upstream file): it let the
+        // browser skip rendering off-screen items and size them from the
+        // 10rem hint instead, so every scroll computed against estimated
+        // heights and landed short or past the message it was aiming at. An
+        // agent reply is a full document now, which made the error obvious.
+        "min-w-0 shrink-0",
         className
       )}
       {...props}

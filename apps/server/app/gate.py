@@ -171,8 +171,8 @@ class AskRequest(BaseModel):
 # error: an agent that loses its turn because someone stepped away is worse
 # than one that states its assumption and carries on.
 UNANSWERED = (
-    "사용자가 답하지 않았다(시간 초과). 되돌릴 수 없는 일은 하지 말고, "
-    "세운 가정을 답에 분명히 적고 진행해라."
+    "The user did not answer (timed out). Do nothing irreversible; state the "
+    "assumption you are proceeding on, clearly, in your answer."
 )
 
 
@@ -366,10 +366,12 @@ async def gate_tool_call(
         await _audit(DENY, "delegation", "native sub-agent tooling is disabled")
         return GateDecision(
             decision=DENY,
+            # English, like every other text ANA writes for an agent to read:
+            # the words the *user* sees are the card's Korean description.
             reason=(
-                "이 CLI의 자체 하위 에이전트 도구는 쓸 수 없다. 작업을 나누려면 "
-                "계획(JSON)으로 돌려줘라 — ANA가 작업마다 권한 스코프, 독립 워크트리, "
-                "검증 명령을 붙여 실행한다."
+                "This CLI's own sub-agent tooling is not available. To split work, "
+                "answer with a plan (JSON) — ANA runs each task with a permission "
+                "scope, its own worktree and a verification command."
             ),
             rule_id="native-subagents-disabled",
             category="delegation",
@@ -383,8 +385,8 @@ async def gate_tool_call(
         return GateDecision(
             decision=DENY,
             reason=(
-                "대장 세션은 도구를 쓰지 않는다. 이 작업은 하위 에이전트에게 위임해라 "
-                "(계획을 세워 작업을 나눠라)."
+                "The lead session does not use tools. Delegate this to a sub-agent "
+                "(answer with a plan that splits the work)."
             ),
             rule_id="lead-no-tools",
             category="delegation",

@@ -1,26 +1,28 @@
 name: db-inspect
 title: 메모리 DB 조회
-description: ANA의 Postgres 메모리/상태 DB를 읽기 전용으로 조사해 답한다
+description: Answer a question from ANA's Postgres memory/state DB, read-only
 roles: [worker]
 mcp: [postgres]
 inputs:
   - name: question
     type: string
     required: true
-    description: DB에 물어볼 질문
+    description: The question to answer from the database
   - name: limit
     type: integer
     required: false
     default: 50
-    description: 결과 행 수 상한
+    description: Maximum rows to return
 output:
   type: string
-  description: 질문에 대한 답과 근거가 된 쿼리
+  description: The answer, with the queries it rests on
 instructions: |
-  postgres MCP 서버로 다음 질문에 답해라: {{question}}
+  Answer this question with the postgres MCP server: {{question}}
 
-  1. 먼저 스키마를 조회해 어떤 테이블/컬럼이 있는지 확인한다. 테이블 이름을 추측하지 마라.
-  2. 필요한 SELECT만 실행한다. 결과는 {{limit}}행으로 제한한다.
-  3. 답변에는 실제로 실행한 쿼리를 함께 적는다. 숫자를 지어내지 마라.
+  1. Read the schema first to see which tables and columns exist. Do not guess
+     table names.
+  2. Run only the SELECTs you need. Limit results to {{limit}} rows.
+  3. Include the queries you actually ran. Do not invent numbers.
 
-  이 서버는 읽기 전용이다. 쓰기/DDL이 필요하다고 판단되면 실행하지 말고 그 사실을 보고해라.
+  This server is read-only. If the answer would need a write or DDL, do not run
+  it — report that instead.

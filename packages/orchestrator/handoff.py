@@ -52,9 +52,12 @@ def build_handoff_prompt(
         f"   A: {_truncate(t['response'])}"
         for i, t in enumerate(turns)
     )
+    # English, like every other prompt ANA writes for a model to read: the brief
+    # is machine-to-machine and the same words cost fewer tokens this way. The
+    # turns quoted inside it stay in whatever language they happened in.
     return (
-        f"[ANA 핸드오프] 직전까지 {previous_agent} 에이전트가 이 작업을 진행했다. "
-        f"너({incoming_agent})가 이어서 진행해라.\n\n"
-        f"최근 대화:\n{history}\n\n"
-        f"현재 요청: {prompt}"
+        f"[ANA HANDOFF] The {previous_agent} agent was working on this until now. "
+        f"You ({incoming_agent}) continue from here.\n\n"
+        f"Recent turns:\n{history}\n\n"
+        f"Current request: {prompt}"
     )

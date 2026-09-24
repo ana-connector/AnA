@@ -169,7 +169,7 @@ async def test_exhausted_claude_hands_over_to_codex_with_context(db_pool):
     assert [f["to_rung"] for f in frames if f["type"] == "failover"][-1] == "codex"
     assert values["agent"] == "codex"
     # Switching CLI is a handoff: the incoming one gets this thread's context.
-    assert "핸드오프" in codex.calls[0]
+    assert "ANA HANDOFF" in codex.calls[0]
 
 
 @pytest.mark.asyncio

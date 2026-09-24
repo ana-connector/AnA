@@ -146,6 +146,7 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_SELF_WORKSPACE` | Absolute host path of ANA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
 | `ANA_ROUTING_RULES` | Path to the routing rules (default `config/routing.yaml`) |
 | `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own |
+| `ANA_PLAN_ROUNDS` | How many planning rounds one turn may use: the first plan plus that many chances to extend it (default 2; 1 = plan once) |
 | `ANA_SECRET_KEY` | Key that encrypts stored secrets at rest. Changing it makes existing rows unreadable (they are skipped, and listed so you can re-enter them) |
 | `ANA_MAX_THREAD_COST_USD` / `ANA_MAX_THREAD_TOKENS` | Circuit-breaker budget per thread (defaults 5.0 / 2,000,000) |
 | `ANA_RATE_LIMIT_UTILIZATION` | Window utilization that counts as "at the cap" (default 0.95) |
@@ -361,6 +362,38 @@ finishes.
   and still answers.
 - `ANA_PLANNER_DEFAULT=on` makes planning the default for every turn. It is off
   otherwise, because planning costs one extra CLI call.
+
+**The plan is not fixed when it is written.** A plan made before anything has
+run is a guess about what the work will turn out to need, so after each round of
+tasks finishes the lead is shown the results and asked one question: is this
+done, or is there a step these results revealed? Tasks it adds are numbered
+after the ones that ran (t3, t4 …) and may depend on them by id — the finished
+task's output is attached to the new task's instruction, exactly as it is within
+a round. `ANA_PLAN_ROUNDS` (default 2) caps this: a lead that can always add one
+more task can also never finish, and each round costs one short planning call
+whether or not it adds anything. `ANA_PLAN_ROUNDS=1` restores the old shape —
+plan once, run, answer.
+
+If the request itself is ambiguous, the lead can call `ask_user` before planning
+rather than guessing which reading was meant.
+
+## Two languages
+
+Korean is what the user reads; English is what a model reads. The split is not
+cosmetic — the instruction side is paid for on every turn, and the same words
+cost noticeably fewer tokens in English.
+
+| Korean | English |
+|---|---|
+| The lead's final answer | The lead's and workers' role instructions |
+| Task titles, the plan, every UI string | Task prompts, the planning and synthesis prompts |
+| The questions `ask_user` puts to the user | Handoff briefs between CLIs, verification retries |
+| Approval card descriptions (`config/governance.yaml`) | Gate denial reasons, scope limits, skill instructions and the skill catalog |
+
+Some things therefore exist twice on purpose. A gate refusal carries an English
+`reason` for the agent that has to act on it and a Korean `description` for the
+person deciding whether to allow it. A skill keeps a Korean `title` for the
+settings page and English instructions for the worker that follows them.
 
 ## Chat behavior
 

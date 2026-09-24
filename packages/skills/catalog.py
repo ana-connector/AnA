@@ -14,18 +14,19 @@ from typing import Optional
 from packages.mcp.registry import LEAD, WORKER
 from packages.skills.loader import load_library
 
+# English, like every other block ANA writes into a system prompt: it is paid
+# for on every turn and read only by a model.
 HEADER = """\
-[사용 가능한 스킬]
-아래는 이 작업에 쓸 수 있는 ANA 스킬 목록이다. 작업이 여기 해당하면 그 스킬의
-절차를 따라라. 해당하는 스킬이 없으면 평소대로 진행하면 된다. 목록에 없는
-스킬이나 MCP 서버를 쓰려고 하지 마라(게이트에서 거부된다).
+[AVAILABLE SKILLS]
+ANA skills you can use for this task. If the task is one of these, follow that
+skill's procedure. If none applies, work as you normally would. Do not try to
+use a skill or an MCP server that is not listed (the gate denies it).
 """
 
 LEAD_HEADER = """\
-[하위 에이전트가 쓸 수 있는 스킬]
-아래는 네가 띄우는 하위 에이전트가 수행할 수 있는 ANA 스킬 목록이다. 작업을
-나눌 때 해당하는 스킬이 있으면 그 이름을 지시에 적어라. 너 자신이 직접
-실행하지는 마라.
+[SKILLS YOUR SUB-AGENTS CAN USE]
+ANA skills the sub-agents you start are able to carry out. When you split the
+work, name the matching skill in the task. Do not carry one out yourself.
 """
 
 

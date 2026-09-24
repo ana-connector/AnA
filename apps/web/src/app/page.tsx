@@ -298,7 +298,12 @@ export default function ChatPage() {
                   <MessageScrollerItem
                     key={index}
                     messageId={`m-${index}`}
-                    scrollAnchor={message.role === "user"}
+                    // No scrollAnchor: anchoring the user's message to the top
+                    // of the viewport jumps the view on every send, and with
+                    // full-width replies the jump landed somewhere in the
+                    // middle of the previous answer. Following the bottom while
+                    // a reply streams is the behavior people expect, and the
+                    // jump-to-latest button covers the rest.
                   >
                     {message.notice ? (
                       // A failover notice is the system talking, not the

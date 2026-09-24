@@ -66,5 +66,5 @@ def scope_denial(tool_name: str, role: str, allowed_servers: Iterable[str],
     if server in allowed:
         return None
     if server not in known:
-        return f"등록되지 않은 MCP 서버({server})의 도구는 사용할 수 없다"
-    return f"MCP 서버 '{server}'는 {role} 역할의 범위가 아니다"
+        return f"tools of unregistered MCP server '{server}' cannot be used"
+    return f"MCP server '{server}' is not in scope for the {role} role"
