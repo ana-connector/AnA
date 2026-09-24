@@ -37,8 +37,8 @@ PLAN_INSTRUCTIONS = """\
    "prompt": "그 작업만 수행하도록 쓴 완결된 지시",
    "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"},
   {"id": "t2", "title": "다음 단계", "agent": "codex", "needs": ["t1"],
-   "prompt": "t1 결과를 받아 수행할 지시"}
-]}
+   "prompt": "t1 결과를 받아 수행할 지시", "skill": "code-review"}
+], "verify": "docker compose config -q"}
 
 규칙:
 - agent는 "claude", "codex", "kimi" 중 하나. 코드 생성/리팩터링/구현은 codex,
@@ -52,6 +52,11 @@ PLAN_INSTRUCTIONS = """\
   말은 검증 결과를 이기지 못한다.
   - 코드 변경이면 테스트/빌드/린트 명령을 써라. 없으면 비워라(없는 명령을 지어내지 마라).
   - 조사·설명 작업에는 붙이지 마라.
+- 계획 맨 바깥의 verify는 **모든 작업이 끝나고 합쳐진 뒤** ANA가 한 번 실행하는
+  명령이다(생략 가능). 작업별 검증이 각각 통과해도 합친 결과가 깨질 수 있으니,
+  전체가 동작하는지 확인할 명령이 있으면 여기 적어라.
+- skill은 그 작업에 쓸 ANA 스킬 이름이다(생략 가능). 시스템 프롬프트의 스킬 목록에
+  있는 이름만 쓴다. 적으면 그 스킬의 절차가 하위 에이전트 지시에 붙는다.
 - 작업은 최대 %(max_tasks)d개. (동시에 도는 개수는 ANA가 따로 제한한다)
 - **needs로 순서를 표현해라.** needs가 빈 작업들은 동시에 시작하고, needs에 적은
   작업이 모두 끝나야 그 작업이 시작한다. 앞 작업의 결과는 뒤 작업 지시에 자동으로
@@ -100,6 +105,10 @@ class PlanTask:
     # Ids of the tasks that must finish first. Empty means "start immediately";
     # everything with an empty `needs` runs in parallel.
     needs: tuple[str, ...] = ()
+    # An ANA skill this task should follow, by name. Validated against the
+    # library, so a name the model invented is dropped rather than pasted into
+    # a prompt as an instruction nobody wrote.
+    skill: str = ""
     # A shell command that proves the task is done. ANA runs it itself after
     # the worker finishes (packages/orchestrator/verification.py); empty means
     # there is nothing to check, which is the honest state for a task whose
@@ -113,6 +122,10 @@ class Plan:
     tasks: list[PlanTask] = field(default_factory=list)
     # Why the plan ended up direct, when that was not the model's choice.
     note: str = ""
+    # A command ANA runs once, after every task has merged. Per-task checks
+    # each pass on their own branch; this is the one that catches two of them
+    # being fine separately and broken together.
+    verify: str = ""
 
     @property
     def delegating(self) -> bool:
@@ -143,6 +156,41 @@ def build_planning_prompt(prompt: str, limit: Optional[int] = None) -> str:
     return PLAN_INSTRUCTIONS % {"max_tasks": limit or max_tasks(), "prompt": prompt}
 
 
+_SKILL_PLACEHOLDER_RE = re.compile(r"\{\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}\}")
+
+SKILL_INSTRUCTIONS = """\
+[스킬: %(name)s] 이 작업은 아래 절차를 따른다.
+
+%(instructions)s
+
+[작업 지시]
+%(prompt)s
+"""
+
+
+def _with_skill(task) -> str:
+    """The task's own instruction, preceded by the skill it was assigned."""
+    if not task.skill:
+        return task.prompt
+    try:
+        from packages.skills.loader import load_library
+
+        skill = load_library().get(task.skill)
+    except Exception:  # noqa: BLE001 - see _parse_skill
+        skill = None
+    if skill is None:
+        return task.prompt
+    # The skill's input placeholders are left unfilled on purpose — the plan
+    # supplies the specifics in the task prompt, and "{{target}}" reaching an
+    # agent verbatim reads as a template ANA forgot to finish.
+    procedure = _SKILL_PLACEHOLDER_RE.sub("(아래 작업 지시 참고)", skill.instructions.strip())
+    return SKILL_INSTRUCTIONS % {
+        "name": skill.name,
+        "instructions": procedure,
+        "prompt": task.prompt,
+    }
+
+
 UPSTREAM_INSTRUCTIONS = """\
 [선행 작업 결과] 아래는 네 작업이 기다린 작업들이 실제로 만들어낸 결과다.
 여기 적힌 내용을 전제로 이어서 작업해라. 이미 끝난 일을 다시 하지 마라.
@@ -155,19 +203,20 @@ UPSTREAM_INSTRUCTIONS = """\
 
 
 def build_task_prompt(task, upstream: list[dict]) -> str:
-    """One task's instruction, with what it waited for in front of it.
+    """One task's instruction, with its skill and what it waited for in front.
 
     A dependency that carried no output is still listed: "the previous step
     produced nothing" is information, and a worker left to assume otherwise
     invents the handover."""
+    prompt = _with_skill(task)
     if not upstream:
-        return task.prompt
+        return prompt
     rendered = "\n\n".join(
         f"[{entry['title']} · {entry['status']}]\n"
         f"{(entry.get('output') or '(출력 없음)').strip()[:3000]}"
         for entry in upstream
     )
-    return UPSTREAM_INSTRUCTIONS % {"results": rendered, "prompt": task.prompt}
+    return UPSTREAM_INSTRUCTIONS % {"results": rendered, "prompt": prompt}
 
 
 def build_synthesis_prompt(prompt: str, results: list[dict]) -> str:
@@ -198,6 +247,23 @@ def _verdict(result: dict) -> str:
     elif merge.get("empty"):
         parts.append("변경 없음")
     return f" ({'; '.join(parts)})" if parts else ""
+
+
+def _parse_skill(raw) -> str:
+    """A skill name the library actually has, or "".
+
+    Checked here rather than at use: a name the model invented would otherwise
+    reach the worker as "follow the X procedure" with no X to follow, which
+    reads to the agent as an instruction it failed to understand."""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    name = raw.strip()
+    try:
+        from packages.skills.loader import load_library
+
+        return name if load_library().get(name) is not None else ""
+    except Exception:  # noqa: BLE001 - a broken library is not a broken plan
+        return ""
 
 
 def _parse_needs(raw, id_map: dict[str, str], own_id: str) -> tuple[str, ...]:
@@ -286,6 +352,7 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
                 verify=(raw.get("verify") or "").strip()[:500]
                 if isinstance(raw.get("verify"), str)
                 else "",
+                skill=_parse_skill(raw.get("skill")),
                 # Client-of-the-model data: an invented agent name would
                 # otherwise pick a subprocess that does not exist.
                 agent=agent if agent in AGENTS else DEFAULT_AGENT,
@@ -295,8 +362,10 @@ def parse_plan(text: str, limit: Optional[int] = None) -> Plan:
     if not tasks:
         return Plan(note="실행 가능한 작업이 없어 단독 처리")
     dropped = len(raw_tasks) - len(tasks)
+    turn_verify = payload.get("verify")
     return Plan(
         mode=DELEGATE,
         tasks=tasks,
         note=f"{dropped}개 작업은 상한/형식 때문에 제외" if dropped > 0 else "",
+        verify=turn_verify.strip()[:500] if isinstance(turn_verify, str) else "",
     )

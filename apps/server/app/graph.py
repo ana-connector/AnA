@@ -22,6 +22,7 @@ from packages.orchestrator.breaker import (
     rate_limit_exceeded,
     thread_budget_exceeded,
 )
+from packages.governance.secrets import mask as mask_secrets
 from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
 from packages.orchestrator import verification, worktrees
 from packages.observability.metrics import record_failover, record_subagent, record_turn
@@ -623,6 +624,11 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                             await worktrees.remove(
                                 tree, keep_branch=not merged.merged
                             )
+                if run is not None and run.output:
+                    # Masked before it goes anywhere: the next task's prompt,
+                    # the synthesis, the transcript and the turns table all
+                    # read this string.
+                    run.output = mask_secrets(run.output, configurable.get("secrets") or [])
                 if checked is not None and run is not None:
                     run.extras["verification"] = checked.as_dict()
                 if merged is not None and run is not None:
@@ -647,6 +653,33 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 )
 
             subagent_results = [r.as_dict() for r in results]
+            # Per-task checks each passed on their own branch. This is the one
+            # that catches two of them being fine separately and broken
+            # together — run once, on the merged tree.
+            if plan.verify and workspace_dir:
+                turn_check = await verification.verify(plan.verify, workspace_dir)
+                writer(
+                    {
+                        "type": "plan",
+                        "text": "",
+                        "session_id": None,
+                        "is_error": turn_check.failed,
+                        "agent": agent,
+                        "mode": plan.mode,
+                        "tasks": [_task_frame(t) for t in plan.tasks],
+                        "verification": turn_check.as_dict(),
+                    }
+                )
+                subagent_results.append(
+                    {
+                        "id": "turn",
+                        "title": "전체 검증",
+                        "agent": "ana",
+                        "status": "done" if turn_check.passed else "error",
+                        "output": turn_check.output or turn_check.reason,
+                        "verification": turn_check.as_dict(),
+                    }
+                )
             totals = summarize(results)
             subagent_cost = totals["cost_usd"]
             subagent_tokens = totals["tokens"]
@@ -869,6 +902,11 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         # with content-free rows. Only skip logging in that specific
         # nothing-happened case; an exception (caught_exc set) or an
         # error/partial-text turn still logs as before.
+        # The reply the user already saw cannot be unsent, but the copies
+        # that outlive it can be clean: a registered secret value is masked
+        # before it reaches the transcript file and the turns table, which are
+        # what later turns retrieve and what anyone reading the history sees.
+        final_response = mask_secrets(final_response, configurable.get("secrets") or [])
         if caught_exc is not None or final_response:
             transcript.append(
                 session_id=session_id or "", prompt=state["prompt"], response=final_response, cost_usd=cost_usd

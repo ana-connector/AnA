@@ -181,6 +181,39 @@ TASK t3 design.txt 작성 needs=['t1']
 → five merge commits in dependency order, five files, all checks passed
 ```
 
+## Bug sweep (2026-09-24)
+
+Six real defects, all from the day's own work, all with tests:
+
+- A reused adapter kept the previous call's model and effort, so a rung that
+  named no effort answered the whole turn at *planning* effort.
+- A path-scoped worker was denied its own worktree: the scope resolved
+  allowed paths only against the workspace root, never the worker's cwd.
+- A worker that raised leaked its worktree and branch — the cleanup ran after
+  the worker rather than in a `finally`.
+- Two turns on one workspace shared worktree names (a second browser tab is
+  enough), so creating the second deleted the first one's live checkout.
+  Names carry a per-run suffix now and the merge lock is per workspace.
+- Generated CLI files (settings, `mcp.json`, launcher scripts) were written
+  non-atomically while other CLIs read and executed them.
+- The plan cap *was* the concurrency cap, which truncated exactly the
+  multi-stage plans dependencies had just made possible.
+
+And three limits closed:
+
+- **A turn-level check.** A plan may carry its own `verify`, run once on the
+  merged tree after every task lands — the one that catches two tasks being
+  fine separately and broken together. Live: two dependent tasks, each with
+  its own check, then `test -f a.txt -a -f b.txt` on the merged result.
+- **The planner can name a skill.** `"skill": "code-review"` prepends that
+  skill's procedure to the worker's instruction; a name the library does not
+  have is dropped rather than pasted in as an instruction nobody wrote.
+- **A worker's output is masked before it travels.** It becomes the next
+  task's prompt, the synthesis input, a transcript line and a row in `turns`;
+  the gate's leak scan only ever saw tool *inputs*. Registered secret values
+  are masked there and in the stored reply. The streamed text the user
+  already saw cannot be recalled — that part stays a limit.
+
 ## Still open
 - **A dependency passes only its *text* along.** The dependent task gets the
   upstream summary in its prompt and the merged tree on disk, which is enough

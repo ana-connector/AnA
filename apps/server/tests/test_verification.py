@@ -133,3 +133,44 @@ async def test_a_passing_check_leaves_the_task_done():
 
     assert results[0].status == DONE
     assert results[0].as_dict()["verification"]["passed"] is True
+
+
+def test_a_plan_can_carry_a_check_for_the_merged_tree():
+    """Per-task checks each pass on their own branch; this is the one that
+    catches two of them being fine separately and broken together."""
+    plan = parse_plan(
+        '{"mode":"delegate","verify":"docker compose config -q",'
+        '"tasks":[{"id":"a","title":"t","prompt":"p"}]}'
+    )
+
+    assert plan.verify == "docker compose config -q"
+
+
+def test_a_direct_plan_has_no_turn_check():
+    assert parse_plan('{"mode":"direct"}').verify == ""
+
+
+def test_a_task_can_name_a_skill_and_gets_its_procedure():
+    from packages.orchestrator.planner import build_task_prompt
+
+    plan = parse_plan(
+        '{"mode":"delegate","tasks":[{"id":"a","title":"리뷰","prompt":"이 diff를 봐라",'
+        '"skill":"code-review"}]}'
+    )
+    prompt = build_task_prompt(plan.tasks[0], [])
+
+    assert plan.tasks[0].skill == "code-review"
+    assert "[스킬: code-review]" in prompt
+    assert "이 diff를 봐라" in prompt
+    # The skill's own input placeholders never reach the agent verbatim.
+    assert "{{" not in prompt
+
+
+def test_a_skill_the_library_does_not_have_is_dropped():
+    """A name the model invented would otherwise reach the worker as "follow
+    the X procedure" with no X to follow."""
+    plan = parse_plan(
+        '{"mode":"delegate","tasks":[{"id":"a","title":"t","prompt":"p","skill":"made-up"}]}'
+    )
+
+    assert plan.tasks[0].skill == ""

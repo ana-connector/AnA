@@ -405,13 +405,12 @@ async def chat_ws(websocket: WebSocket) -> None:
     # client that disconnects the instant it gets that frame leaves this
     # coroutine parked mid-setup with a subprocess and a gate token that only
     # get cleaned up whenever the task is finally torn down.
+    registered_secrets: list = []
     try:
-        secret_env = {
-            secret.name: secret.value
-            for secret in await load_secrets(
-                websocket.app.state.pool, websocket.app.state.secret_cipher
-            )
-        }
+        registered_secrets = await load_secrets(
+            websocket.app.state.pool, websocket.app.state.secret_cipher
+        )
+        secret_env = {secret.name: secret.value for secret in registered_secrets}
     except Exception:  # noqa: BLE001 - a secret store problem must not take
         # the chat down; the agent simply runs without injected credentials.
         secret_env = {}
@@ -679,6 +678,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                 "pool": websocket.app.state.pool,
                 "embedding_model": websocket.app.state.embedding_model,
                 "transcript": transcript,
+                # The same registered secrets the gate scans tool calls for.
+                # A worker's *output* travels too — into the next task's
+                # prompt, the synthesis, the transcript and the turns table —
+                # so a credential it echoed would spread through all of them.
+                "secrets": registered_secrets,
             }
         }
 

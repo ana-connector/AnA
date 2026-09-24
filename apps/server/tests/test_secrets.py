@@ -230,3 +230,17 @@ def test_command_mentioning_only_the_variable_is_not_blocked(client, secret_pool
 
     # Using a credential through the environment is the supported path.
     assert response.json()["decision"] == "allow"
+
+
+def test_a_workers_output_is_masked_before_it_travels():
+    """A worker's output becomes the next task's prompt, the synthesis input,
+    a transcript line and a row in `turns`. A credential it echoed would
+    spread through all of them, and the gate's scan only sees tool *inputs*."""
+    from packages.governance.secrets import Secret, mask
+
+    secrets = [Secret(scope="global", name="GITHUB_TOKEN", value="ghp_averylongsecretvalue")]
+
+    masked = mask("커밋했습니다. 토큰은 ghp_averylongsecretvalue 였습니다.", secrets)
+
+    assert "ghp_averylongsecretvalue" not in masked
+    assert "GITHUB_TOKEN" in masked
