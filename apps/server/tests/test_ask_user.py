@@ -124,14 +124,41 @@ def test_a_gate_that_cannot_be_reached_is_a_readable_failure(monkeypatch):
     assert "connection refused" in responses[0]["result"]["content"][0]["text"]
 
 
-def test_free_text_question_is_rejected_before_delivery(monkeypatch):
+def test_question_without_choices_or_input_is_rejected_before_delivery(monkeypatch):
     monkeypatch.setattr(ask_user, "_ask", lambda _questions: pytest.fail("must not send"))
     responses = _rpc({
         "jsonrpc": "2.0", "id": 7, "method": "tools/call",
         "params": {"name": "ask_user", "arguments": {"questions": [{"question": "?"}]}},
     })
     assert responses[0]["result"]["isError"] is True
-    assert "at least two" in responses[0]["result"]["content"][0]["text"]
+    assert "two choices or a labelled input" in responses[0]["result"]["content"][0]["text"]
+
+
+def test_complex_question_schema_reaches_ask_server(monkeypatch):
+    sent = {}
+
+    def fake_ask(questions):
+        sent["questions"] = questions
+        return {"answered": True, "answers": ["fix", ["progress", "risks"], "직접 입력"]}
+
+    monkeypatch.setattr(ask_user, "_ask", fake_ask)
+    questions = [
+        {"question": "할 일은?", "options": [
+            {"value": "fix", "label": "수정", "description": "실패한 테스트 수정"},
+            {"value": "docs", "label": "문서", "description": "설명 갱신"},
+        ]},
+        {"question": "무엇을 보고할까요?", "options": ["progress", "risks"],
+         "multi": True, "required": False},
+        {"question": "추가 의견은?", "input": {"label": "의견", "placeholder": "입력하세요"}},
+    ]
+    responses = _rpc({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                      "params": {"name": "ask_user", "arguments": {"questions": questions}}})
+
+    assert sent["questions"] == questions
+    result = responses[0]["result"]
+    assert "isError" not in result
+    assert "A: progress, risks" in result["content"][0]["text"]
+    assert "A: 직접 입력" in result["content"][0]["text"]
 
 
 def test_worker_question_identifies_its_role(monkeypatch):
@@ -256,7 +283,38 @@ def test_ask_requires_fixed_choices(registry_client):
         headers={"x-ana-gate-token": session.token},
     )
     assert response.status_code == 422
-    assert "two options" in response.json()["detail"]
+    assert "two choices or a labelled input" in response.json()["detail"]
+
+
+def test_ask_preserves_complex_question_details(registry_client, monkeypatch):
+    registry: GateRegistry = registry_client.app.state.gate_registry
+    session = registry.register("complex-question", lambda _payload: None)
+    sent = {}
+
+    async def answer(_session, payload):
+        sent.update(payload)
+        return ["fix", ["progress", "risks"], "직접 입력"]
+
+    monkeypatch.setattr(registry, "request_answer", answer)
+    response = registry_client.post(
+        "/gate/ask",
+        headers={"x-ana-gate-token": session.token},
+        json={"questions": [
+            {"question": "할 일은?", "options": [
+                {"value": "fix", "label": "수정", "description": "테스트를 고칩니다"},
+                {"value": "docs", "label": "문서"},
+            ]},
+            {"question": "보고할 내용은?", "options": ["progress", "risks"],
+             "multi": True, "required": False},
+            {"question": "추가 의견은?", "input": {"label": "의견"}},
+        ]},
+    )
+    assert response.status_code == 200
+    assert sent["questions"][0]["options"][0]["description"] == "테스트를 고칩니다"
+    assert sent["questions"][1]["multi"] is True
+    assert sent["questions"][1]["required"] is False
+    assert sent["questions"][2]["input"]["label"] == "의견"
+    assert response.json()["answers"] == ["fix", ["progress", "risks"], "직접 입력"]
 
 
 @pytest.mark.asyncio

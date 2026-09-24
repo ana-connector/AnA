@@ -39,8 +39,10 @@ TOOL_DESCRIPTION = (
     "changes what gets built: a fork in the requirements, a choice that is hard "
     "to undo, a value only they know (target environment, priorities). Do not ask "
     "what could be found by reading the code — have a sub-agent check instead. "
-    "Every question must have at least two fixed options; free-text questions "
-    "are unavailable. Write the questions and options in Korean. If nobody "
+    "Questions may have labelled choices with descriptions, allow several "
+    "selections, offer a free-text answer, or be optional and skippable. "
+    "Provide at least two choices or an input field for each question. "
+    "Write the questions and options in Korean. If nobody "
     "answers, a timeout comes back as the result — then state your assumption and "
     "carry on."
 )
@@ -59,10 +61,21 @@ TOOL_SCHEMA = {
                     "question": {"type": "string", "description": "One question, in Korean"},
                     "options": {
                         "type": "array",
-                        "minItems": 2,
-                        "items": {"type": "string"},
-                        "description": "At least two fixed choices, in Korean",
+                        "items": {"oneOf": [
+                            {"type": "string"},
+                            {"type": "object", "properties": {
+                                "value": {"type": "string"},
+                                "label": {"type": "string"},
+                                "description": {"type": "string"},
+                            }, "required": ["value", "label"]},
+                        ]},
+                        "description": "Fixed choices; use objects for labels and explanations",
                     },
+                    "input": {"type": "object", "properties": {
+                        "label": {"type": "string"},
+                        "placeholder": {"type": "string"},
+                    }, "required": ["label"]},
+                    "required": {"type": "boolean", "description": "False permits skipping"},
                     "multi": {
                         "type": "boolean",
                         "description": "Whether several options may be picked at once",
@@ -72,7 +85,7 @@ TOOL_SCHEMA = {
                         "description": "Why you are asking, or what each option implies (Korean)",
                     },
                 },
-                "required": ["question", "options"],
+                "required": ["question"],
             },
         }
     },
@@ -132,14 +145,12 @@ def _call_tool(arguments: dict) -> dict:
             "content": [{"type": "text", "text": "questions needs at least one entry."}],
             "isError": True,
         }
-    if any(
-        not isinstance(question, dict)
-        or not isinstance(question.get("options"), list)
-        or len(question["options"]) < 2
-        for question in questions
-    ):
+    if any(not isinstance(question, dict) or not (
+        isinstance(question.get("options"), list) and len(question["options"]) >= 2
+        or isinstance(question.get("input"), dict) and bool(question["input"].get("label"))
+    ) for question in questions):
         return {
-            "content": [{"type": "text", "text": "Each question needs at least two fixed options."}],
+            "content": [{"type": "text", "text": "Each question needs at least two choices or a labelled input."}],
             "isError": True,
         }
     try:

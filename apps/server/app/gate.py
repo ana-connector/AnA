@@ -154,12 +154,24 @@ async def gate_subagent_event(
     return {"ok": True}
 
 
+class QuestionOption(BaseModel):
+    value: str
+    label: str
+    description: str = ""
+
+
+class QuestionInput(BaseModel):
+    label: str
+    placeholder: str = ""
+
+
 class Question(BaseModel):
     """One question as `ask_user` states it."""
 
     question: str
-    # Choices to pick from. Empty means a free-text answer.
-    options: list[str] = []
+    options: list[str | QuestionOption] = []
+    input: QuestionInput | None = None
+    required: bool = True
     # Whether several options may be picked at once.
     multi: bool = False
     # Shown under the question: why it is being asked, or what each option
@@ -207,8 +219,8 @@ async def gate_ask(
     questions = [q for q in body.questions if q.question.strip()]
     if not questions:
         raise HTTPException(status_code=422, detail="at least one question is required")
-    if any(len(q.options) < 2 for q in questions):
-        raise HTTPException(status_code=422, detail="each question needs at least two options")
+    if any(len(q.options) < 2 and not (q.input and q.input.label.strip()) for q in questions):
+        raise HTTPException(status_code=422, detail="each question needs two choices or a labelled input")
 
     payload = [q.model_dump() for q in questions]
     answers = await registry.request_answer(
