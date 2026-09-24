@@ -1,12 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { CircleDotIcon } from "lucide-react";
+import { ClaudeIcon, KimiIcon, OpenAIIcon } from "@/components/agent-icons";
 import { apiBase } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Window = {
   label: string;
+  key: string;
   tokens: number;
   budget: number;
   utilization: number | null;
@@ -15,6 +18,28 @@ type Window = {
 };
 
 type UsageSnapshot = Record<string, { windows: Window[] }>;
+
+/** One mark per CLI. The row is a glance at how much room is left, not a
+ *  legend — the name is one hover away, and three spelled-out names crowded
+ *  out the bars they were labelling. */
+const AGENT_ICON: Record<string, (props: { className?: string; "aria-label"?: string }) => React.ReactElement> = {
+  claude: ClaudeIcon,
+  codex: OpenAIIcon,
+  kimi: KimiIcon,
+};
+
+const AGENT_NAME: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  kimi: "Kimi Code",
+};
+
+/** "4.3M", "10.0K", "840" — the magnitude is what a status bar is read for. */
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return String(tokens);
+}
 
 function percent(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
@@ -40,21 +65,18 @@ function barClass(value: number | null): string {
 
 /** Status bar: how close each CLI is to its limits.
  *
- *  Both CLIs state their real utilization — Claude on stdout, Codex only in
- *  its rollout log, which ANA reads back — so an unlabeled figure is the
- *  provider's own. The fallbacks are labeled rather than blended in: showing
- *  ANA's token estimate as if it were the provider's number would be the
- *  worst of both. */
+ *  Only the five-hour window is on screen. It is the one that decides whether
+ *  the next turn routes somewhere else, while the weekly figure changes slowly
+ *  enough to be something you look up — so it lives in the tooltip, next to
+ *  when each window rolls over. */
 export function UsageBar({
   refreshKey,
   totalCostUsd,
   totalTokens,
-  hasUnpricedUsage,
 }: {
   refreshKey: number;
   totalCostUsd: number;
   totalTokens: number;
-  hasUnpricedUsage: boolean;
 }) {
   const [usage, setUsage] = useState<UsageSnapshot>({});
 
@@ -77,60 +99,59 @@ export function UsageBar({
   return (
     // Generous vertical padding: this is the last row on screen, and a tight
     // one reads as clipped against the window edge.
-    <footer className="flex shrink-0 flex-wrap items-center gap-x-6 gap-y-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+    <footer className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
       {agents.length === 0 ? (
         <span>아직 집계된 사용량이 없습니다</span>
       ) : (
-        agents.map(([agent, data]) => (
-          <div key={agent} className="flex items-center gap-2">
-            <span className="font-medium text-foreground">{agent}</span>
-            {data.windows.map((window) => (
-              // One tooltip per window carries what used to be three separate
-              // marks in the row: where the number came from, and when the
-              // window rolls over. The bar and the percentage are the only
-              // things that stay on screen.
-              <Tooltip key={window.label}>
-                <TooltipTrigger
-                  render={
-                    <span className="flex cursor-default items-center gap-1.5">
-                      <span>{window.label}</span>
-                      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
-                        <span
-                          className={cn(
-                            "block h-full",
-                            barClass(window.utilization),
-                            window.source !== "reported" && "opacity-60"
-                          )}
-                          style={{ width: `${Math.round((window.utilization ?? 0) * 100)}%` }}
-                        />
-                      </span>
-                      <span className="tabular-nums">{percent(window.utilization)}</span>
+        agents.map(([agent, data]) => {
+          const fiveHour = data.windows.find((w) => w.key === "five_hour") ?? data.windows[0];
+          const sevenDay = data.windows.find((w) => w.key === "seven_day");
+          if (!fiveHour) return null;
+          const Icon = AGENT_ICON[agent] ?? CircleDotIcon;
+          return (
+            <Tooltip key={agent}>
+              <TooltipTrigger
+                render={
+                  <span className="flex cursor-default items-center gap-1.5">
+                    <Icon className="size-3.5 shrink-0" aria-label={AGENT_NAME[agent] ?? agent} />
+                    <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
+                      <span
+                        className={cn(
+                          "block h-full",
+                          barClass(fiveHour.utilization),
+                          fiveHour.source !== "reported" && "opacity-60"
+                        )}
+                        style={{ width: `${Math.round((fiveHour.utilization ?? 0) * 100)}%` }}
+                      />
                     </span>
-                  }
-                />
-                <TooltipContent className="flex flex-col gap-0.5">
-                  <span>
-                    {window.source === "reported"
-                      ? "제공자가 보고한 실제 사용률"
-                      : window.source === "manual"
-                        ? "직접 입력한 값에 이후 사용량을 더한 추정"
-                        : "AnA가 집계한 토큰 기준 추정"}
+                    <span className="tabular-nums">{percent(fiveHour.utilization)}</span>
                   </span>
-                  {resetLabel(window.resets_at) ? (
-                    <span className="text-muted-foreground">
-                      초기화 {resetLabel(window.resets_at)}
-                    </span>
-                  ) : null}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
-        ))
+                }
+              />
+              <TooltipContent className="flex flex-col gap-0.5">
+                <span className="font-medium">{AGENT_NAME[agent] ?? agent}</span>
+                {resetLabel(fiveHour.resets_at) ? (
+                  <span>5시간 초기화 {resetLabel(fiveHour.resets_at)}</span>
+                ) : null}
+                {sevenDay ? (
+                  <span>
+                    7일 {percent(sevenDay.utilization)}
+                    {resetLabel(sevenDay.resets_at)
+                      ? ` · 초기화 ${resetLabel(sevenDay.resets_at)}`
+                      : ""}
+                  </span>
+                ) : null}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })
       )}
 
+      {/* This conversation, in two figures. The caveat that Codex and Kimi
+          report no price was a sentence explaining a number nobody had asked
+          about yet. */}
       <span className="ml-auto tabular-nums">
-        이 대화 {hasUnpricedUsage ? "보고된 비용 " : ""}${totalCostUsd.toFixed(4)}
-        {hasUnpricedUsage ? " (Codex/Kimi 요금 미제공)" : ""} · {totalTokens.toLocaleString()} tok
+        ${totalCostUsd.toFixed(2)} · {compactTokens(totalTokens)} tok
       </span>
     </footer>
   );

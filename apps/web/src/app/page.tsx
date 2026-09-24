@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { NetworkIcon } from "lucide-react";
 import {
   useChatSocket,
@@ -8,22 +8,16 @@ import {
   type SubagentTask,
   type ToolEvent,
 } from "@/hooks/useChatSocket";
-import {
-  AGENT_CHOICES,
-  AGENT_LABELS,
-  AgentToggle,
-  type Agent,
-  type AgentChoice,
-} from "@/components/ui/agent-toggle";
+import { AGENT_LABELS, type Agent } from "@/components/ui/agent-toggle";
 import { ApprovalCard } from "@/components/ui/approval-card";
 import { QuestionCard } from "@/components/ui/question-card";
 import { Markdown } from "@/components/markdown";
-import { ThemeToggle } from "@/components/theme";
 import { ToolCalls } from "@/components/tool-calls";
 import { UsageBar } from "@/components/usage-bar";
 import { PlanGraph } from "@/components/plan-graph";
 import { Reasoning } from "@/components/reasoning";
 import { SessionSidebar } from "@/components/session-sidebar";
+import { WorkspaceSearch } from "@/components/workspace-search";
 import { TurnStatusLine } from "@/components/turn-status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,11 +43,10 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import {
+  SidebarInset,
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-
-const AGENT_STORAGE_KEY = "ana_agent";
 
 const TASK_STATUS_LABEL: Record<SubagentTask["status"], string> = {
   running: "실행 중",
@@ -97,17 +90,12 @@ function groupBlocks(
   return grouped;
 }
 
-function isAgentChoice(value: string | null): value is AgentChoice {
-  return value !== null && (AGENT_CHOICES as readonly string[]).includes(value);
-}
-
 export default function ChatPage() {
   const {
     messages,
     connected,
     streaming,
     usage,
-    hasUnpricedUsage,
     workspace,
     workspaceName,
     threadId,
@@ -125,23 +113,11 @@ export default function ChatPage() {
     openThread,
   } = useChatSocket();
   const [draft, setDraft] = useState("");
-  // Auto by default: the routing rules pick per message, and the manual
-  // options stay as an override.
-  const [agent, setAgent] = useState<AgentChoice>("auto");
   // The sub-agent whose own transcript is open, if any. A panel over the
   // conversation rather than a replacement for it: the lead's reply is the
   // context that makes a worker's output mean anything, so leaving the
   // transcript on screen is the point.
   const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
-
-  // Read on mount rather than in useState's initializer: this component
-  // renders on the server first (Next app router), where localStorage does
-  // not exist, and an initializer that read it would produce a hydration
-  // mismatch.
-  useEffect(() => {
-    const stored = window.localStorage.getItem(AGENT_STORAGE_KEY);
-    if (isAgentChoice(stored)) setAgent(stored);
-  }, []);
 
   // Finished turns are what create and rename sessions, so the sidebar list is
   // refetched when the count of completed turns changes rather than on a timer.
@@ -169,19 +145,12 @@ export default function ChatPage() {
     return last?.role === "agent" && last.text.trim().length > 0;
   }, [messages, streaming]);
 
-  const handleAgentChange = (next: AgentChoice) => {
-    setAgent(next);
-    window.localStorage.setItem(AGENT_STORAGE_KEY, next);
-  };
-
   return (
     // h-svh + overflow-hidden bounds the transcript so it scrolls while the
     // composer and status bar remain visible at the bottom of the window.
     <SidebarProvider className="h-svh overflow-hidden">
       <SessionSidebar
         workspaceId={threadId}
-        workspace={workspace}
-        workspaceName={workspaceName}
         onOpenWorkspace={(nextThreadId) => {
           setOpenTask(null);
           openThread(nextThreadId);
@@ -189,7 +158,11 @@ export default function ChatPage() {
         reloadKey={completedTurns}
       />
 
-      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+      {/* No h-full: the inset's own m-2 is added *outside* its box, so a
+          child told to be the full height of the row pushes its bottom margin
+          and its rounded corners past the clipped edge of the window. As an
+          ordinary flex child it takes the room the margins leave. */}
+      <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* One line at every width: which workspace you are in, where it is on
             disk, whether the socket is up, and the two controls that change the
             next turn. Reading one sub-agent's transcript used to be a Select
@@ -213,20 +186,11 @@ export default function ChatPage() {
             )}
           </div>
 
-          {connected ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span
-                    aria-label="연결됨"
-                    className="size-1.5 shrink-0 rounded-full bg-primary"
-                  />
-                }
-              />
-              <TooltipContent>서버에 연결됨</TooltipContent>
-            </Tooltip>
-          ) : (
-            <Badge variant="destructive">연결 끊김</Badge>
+          {/* Silence while the socket is up: a badge that is always green
+              says nothing. Only the broken state is worth a word, and it is a
+              word rather than a badge -- the composer is disabled anyway. */}
+          {!connected && (
+            <span className="shrink-0 text-xs text-destructive">연결 끊김</span>
           )}
 
           {route && (
@@ -247,8 +211,15 @@ export default function ChatPage() {
           )}
 
           <div className="ml-auto flex items-center gap-1">
-            <AgentToggle value={agent} onChange={handleAgentChange} />
-            <ThemeToggle />
+            {/* Where the theme toggle used to be. That is a setting you touch
+                twice a year; this is the thing you reach for all day. */}
+            <WorkspaceSearch
+              onOpenWorkspace={(nextThreadId) => {
+                setOpenTask(null);
+                openThread(nextThreadId);
+              }}
+              reloadKey={completedTurns}
+            />
           </div>
         </header>
 
@@ -450,25 +421,21 @@ export default function ChatPage() {
           value={draft}
           onChange={setDraft}
           onSubmit={() => {
-            if (sendMessage(draft, agent)) setDraft("");
+            // Always "auto": the routing ladder picks the CLI per message.
+            if (sendMessage(draft, "auto")) setDraft("");
           }}
           onCancel={cancel}
           streaming={streaming}
           connected={connected}
-          placeholder={
-            agent === "auto"
-              ? "무엇을 해야 하는지 적으세요. Enter로 전송"
-              : `${AGENT_LABELS[agent]}에게 보낼 요청`
-          }
+          placeholder="무엇을 해야 하는지 적으세요. Enter로 전송"
         />
 
         <UsageBar
           refreshKey={completedTurns}
           totalCostUsd={usage.totalCostUsd}
           totalTokens={usage.totalTokens}
-          hasUnpricedUsage={hasUnpricedUsage}
         />
-      </main>
+      </SidebarInset>
 
       {/* One sub-agent's own record: what it was told, what it ran, what it
           answered. Opened from the plan it belongs to, and closed with Esc. */}

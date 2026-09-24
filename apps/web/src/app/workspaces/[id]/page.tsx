@@ -49,8 +49,8 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
         <Alert variant="destructive">
           <AlertTitle>없는 워크스페이스</AlertTitle>
           <AlertDescription>
-            <span className="font-mono">{id}</span> 는 등록돼 있지 않습니다. 사이드바에서 다른
-            워크스페이스를 고르거나 새로 만드세요.
+            <span className="font-mono">{id}</span> 는 등록돼 있지 않습니다. 콘솔로 돌아가
+            다른 워크스페이스를 고르거나 새로 만드세요.
           </AlertDescription>
         </Alert>
         <Button size="sm" variant="outline" render={<a href="/" />} className="w-fit">
