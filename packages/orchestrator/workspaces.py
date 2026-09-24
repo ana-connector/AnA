@@ -391,7 +391,15 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
                    COUNT(t.id) AS turn_count,
                    MAX(t.created_at) AS last_turn_at,
                    (ARRAY_AGG(t.agent ORDER BY t.created_at DESC, t.id DESC)
-                    FILTER (WHERE t.agent IS NOT NULL))[1] AS last_agent
+                    FILTER (WHERE t.agent IS NOT NULL))[1] AS last_agent,
+                   -- What the conversation has spent. Guarded by the regex
+                   -- rather than cast outright: meta is free-form JSON, and one
+                   -- turn whose "tokens" is not a number would otherwise fail
+                   -- the whole listing.
+                   COALESCE(SUM(
+                       CASE WHEN t.meta->>'tokens' ~ '^[0-9]+$'
+                            THEN (t.meta->>'tokens')::bigint ELSE 0 END
+                   ), 0) AS total_tokens
             FROM workspaces w
             LEFT JOIN turns t ON t.thread_id = w.id
             GROUP BY w.id, w.name, w.path, w.last_used_at,
@@ -414,6 +422,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             "turn_count": r[7],
             "last_turn_at": r[8].isoformat() if r[8] else None,
             "last_agent": r[9],
+            "total_tokens": int(r[10] or 0),
         }
         for r in rows
     ]
