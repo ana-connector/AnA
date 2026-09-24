@@ -1,21 +1,37 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { ArrowLeftIcon, TrashIcon } from "lucide-react";
+import { PlusIcon, TrashIcon } from "lucide-react";
 import { apiBase } from "@/lib/api";
+import { timeAgo, timeExact } from "@/lib/format";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Item, ItemActions, ItemContent, ItemTitle } from "@/components/ui/item";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { notify } from "@/lib/notify";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PageShell } from "@/components/page-shell";
 
 type SecretRow = { scope: string; name: string; updated_at: string };
@@ -26,6 +42,7 @@ export default function SecretsPage() {
   const [value, setValue] = useState("");
   const [scope, setScope] = useState("global");
   const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<SecretRow | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -54,11 +71,12 @@ export default function SecretsPage() {
     if (!response.ok) {
       setError(
         response.status === 422
-          ? "이름은 환경변수 형식이어야 함 (영문자/숫자/밑줄, 숫자로 시작 불가)"
-          : `저장 실패: HTTP ${response.status}`
+          ? "이름은 환경변수 형식이어야 합니다 (영문자/숫자/밑줄, 숫자로 시작 불가)"
+          : `저장하지 못했습니다: HTTP ${response.status}`
       );
       return;
     }
+    notify.success(`${name.trim()} 저장됨`, "다음 턴부터 두 CLI의 환경변수로 주입됩니다.");
     // Cleared immediately: the value is never echoed back by the server, and
     // leaving it in the field is one more place it can be seen.
     setName("");
@@ -68,115 +86,175 @@ export default function SecretsPage() {
   };
 
   const remove = async (row: SecretRow) => {
-    await fetch(
+    setPendingDelete(null);
+    const response = await fetch(
       `${apiBase()}/secrets/${encodeURIComponent(row.scope)}/${encodeURIComponent(row.name)}`,
       { method: "DELETE" }
     );
+    if (response.ok) notify.success(`${row.name} 삭제됨`);
+    else notify.error("삭제하지 못했습니다", `HTTP ${response.status}`);
     void refresh();
   };
 
   const invalidName = name.length > 0 && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 
   return (
-    <PageShell><div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-6">
-      <header className="flex items-center gap-2">
-        <Button size="xs" variant="ghost" render={<a href="/" />}>
-          <ArrowLeftIcon data-icon="inline-start" />
-          채팅
-        </Button>
-        <span className="font-heading text-sm font-semibold">Secrets</span>
-      </header>
-
+    <PageShell
+      title="시크릿"
+      description="등록한 값은 두 CLI의 환경변수로 주입됩니다. 그 값을 그대로 밖으로 내보내는 명령은 게이트가 차단하고, 감사 로그에는 마스킹해 기록합니다."
+    >
       <Alert>
-        <AlertTitle>값은 저장 후 다시 볼 수 없음</AlertTitle>
+        <AlertTitle>값은 저장한 뒤 다시 볼 수 없습니다</AlertTitle>
         <AlertDescription>
-          등록한 값은 두 CLI의 환경변수로 주입됨. 이 값이 그대로 외부로 나가는 명령은 게이트가
-          차단하고, 감사 로그에는 마스킹해 기록함.
+          서버는 값을 암호화해 저장하고 되돌려주지 않습니다. 바꾸려면 같은 이름으로 다시
+          저장하세요.
         </AlertDescription>
       </Alert>
 
-      <form onSubmit={submit}>
-        <FieldGroup>
-          <Field data-invalid={invalidName || undefined}>
-            <FieldLabel htmlFor="secret-name">이름</FieldLabel>
-            <Input
-              id="secret-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="GITHUB_TOKEN"
-              aria-invalid={invalidName || undefined}
-            />
-            <FieldDescription>에이전트에 주입될 환경변수 이름</FieldDescription>
-          </Field>
+      <Card>
+        <CardHeader>
+          <CardTitle>시크릿 추가</CardTitle>
+          <CardDescription>에이전트에게는 이름만 알려주면 됩니다.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit}>
+            <FieldGroup>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field data-invalid={invalidName || undefined}>
+                  <FieldLabel htmlFor="secret-name">이름</FieldLabel>
+                  <Input
+                    id="secret-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="GITHUB_TOKEN"
+                    aria-invalid={invalidName || undefined}
+                    className="font-mono"
+                  />
+                  <FieldDescription>
+                    {invalidName
+                      ? "영문자/숫자/밑줄만, 숫자로 시작할 수 없습니다."
+                      : "주입될 환경변수 이름"}
+                  </FieldDescription>
+                </Field>
 
-          <Field>
-            <FieldLabel htmlFor="secret-scope">스코프</FieldLabel>
-            <Input
-              id="secret-scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
-              placeholder="global"
-            />
-            <FieldDescription>global = 모든 대화, 그 외 = 해당 프로젝트</FieldDescription>
-          </Field>
+                <Field>
+                  <FieldLabel htmlFor="secret-scope">스코프</FieldLabel>
+                  <Input
+                    id="secret-scope"
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value)}
+                    placeholder="global"
+                    className="font-mono"
+                  />
+                  <FieldDescription>global = 모든 대화, 그 외 = 해당 프로젝트</FieldDescription>
+                </Field>
+              </div>
 
-          <Field>
-            <FieldLabel htmlFor="secret-value">값</FieldLabel>
-            <Input
-              id="secret-value"
-              type="password"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="저장 후 표시되지 않음"
-            />
-          </Field>
+              <Field>
+                <FieldLabel htmlFor="secret-value">값</FieldLabel>
+                <Input
+                  id="secret-value"
+                  type="password"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  placeholder="저장 후에는 표시되지 않습니다"
+                />
+              </Field>
 
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+              {error ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              ) : null}
 
-          <Field orientation="horizontal">
-            <Button type="submit" disabled={invalidName}>
-              저장
-            </Button>
-          </Field>
-        </FieldGroup>
-      </form>
-
-      <div className="flex flex-col gap-2">
-        {secrets === null ? (
-          <>
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
-          </>
-        ) : secrets.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>등록된 시크릿 없음</EmptyTitle>
-              <EmptyDescription>위에서 추가하면 목록에 나타남</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          secrets.map((row) => (
-            <Item key={`${row.scope}/${row.name}`} variant="outline">
-              <ItemContent>
-                <ItemTitle className="font-mono">{row.name}</ItemTitle>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(row.updated_at).toLocaleString()}
-                </span>
-              </ItemContent>
-              <ItemActions>
-                <Badge variant="secondary">{row.scope}</Badge>
-                <Button size="icon-sm" variant="destructive" onClick={() => remove(row)}>
-                  <TrashIcon />
+              <Field orientation="horizontal">
+                <Button type="submit" disabled={invalidName || !name.trim() || !value}>
+                  <PlusIcon data-icon="inline-start" />
+                  저장
                 </Button>
-              </ItemActions>
-            </Item>
-          ))
-        )}
-      </div>
-    </div></PageShell>
+              </Field>
+            </FieldGroup>
+          </form>
+        </CardContent>
+      </Card>
+
+      {secrets === null ? (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
+      ) : secrets.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>등록된 시크릿 없음</EmptyTitle>
+            <EmptyDescription>위에서 추가하면 목록에 나타납니다.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>이름</TableHead>
+              <TableHead className="w-32">스코프</TableHead>
+              <TableHead className="w-28">수정</TableHead>
+              <TableHead className="w-12" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {secrets.map((row) => (
+              <TableRow key={`${row.scope}/${row.name}`}>
+                <TableCell className="font-mono">{row.name}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary">{row.scope}</Badge>
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  <Tooltip>
+                    <TooltipTrigger render={<span className="whitespace-nowrap" />}>
+                      {timeAgo(row.updated_at)}
+                    </TooltipTrigger>
+                    <TooltipContent>{timeExact(row.updated_at)}</TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={() => setPendingDelete(row)}
+                    aria-label={`${row.name} 삭제`}
+                  >
+                    <TrashIcon />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      {/* Deleting a credential breaks whatever was using it, and the value
+          cannot be recovered from here — worth one confirmation. */}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingDelete?.name} 을(를) 삭제할까요?</AlertDialogTitle>
+            <AlertDialogDescription>
+              이 값을 쓰던 에이전트 작업은 다음 턴부터 실패합니다. 값은 복구할 수 없고, 다시
+              등록해야 합니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => pendingDelete && void remove(pendingDelete)}
+            >
+              삭제
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </PageShell>
   );
 }

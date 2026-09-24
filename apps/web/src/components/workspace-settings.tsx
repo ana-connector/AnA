@@ -93,7 +93,7 @@ export function WorkspaceSettings({
           <FieldDescription>
             서버에 Docker 소켓이 없어 사용할 수 없음. compose에서
             <code className="mx-1 font-mono">/var/run/docker.sock</code>를 마운트하고
-            <code className="mx-1 font-mono">ANA_WORKSPACE_CONTAINERS=on</code>을 설정해야 함.
+            <code className="mx-1 font-mono">ANA_WORKSPACE_CONTAINERS=on</code>을 설정해야 합니다.
           </FieldDescription>
         )}
 
