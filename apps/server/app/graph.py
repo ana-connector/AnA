@@ -315,10 +315,67 @@ async def _ask_for_plan(adapter, prompt: str, *, tracer, trace, span: str,
             async for event in adapter.run_stream(prompt, session_id=None):
                 if event.type == "text":
                     planning.output += event.text
+                elif event.type == "result" and event.is_error:
+                    planning.error = event.text or planning.output
+                elif event.type == "error":
+                    planning.error = event.text or planning.error
         except Exception as exc:  # noqa: BLE001 - a planning call that fails
             # costs latency, not the turn.
             planning.error = str(exc)
-    return parse_plan(planning.output, id_offset=id_offset, known_ids=known_ids)
+    plan = parse_plan(planning.output, id_offset=id_offset, known_ids=known_ids)
+    if is_usage_limit(planning.error) or (
+        not plan.delegating and plan.note and is_usage_limit(planning.output)
+    ):
+        raise _PlanningLimit(planning.error or planning.output)
+    return plan
+
+
+class _PlanningLimit(Exception):
+    """A planning CLI exhausted its window; another rung must make the plan."""
+
+
+async def _plan_with_failover(configurable, agent, model, effort, writer, tracer, trace,
+                              prompt, *, results=None, existing_ids=(), round_index=0,
+                              start_rung=None):
+    """Run planning on the lead ladder, carrying the chosen model into work."""
+    chain = build_chain(agent, configurable.get("claude_auth_mode"))
+    start_index = next(
+        (i for i, rung in enumerate(chain) if rung.label == start_rung), 0
+    )
+    last_error = ""
+    for index in range(start_index, len(chain)):
+        rung = chain[index]
+        if rung.agent == agent:
+            rung_model, rung_effort = model, effort
+        else:
+            rung_model, rung_effort = settings_for(rung.agent)
+        try:
+            adapter = _resolve_adapter(
+                configurable, rung.agent, rung.auth_mode,
+                model=rung_model, effort=planning_effort(rung.agent),
+            )
+            if results is None:
+                plan = await _plan_turn(adapter, prompt, tracer=tracer, trace=trace)
+            else:
+                plan = await _replan_turn(
+                    adapter, prompt, results, existing_ids,
+                    tracer=tracer, trace=trace, round_index=round_index,
+                )
+            return plan, rung.agent, rung_model, rung_effort, index > 0, last_error, rung.label
+        except _PlanningLimit as exc:
+            last_error = str(exc)
+        except Exception as exc:  # noqa: BLE001 - an unavailable auth mode is skipped
+            last_error = str(exc)
+        if index + 1 < len(chain):
+            next_label = chain[index + 1].label
+            record_failover(rung.label, next_label)
+            writer({
+                "type": "failover", "text": last_error,
+                "session_id": None, "is_error": False,
+                "agent": rung.agent, "from_rung": rung.label,
+                "to_rung": next_label,
+            })
+    raise _PlanningLimit(last_error or "all planning models are unavailable")
 
 
 def _resolve_adapter(
@@ -595,9 +652,20 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     # them overwrite and terminate each other.
     worker_factory = configurable.get("worker_factory")
     subagent_results: list[dict] = []
+    results: list = []
     turn_model: Optional[str] = None
     subagent_cost = 0.0
     subagent_tokens = 0
+    planning_failed_over = False
+    planning_failover_reason = ""
+    planning_rung = None
+    routed_agent = agent
+    breaker_config: BreakerConfig = configurable.get("breaker_config") or BreakerConfig.from_env()
+    breaker = BreakerState(
+        rung_label=state.get("failover_rung"),
+        tripped_at=state.get("failover_tripped_at") or 0.0,
+        reason=state.get("failover_reason") or "",
+    )
     if state.get("plan_mode", True) and worker_factory is not None:
         # What the browser shows while nothing else is happening. A turn can
         # spend a minute planning and another few running workers before a
@@ -608,14 +676,18 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         # at the cheapest effort the chosen CLI has unless configured
         # otherwise. The answer call that follows gets the rung's own effort
         # back.
-        plan = await _plan_turn(
-            _resolve_adapter(
-                configurable, agent, model=lead_model, effort=planning_effort(agent)
-            ),
+        (plan, agent, lead_model, lead_effort,
+         planning_failed_over, planning_failover_reason, planning_rung) = await _plan_with_failover(
+            configurable, agent, lead_model, lead_effort, writer, tracer, trace,
             state["prompt"],
-            tracer=tracer,
-            trace=trace,
+            start_rung=breaker.rung_label if breaker.active(breaker_config.cooldown_seconds) else None,
         )
+        if agent != routed_agent:
+            augmented_prompt = build_handoff_prompt(
+                state["prompt"], incoming_agent=agent,
+                previous_agent=last_agent or routed_agent,
+                turns=await recent_turns(pool, thread_id=thread_id, limit=4),
+            )
         writer(
             {
                 "type": "plan",
@@ -745,7 +817,6 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             # failure that needs another approach, a follow-up the first plan
             # could not know about. Bounded by ANA_PLAN_ROUNDS, because a lead
             # that can always add one more task can also never finish.
-            results: list = []
             finished: dict = {}
             round_tasks = list(plan.tasks)
             planned_ids = {task.id for task in plan.tasks}
@@ -775,18 +846,15 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     break
 
                 _status(writer, "replanning", agent)
-                follow_up = await _replan_turn(
-                    _resolve_adapter(
-                        configurable, agent, model=lead_model,
-                        effort=planning_effort(agent),
-                    ),
-                    state["prompt"],
-                    [r.as_dict() for r in results],
-                    sorted(planned_ids),
-                    tracer=tracer,
-                    trace=trace,
-                    round_index=round_index + 1,
+                (follow_up, agent, lead_model, lead_effort,
+                 replan_failed_over, replan_reason, planning_rung) = await _plan_with_failover(
+                    configurable, agent, lead_model, lead_effort, writer, tracer, trace,
+                    state["prompt"], results=[r.as_dict() for r in results],
+                    existing_ids=sorted(planned_ids), round_index=round_index + 1,
+                    start_rung=planning_rung,
                 )
+                planning_failed_over = planning_failed_over or replan_failed_over
+                planning_failover_reason = replan_reason or planning_failover_reason
                 round_tasks = list(follow_up.tasks) if follow_up.delegating else []
                 if not round_tasks:
                     break
@@ -860,12 +928,6 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     total_cost_usd = state.get("total_cost_usd", 0.0)
     total_tokens = state.get("total_tokens") or 0
 
-    breaker_config: BreakerConfig = configurable.get("breaker_config") or BreakerConfig.from_env()
-    breaker = BreakerState(
-        rung_label=state.get("failover_rung"),
-        tripped_at=state.get("failover_tripped_at") or 0.0,
-        reason=state.get("failover_reason") or "",
-    )
     preferred_mode = configurable.get("claude_auth_mode")
     chain = build_chain(agent, preferred_mode)
 
@@ -874,7 +936,12 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     budget_reason = thread_budget_exceeded(breaker_config, total_cost_usd, total_tokens)
     tried: list[str] = []
     start_index = 0
-    if breaker.active(breaker_config.cooldown_seconds):
+    if planning_rung and planning_failed_over:
+        for index, rung in enumerate(chain):
+            if rung.label == planning_rung:
+                start_index = index
+                break
+    elif breaker.active(breaker_config.cooldown_seconds):
         # Still inside the cooldown: keep using what we fell back to, and skip
         # the rungs above it. Once the cooldown expires the next turn starts
         # from the preferred rung again — that is the automatic recovery.
@@ -891,12 +958,12 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     for_error_text = ""
     caught_exc: Optional[BaseException] = None
     used_rung = chain[start_index]
-    failed_over = start_index > 0
+    failed_over = planning_failed_over or start_index > 0
     in_flight: Optional[_TurnOutcome] = None
     failover_reason = (
         breaker.reason
         if breaker.active(breaker_config.cooldown_seconds)
-        else (budget_reason or "")
+        else (planning_failover_reason or budget_reason or "")
     )
 
     # The last phase: from here the lead is writing, and the first text frame is
@@ -912,7 +979,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 # incoming one has none of this thread's context.
                 turns = await recent_turns(pool, thread_id=thread_id, limit=4)
                 attempt_prompt = build_handoff_prompt(
-                    state["prompt"],
+                    augmented_prompt,
                     incoming_agent=rung.agent,
                     previous_agent=agent,
                     turns=turns,
@@ -1103,10 +1170,12 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             if cancelled
             else ("error" if (caught_exc is not None or for_error_text) else "ok")
         )
-        if usage_tracker is not None and turn_tokens:
+        if usage_tracker is not None:
             # Estimated side of the status bar: what ANA has actually spent in
             # the rolling windows, per agent.
-            usage_tracker.record_tokens(used_rung.agent, turn_tokens + subagent_tokens)
+            usage_tracker.record_tokens(used_rung.agent, turn_tokens)
+            for result in results:
+                usage_tracker.record_tokens(result.agent or result.task.agent, result.tokens)
         record_turn(
             used_rung.agent,
             outcome=outcome_label,

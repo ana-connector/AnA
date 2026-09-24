@@ -242,6 +242,7 @@ export function useChatSocket() {
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [usage, setUsage] = useState<UsageTotals>({ totalCostUsd: 0, totalTokens: 0 });
+  const [hasUnpricedUsage, setHasUnpricedUsage] = useState(false);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   // Questions the agent is waiting on. Plural because one call can ask several,
   // and a second call can arrive while the first is unanswered.
@@ -345,6 +346,12 @@ export function useChatSocket() {
           // The thread's running totals, so reopening a conversation does not
           // read "$0.0000 · 0 tok" for work that already happened.
           setUsage({ totalCostUsd: totals.cost_usd, totalTokens: totals.tokens });
+          setHasUnpricedUsage(turns.some((turn) =>
+            turn.agent === "codex" || turn.agent === "kimi"
+            || (turn.meta?.subagents ?? []).some((task) =>
+              task.agent === "codex" || task.agent === "kimi"
+            )
+          ));
           const restored: ChatMessage[] = [];
           for (const turn of turns) {
             const agent: Agent = isAgentName(turn.agent) ? turn.agent : "claude";
@@ -740,6 +747,12 @@ export function useChatSocket() {
           // reload, instead of vanishing with the next prompt.
           const index = agentMessageIndexRef.current;
           const finishedPlan = planRef.current;
+          if (event.agent === "codex" || event.agent === "kimi"
+            || finishedPlan?.tasks.some((task) =>
+              task.agent === "codex" || task.agent === "kimi"
+            )) {
+            setHasUnpricedUsage(true);
+          }
           if (finishedPlan && index !== null) {
             setMessages((prev) => {
               if (!prev[index]) return prev;
@@ -859,6 +872,7 @@ export function useChatSocket() {
     setRoute(null);
     setStatus(null);
     setUsage({ totalCostUsd: 0, totalTokens: 0 });
+    setHasUnpricedUsage(false);
     setWorkspace(null);
     setWorkspaceName(null);
     setStreaming(false);
@@ -878,6 +892,7 @@ export function useChatSocket() {
     connected,
     streaming,
     usage,
+    hasUnpricedUsage,
     workspace,
     workspaceName,
     threadId,

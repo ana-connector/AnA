@@ -366,9 +366,8 @@ the server, so adding a file is live on the next turn — no rebuild.
 
 ## Planner-Worker (sub-agents)
 
-Toggle **Plan** in the composer and the lead first answers with a plan instead
-of the request: either "just answer this" or a list of independent sub-tasks,
-each routed automatically through the worker model ladder. ANA runs those workers as separate
+The lead first decides whether to answer directly or make a plan of sub-tasks.
+Each task is routed automatically through the worker model ladder. ANA runs those workers as separate
 CLI sessions, then hands their results back to the lead to synthesize one
 answer. The chat draws the fan-out with React Flow as each worker starts and
 finishes.
@@ -381,8 +380,9 @@ finishes.
 - `ANA_SUBAGENT_TIMEOUT_SECONDS` (default 600) bounds each worker. A timeout or
   an error is a task result, not a turn failure — the lead is told what failed
   and still answers.
-- `ANA_PLANNER_DEFAULT=on` makes planning the default for every turn. It is off
-  otherwise, because planning costs one extra CLI call.
+- Planning is on for every turn by default; `ANA_PLANNER=off` disables it for
+  debugging. If a lead reaches a session limit while planning, replanning, or
+  synthesizing, ANA switches models and preserves the worker results.
 
 **The plan is not fixed when it is written.** A plan made before anything has
 run is a guess about what the work will turn out to need, so after each round of

@@ -49,10 +49,12 @@ export function UsageBar({
   refreshKey,
   totalCostUsd,
   totalTokens,
+  hasUnpricedUsage,
 }: {
   refreshKey: number;
   totalCostUsd: number;
   totalTokens: number;
+  hasUnpricedUsage: boolean;
 }) {
   const [usage, setUsage] = useState<UsageSnapshot>({});
 
@@ -127,7 +129,8 @@ export function UsageBar({
       )}
 
       <span className="ml-auto tabular-nums">
-        이 대화 ${totalCostUsd.toFixed(4)} · {totalTokens.toLocaleString()} tok
+        이 대화 {hasUnpricedUsage ? "보고된 비용 " : ""}${totalCostUsd.toFixed(4)}
+        {hasUnpricedUsage ? " (Codex/Kimi 요금 미제공)" : ""} · {totalTokens.toLocaleString()} tok
       </span>
     </footer>
   );
