@@ -144,15 +144,71 @@ def test_shipped_skills_all_load():
     }
 
 
-def test_the_working_style_skills_render_with_their_defaults():
-    """caveman, ponytail and kill-ai-slop take a level or a flag whose default
-    is the usual one, so a plan that names the skill without arguments still
-    produces complete instructions rather than a "{{level}}" literal."""
-    for name, inputs in (
-        ("caveman", {"subject": "테스트 결과"}),
-        ("ponytail", {"task": "삭제 버그 수정"}),
-        ("kill-ai-slop", {"target": "apps/web/src"}),
-    ):
-        rendered = render_skill(name, inputs)
+def test_the_working_style_skills_render_without_arguments():
+    """caveman, ponytail and kill-ai-slop are vendored SKILL.md files: they
+    declare no inputs, so a plan that names one of them gets the whole procedure
+    with nothing left to substitute."""
+    for name in ("caveman", "ponytail", "kill-ai-slop"):
+        rendered = render_skill(name, {})
         assert "{{" not in rendered
-        assert len(rendered) > 200
+        assert len(rendered) > 2000
+
+
+def test_a_skill_md_loads_with_its_body_as_the_procedure(tmp_path, monkeypatch):
+    """Skills exist in the world as SKILL.md — frontmatter plus a body. Reading
+    that form directly is what keeps a vendored skill from drifting into a
+    summary of itself."""
+    monkeypatch.setenv("ANA_SKILLS_DIR", str(tmp_path))
+    (tmp_path / "vendored.md").write_text(
+        textwrap.dedent(
+            """
+            ---
+            name: vendored
+            title: 가져온 스킬
+            description: one line for the catalog
+            roles: [worker]
+            ---
+
+            # Vendored
+
+            Step one. Step two.
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    library = load_library()
+    skill = library.get("vendored")
+
+    assert skill is not None
+    assert skill.title == "가져온 스킬"
+    assert skill.instructions.startswith("# Vendored")
+    assert "Step two." in skill.instructions
+
+
+def test_markdown_without_frontmatter_is_reported_not_loaded(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_SKILLS_DIR", str(tmp_path))
+    (tmp_path / "loose.md").write_text("just some notes", encoding="utf-8")
+
+    library = load_library()
+
+    assert library.get("loose") is None
+    assert any("loose.md" in error.path for error in library.errors)
+
+
+def test_the_vendored_skills_keep_their_upstream_bodies():
+    """caveman, ponytail and kill-ai-slop are real published skills. They are
+    shipped as their own SKILL.md rather than a paraphrase, so this checks the
+    body is the upstream text and not an ANA summary of it."""
+    library = load_library()
+
+    ponytail = library.get("ponytail")
+    caveman = library.get("caveman")
+    slop = library.get("kill-ai-slop")
+
+    assert ponytail is not None and "The shortest path to done" in ponytail.instructions
+    assert caveman is not None and "Respond terse like smart caveman" in caveman.instructions
+    assert slop is not None and "Decide before you decorate" in slop.instructions
+    # The upstream bodies are long; that is the point — the catalog only carries
+    # the one-line description, and the body is pulled in when a task names it.
+    assert len(ponytail.instructions) > 3000

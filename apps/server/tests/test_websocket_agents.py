@@ -82,14 +82,27 @@ def client_with_both_adapters(db_pool, postgres_dsn, monkeypatch, tmp_path):
             yield client
 
 
+# Frames the server sends around the content: which phase the turn is in, which
+# CLI was routed to, which model answered. Positional reads skip them, so a new
+# one does not break tests that are about the content.
+NOISE_FRAMES = {"status", "route", "model", "plan"}
+
+
+def next_content(ws, skip=NOISE_FRAMES):
+    frame = ws.receive_json()
+    while frame["type"] in skip:
+        frame = ws.receive_json()
+    return frame
+
+
 def test_websocket_routes_json_frame_to_requested_agent(client_with_both_adapters):
     with client_with_both_adapters.websocket_connect("/ws/chat?thread_id=ws-agents-1") as ws:
         ws.receive_json()  # thread_id
         # plan_mode off: this test is about routing a frame to an agent, not
         # about the planner (which is on by default and adds its own frames).
         ws.send_json({"prompt": "hello", "agent": "codex", "plan_mode": False})
-        text_event = ws.receive_json()
-        result_event = ws.receive_json()
+        text_event = next_content(ws)
+        result_event = next_content(ws)
 
     assert text_event == {"type": "text", "text": "codex:hello"}
     assert result_event["agent"] == "codex"
@@ -102,9 +115,7 @@ def test_websocket_bare_text_frame_routes_to_the_default_agent(client_with_both_
         route_event = ws.receive_json()
         # A bare text frame takes the planner default, so the plan frame comes
         # before the turn's own output.
-        text_event = ws.receive_json()
-        while text_event["type"] in ("plan", "model"):
-            text_event = ws.receive_json()
+        text_event = next_content(ws)
 
     # "hello" matches no routing rule and the thread has no history, so the
     # table's default answers it.

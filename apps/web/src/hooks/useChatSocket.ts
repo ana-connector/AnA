@@ -18,6 +18,7 @@ export type ChatEvent =
         | "cancelled"
         | "approval_request"
         | "question"
+        | "status"
         | "failover"
         | "plan"
         | "subagent"
@@ -46,6 +47,7 @@ export type ChatEvent =
       }[];
       task?: SubagentTask;
       questions?: AgentQuestion[];
+      count?: number;
       role?: string;
       request_id?: string;
       rule_id?: string | null;
@@ -165,6 +167,27 @@ export type PlanState = {
   tasks: SubagentTask[];
 };
 
+/** Which phase the turn in flight is in, as the server reports it.
+ *
+ *  A turn can spend a minute planning and another few running workers before a
+ *  single character of the answer exists. Without this the screen says nothing
+ *  for that whole time, which is indistinguishable from a broken connection. */
+export type TurnStatus = {
+  /** "thinking" is the browser's own: the gap between pressing Enter and the
+   *  server's first frame, before anyone knows which phase this turn will take. */
+  phase:
+    | "thinking"
+    | "planning"
+    | "delegating"
+    | "replanning"
+    | "synthesizing"
+    | "answering";
+  agent: string;
+  count: number;
+  /** When this phase started, for the elapsed counter. */
+  since: number;
+};
+
 /** What the planning call decided, kept even when it decided *not* to split:
  *  a Plan toggle that silently changes nothing looks broken. */
 export type PlanOutcome = {
@@ -224,6 +247,7 @@ export function useChatSocket() {
   // Which model each CLI is running right now, as reported by the CLI or
   // learned from a hook payload.
   const [models, setModels] = useState<Record<string, string>>({});
+  const [status, setStatus] = useState<TurnStatus | null>(null);
   // How the current turn was routed, when the rules chose.
   const [route, setRoute] = useState<{ agent: string; reason: string } | null>(null);
   // The directory this conversation works in, and which conversation it is.
@@ -406,6 +430,17 @@ export function useChatSocket() {
           return;
         }
 
+        if (event.type === "status") {
+          const phase = event.text as TurnStatus["phase"];
+          setStatus({
+            phase,
+            agent: event.agent ?? pendingAgentRef.current,
+            count: event.count ?? 0,
+            since: Date.now(),
+          });
+          return;
+        }
+
         if (event.type === "route") {
           setRoute({ agent: event.agent ?? "claude", reason: event.text });
           pendingAgentRef.current = (event.agent as Agent) ?? pendingAgentRef.current;
@@ -570,6 +605,8 @@ export function useChatSocket() {
         }
 
         if (event.type === "text") {
+          // The answer has started: the phase line has served its purpose.
+          setStatus(null);
           if (agentMessageIndexRef.current === null) {
             agentMessageIndexRef.current = messageCountRef.current;
             messageCountRef.current += 1;
@@ -626,6 +663,7 @@ export function useChatSocket() {
         }
 
         if (event.type === "error") {
+          setStatus(null);
           messageCountRef.current += 1;
           const agent = event.agent ?? pendingAgentRef.current;
           setMessages((prev) => [...prev, { role: "agent", text: `⚠️ ${event.text}`, agent }]);
@@ -635,6 +673,7 @@ export function useChatSocket() {
         }
 
         if (event.type === "cancelled") {
+          setStatus(null);
           agentMessageIndexRef.current = null;
           setStreaming(false);
           return;
@@ -656,6 +695,7 @@ export function useChatSocket() {
           }
           planRef.current = null;
           setPlan(null);
+          setStatus(null);
           agentMessageIndexRef.current = null;
           pendingReasoningRef.current = "";
           setStreaming(false);
@@ -689,6 +729,14 @@ export function useChatSocket() {
         { role: "user", text, agent: agent === "auto" ? pendingAgentRef.current : agent },
       ]);
       setStreaming(true);
+      // Set before the server says anything: the gap between pressing Enter and
+      // the first frame is exactly where the screen used to go quiet.
+      setStatus({
+        phase: "thinking",
+        agent: agent === "auto" ? pendingAgentRef.current : agent,
+        count: 0,
+        since: Date.now(),
+      });
       pendingReasoningRef.current = "";
       // A new turn replaces the previous turn's fan-out rather than stacking.
       setPlan(null);
@@ -749,6 +797,7 @@ export function useChatSocket() {
     // model badge for a turn this workspace never ran.
     setPlanOutcome(null);
     setRoute(null);
+    setStatus(null);
     setUsage({ totalCostUsd: 0, totalTokens: 0 });
     setWorkspace(null);
     setWorkspaceName(null);
@@ -774,6 +823,7 @@ export function useChatSocket() {
     threadId,
     approvals,
     questions,
+    status,
     plan,
     planOutcome,
     models,

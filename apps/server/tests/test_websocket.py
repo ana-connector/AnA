@@ -112,6 +112,19 @@ def client_with_fake_adapter(db_pool, postgres_dsn, monkeypatch, tmp_path):
             yield client
 
 
+# Frames the server sends around the content: which phase the turn is in, which
+# CLI was routed to, which model answered. Positional reads skip them, so a new
+# one does not break tests that are about the content.
+NOISE_FRAMES = {"status", "route", "model", "plan"}
+
+
+def next_content(ws, skip=NOISE_FRAMES):
+    frame = ws.receive_json()
+    while frame["type"] in skip:
+        frame = ws.receive_json()
+    return frame
+
+
 def test_websocket_sends_thread_id_first_then_echoes_prompt(client_with_fake_adapter):
     with client_with_fake_adapter.websocket_connect("/ws/chat") as ws:
         first = ws.receive_json()
@@ -120,11 +133,11 @@ def test_websocket_sends_thread_id_first_then_echoes_prompt(client_with_fake_ada
 
         ws.send_text("hello")
         # A bare text frame has no agent, so routing runs and announces its
-        # choice before the turn streams.
+        # choice before the turn streams, and the turn reports its phase.
         second = ws.receive_json()
         assert second["type"] == "route"
-        second = ws.receive_json()
-        third = ws.receive_json()
+        second = next_content(ws)
+        third = next_content(ws)
 
     # "text" events carry only {type, text} (Task 4's call_lead_agent only
     # writes the full session_id/is_error payload for non-"text" events —
@@ -182,9 +195,7 @@ def test_websocket_relays_error_when_run_stream_raises(db_pool, postgres_dsn, mo
             with client.websocket_connect("/ws/chat") as ws:
                 ws.receive_json()  # thread_id
                 ws.send_text("hello")
-                event = ws.receive_json()
-                if event["type"] == "route":
-                    event = ws.receive_json()
+                event = next_content(ws)
     assert event["type"] == "error"
     assert "boom" in event["text"]
 
@@ -203,9 +214,7 @@ def test_websocket_closes_connection_after_relay_failure(db_pool, postgres_dsn, 
             with client.websocket_connect("/ws/chat") as ws:
                 ws.receive_json()  # thread_id
                 ws.send_text("hello")
-                event = ws.receive_json()
-                if event["type"] == "route":
-                    ws.receive_json()  # error frame
+                assert next_content(ws)["type"] == "error"
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     ws.receive_text()
     assert exc_info.value.code == 1011

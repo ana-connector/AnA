@@ -5,10 +5,19 @@ Two directories, in order: the ones shipped with ANA
 where a later file with the same name replaces an earlier one — so a shipped
 skill can be overridden without editing the repo.
 
+Two formats, because skills exist in the world already. `*.yaml` is ANA's own
+form, where the procedure is a field. `*.md` is the Claude Code / Agent Skills
+form — YAML frontmatter, then the procedure as the body — so a published
+SKILL.md can be dropped in as it was written rather than summarized into a YAML
+string, which is how a vendored skill quietly drifts from the one it came from.
+The two share the same schema: everything the frontmatter does not say gets the
+same default a YAML file would.
+
 Broken files never take the library down: they are collected as errors and
 reported (the settings page shows them), while everything else loads.
 """
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -57,19 +66,54 @@ def user_skills_dir() -> Path:
     return Path(os.environ.get("ANA_SKILLS_DIR") or Path(state_dir) / "skills")
 
 
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(?P<meta>.*?)\n---\s*\n?(?P<body>.*)\Z", re.S)
+
+
+def _parse_markdown(text: str) -> dict:
+    """A SKILL.md as the same mapping a YAML skill file is.
+
+    The frontmatter carries the fields; the body *is* the instructions, kept
+    exactly as written. A file with no frontmatter is not a skill — returning
+    an empty mapping makes the caller report it as one, rather than shipping a
+    nameless procedure."""
+    match = _FRONTMATTER_RE.match(text)
+    if match is None:
+        return {}
+    meta = yaml.safe_load(match.group("meta")) or {}
+    if not isinstance(meta, dict):
+        return {}
+    body = match.group("body").strip()
+    # An explicit `instructions:` in the frontmatter wins, so a wrapper file can
+    # keep the body as documentation.
+    meta.setdefault("instructions", body)
+    return meta
+
+
+def _skill_files(directory: Path) -> list[Path]:
+    return sorted(
+        [*directory.glob("*.y*ml"), *directory.glob("*.md")], key=lambda path: path.stem
+    )
+
+
 def _load_dir(directory: Path) -> tuple[list[SkillDefinition], list[SkillError]]:
     skills: list[SkillDefinition] = []
     errors: list[SkillError] = []
     if not directory.is_dir():
         return skills, errors
-    for path in sorted(directory.glob("*.y*ml")):
+    for path in _skill_files(directory):
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            raw = _parse_markdown(text) if path.suffix == ".md" else yaml.safe_load(text)
         except (OSError, yaml.YAMLError) as exc:
-            errors.append(SkillError(str(path), f"YAML을 읽지 못함: {exc}"))
+            errors.append(SkillError(str(path), f"파일을 읽지 못함: {exc}"))
             continue
-        if not isinstance(raw, dict):
-            errors.append(SkillError(str(path), "스킬 파일은 YAML 매핑이어야 한다"))
+        if not isinstance(raw, dict) or not raw:
+            errors.append(
+                SkillError(
+                    str(path),
+                    "스킬 파일은 YAML 매핑이거나, 프론트매터가 있는 마크다운이어야 한다",
+                )
+            )
             continue
         try:
             skills.append(SkillDefinition(**raw))
@@ -92,10 +136,7 @@ def _stamp(directory: Path) -> tuple:
     moved — the same contract governance rules and routing already use."""
     if not directory.is_dir():
         return ()
-    return tuple(
-        (path.name, path.stat().st_mtime)
-        for path in sorted(directory.glob("*.y*ml"))
-    )
+    return tuple((path.name, path.stat().st_mtime) for path in _skill_files(directory))
 
 
 @lru_cache(maxsize=8)

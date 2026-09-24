@@ -24,6 +24,7 @@ import { UsageBar } from "@/components/usage-bar";
 import { PlanGraph } from "@/components/plan-graph";
 import { Reasoning } from "@/components/reasoning";
 import { SessionSidebar } from "@/components/session-sidebar";
+import { TurnStatusLine } from "@/components/turn-status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -111,6 +112,7 @@ export default function ChatPage() {
     threadId,
     approvals,
     questions,
+    status,
     plan,
     planOutcome,
     models,
@@ -396,6 +398,18 @@ export default function ChatPage() {
                       plan={plan}
                       onSelectTask={setOpenTask}
                       autoCollapse={leadAnswering}
+                    />
+                  </MessageScrollerItem>
+                )}
+
+                {/* Something is happening, and this is the only thing on screen
+                    that says so while the lead plans, the workers run, or the
+                    answer is being written but has not started arriving. */}
+                {streaming && status && (
+                  <MessageScrollerItem messageId="status">
+                    <TurnStatusLine
+                      status={status}
+                      model={models[status.agent] ?? undefined}
                     />
                   </MessageScrollerItem>
                 )}
