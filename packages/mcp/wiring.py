@@ -5,6 +5,7 @@ into apps/server/app/websocket.py is one line per adapter rather than a block
 of registry handling in a file that is busy with other things.
 """
 import os
+from dataclasses import replace
 from typing import Optional
 
 from packages.mcp.config_writer import (
@@ -71,7 +72,7 @@ def resolve_for_role(
     registry = load_registry()
     if not mcp_enabled():
         return [], [SkippedServer(name, "ANA_MCP=off") for name in registry.names()]
-    return registry.resolve(
+    servers, skipped = registry.resolve(
         role,
         workspace_dir=workspace_dir,
         database_url=os.environ.get("DATABASE_URL", ""),
@@ -79,6 +80,17 @@ def resolve_for_role(
         secrets=secrets_for(registry.secret_names(), env),
         check_command=check_command,
     )
+    # Some CLIs start MCP subprocesses with a reduced environment. The hook
+    # still sees the gate token, while ask_user can then send an empty token
+    # and get a 403. Put it in ask's owner-only launcher environment instead.
+    token = (env or {}).get("ANA_GATE_TOKEN")
+    if token:
+        servers = [
+            replace(server, env={**server.env, "ANA_GATE_TOKEN": token})
+            if server.name == "ask" else server
+            for server in servers
+        ]
+    return servers, skipped
 
 
 def claude_mcp(

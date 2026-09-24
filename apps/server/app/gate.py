@@ -207,6 +207,8 @@ async def gate_ask(
     questions = [q for q in body.questions if q.question.strip()]
     if not questions:
         raise HTTPException(status_code=422, detail="at least one question is required")
+    if any(len(q.options) < 2 for q in questions):
+        raise HTTPException(status_code=422, detail="each question needs at least two options")
 
     payload = [q.model_dump() for q in questions]
     answers = await registry.request_answer(

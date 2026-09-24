@@ -11,6 +11,7 @@ module exists to enforce would be advisory.
 """
 import json
 import os
+import hashlib
 from pathlib import Path
 from typing import Sequence
 
@@ -38,8 +39,10 @@ def write_claude_mcp_config(
     }
     directory = Path(state_dir) / CONFIG_DIRNAME
     directory.mkdir(parents=True, exist_ok=True)
+    token = next((s.env.get("ANA_GATE_TOKEN") for s in servers if s.name == "ask"), None)
+    suffix = f".{hashlib.sha256(token.encode()).hexdigest()}" if token else ""
     return atomic.write_text(
-        directory / f"claude.{role}.json", json.dumps(payload, indent=2)
+        directory / f"claude.{role}{suffix}.json", json.dumps(payload, indent=2)
     )
 
 

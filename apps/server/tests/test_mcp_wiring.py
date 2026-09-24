@@ -3,6 +3,7 @@ adapters end up building."""
 import json
 import os
 import stat
+import subprocess
 import textwrap
 
 import pytest
@@ -65,11 +66,40 @@ def test_launcher_quotes_hostile_values(tmp_path):
     assert env_file.startswith("export V='a'\"'\"'b\nrm -rf /'")
 
 
+def test_ask_launcher_keeps_each_gate_token_when_mcp_env_is_reduced(tmp_path):
+    def ask_launcher(token):
+        return write_launcher(ResolvedServer(
+            name="ask", command="/usr/bin/env", args=(),
+            env={"ANA_GATE_TOKEN": token},
+        ), tmp_path)
+
+    first = ask_launcher("thread-one-token")
+    second = ask_launcher("thread-two-token")
+
+    assert first != second
+    assert "thread-one-token" not in str(first)
+    assert "ANA_GATE_TOKEN=thread-one-token" in subprocess.check_output([str(first)], env={}).decode().splitlines()
+    assert "ANA_GATE_TOKEN=thread-two-token" in subprocess.check_output([str(second)], env={}).decode().splitlines()
+
+
 def test_claude_config_points_at_launchers(tmp_path):
     server = ResolvedServer(name="git", command="/bin/echo", args=("x",), env={})
     path = write_claude_mcp_config([server], tmp_path, "worker")
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["mcpServers"]["git"]["command"] == str(tmp_path / "mcp" / "git")
+
+
+def test_claude_config_is_isolated_by_gate_token(tmp_path):
+    def write(token):
+        ask = ResolvedServer(name="ask", command="/bin/echo", args=(),
+                             env={"ANA_GATE_TOKEN": token})
+        return write_claude_mcp_config([ask], tmp_path, "lead")
+
+    first = write("first-token")
+    second = write("second-token")
+    assert first != second
+    assert first.exists() and second.exists()
+    assert "first-token" not in first.read_text(encoding="utf-8")
 
 
 def test_codex_overrides_are_toml_quoted(tmp_path):
