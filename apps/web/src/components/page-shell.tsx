@@ -11,7 +11,7 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Separator } from "@/components/ui/separator";
-import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { fetchWorkspaces, type WorkspaceSummary } from "@/lib/api";
 
 /** The frame every non-chat page sits in: project navigation on the left, a
@@ -50,7 +50,7 @@ export function PageShell({
   };
 
   return (
-    <SidebarProvider className="min-h-svh pb-2">
+    <SidebarProvider className="min-h-svh">
       <SessionSidebar
         workspaceId={current?.id ?? null}
         workspace={current?.path ?? null}
@@ -58,7 +58,7 @@ export function PageShell({
         onOpenWorkspace={openWorkspace}
         reloadKey={0}
       />
-      <SidebarInset className="min-w-0">
+      <main className="flex min-w-0 flex-1 flex-col bg-background">
         {/* Sticky, because these pages scroll and "where am I" should not
             scroll away with them. */}
         <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -86,7 +86,7 @@ export function PageShell({
           ) : null}
           {children}
         </div>
-      </SidebarInset>
+      </main>
     </SidebarProvider>
   );
 }

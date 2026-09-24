@@ -57,7 +57,7 @@ function MessageScrollerContent({
   return (
     <MessageScrollerPrimitive.Content
       data-slot="message-scroller-content"
-      className={cn("flex h-max min-h-full flex-col gap-8", className)}
+      className={cn("flex h-max min-h-full flex-col gap-6", className)}
       {...props}
     />
   )
@@ -110,7 +110,7 @@ function MessageScrollerButton({
           <ArrowDownIcon
           />
           <span className="sr-only">
-            {direction === "end" ? "맨 아래로" : "맨 위로"}
+            {direction === "end" ? "Scroll to end" : "Scroll to start"}
           </span>
         </>
       )}
