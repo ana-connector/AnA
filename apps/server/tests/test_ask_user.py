@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from apps.server.app.gate import lead_may_call
 from apps.server.app.main import app
-from packages.governance.session import GateRegistry
+from packages.governance.session import Answer, GateRegistry
 from packages.mcp.registry import LEAD, WORKER, load_registry
 from packages.mcp.scope import scope_denial, server_for_tool
 from packages.mcp.servers import ask_user
@@ -293,7 +293,7 @@ def test_ask_preserves_complex_question_details(registry_client, monkeypatch):
 
     async def answer(_session, payload):
         sent.update(payload)
-        return ["fix", ["progress", "risks"], "직접 입력"]
+        return Answer(value=["fix", ["progress", "risks"], "직접 입력"], by="user")
 
     monkeypatch.setattr(registry, "request_answer", answer)
     response = registry_client.post(
@@ -341,7 +341,9 @@ async def test_request_answer_returns_what_the_browser_sent():
         answer_soon(),
     )
 
-    assert answers == ["Postgres"]
+    assert answers.value == ["Postgres"]
+    # Who answered rides along, for the transcript and the audit row.
+    assert answers.by == "user"
     assert sent[0]["type"] == "question"
     # The pending entry is cleaned up, so a late second answer is a no-op.
     assert session.pending == {}
@@ -357,7 +359,7 @@ async def test_an_unanswered_question_times_out_as_none():
 
     session = registry.register("t3", send)
 
-    assert await registry.request_answer(session, {"questions": [{"question": "?"}]}) is None
+    assert (await registry.request_answer(session, {"questions": [{"question": "?"}]})).value is None
 
 
 @pytest.mark.asyncio
@@ -382,4 +384,4 @@ async def test_a_closed_connection_ends_the_wait():
         registry.request_answer(session, {"questions": [{"question": "?"}]}),
         close_soon(),
     )
-    assert answers is None
+    assert answers.value is None

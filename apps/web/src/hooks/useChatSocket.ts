@@ -18,6 +18,7 @@ export type ChatEvent =
         | "cancelled"
         | "approval_request"
         | "question"
+        | "request_resolved"
         | "status"
         | "replay"
         | "prompt"
@@ -668,6 +669,15 @@ export function useChatSocket() {
 
         if (event.type === "approval_request") {
           setApprovals((prev) => [...prev, event as unknown as ApprovalRequest]);
+          return;
+        }
+
+        if (event.type === "request_resolved") {
+          // Someone answered this from somewhere else — a phone, or another
+          // tab. The card goes, because the decision is already made.
+          const requestId = event.request_id ?? "";
+          setApprovals((prev) => prev.filter((item) => item.request_id !== requestId));
+          setQuestions((prev) => prev.filter((item) => item.request_id !== requestId));
           return;
         }
 

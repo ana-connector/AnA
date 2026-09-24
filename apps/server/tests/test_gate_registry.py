@@ -38,7 +38,10 @@ async def test_approval_returns_the_users_answer():
     await asyncio.sleep(0.05)
 
     assert registry.resolve_approval(session, sent[0]["request_id"], "allow") is True
-    assert await task == "allow"
+    answer = await task
+    assert answer.value == "allow"
+    # Who answered is carried with the answer, because the audit row records it.
+    assert answer.by == "user"
 
 
 @pytest.mark.asyncio
@@ -50,7 +53,7 @@ async def test_unanswered_approval_times_out():
 
     session = registry.register("t", send)
 
-    assert await registry.request_approval(session, {}) == "timeout"
+    assert (await registry.request_approval(session, {})).value == "timeout"
 
 
 @pytest.mark.asyncio
@@ -63,7 +66,7 @@ async def test_failed_send_denies():
     session = registry.register("t", send)
 
     # The browser could not even be asked, so nothing was approved.
-    assert await registry.request_approval(session, {}) == "deny"
+    assert (await registry.request_approval(session, {})).value == "deny"
 
 
 @pytest.mark.asyncio
@@ -82,7 +85,7 @@ async def test_closing_a_session_denies_anything_still_waiting():
 
     # Denied immediately rather than hanging until the timeout: nobody is
     # left who could answer.
-    assert await task == "deny"
+    assert (await task).value == "deny"
     assert registry.get(session.token) is None
 
 
@@ -100,7 +103,7 @@ async def test_duplicate_answer_is_a_no_op():
     request_id = sent[0]["request_id"]
 
     assert registry.resolve_approval(session, request_id, "allow") is True
-    assert await task == "allow"
+    assert (await task).value == "allow"
     # A second click (or a stale card) must not resolve anything.
     assert registry.resolve_approval(session, request_id, "deny") is False
 
@@ -118,4 +121,4 @@ async def test_non_allow_answers_are_treated_as_deny():
     await asyncio.sleep(0.05)
     registry.resolve_approval(session, sent[0]["request_id"], "whatever")
 
-    assert await task == "deny"
+    assert (await task).value == "deny"

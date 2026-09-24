@@ -103,6 +103,11 @@ class TurnRunner:
         # an approval asked while nobody is attached is buffered and shown when
         # someone comes back, and answering it resolves the same pending future.
         gate_session.send = self.emit
+        # A request can now be answered from somewhere other than this browser
+        # (packages/remote). Whichever side answers first, the card has to come
+        # off the other one.
+        gate_session.on_resolved = self.request_resolved
+        gate_session.workspace_name = workspace_name
         self.relay_task = asyncio.create_task(self._relay(), name=f"runner:{thread_id}")
 
     # --- what the browser sees -------------------------------------------
@@ -123,6 +128,12 @@ class TurnRunner:
             # The turn is in the database now; history is what shows it, so the
             # buffer starts empty for the next one.
             self.buffer.clear()
+            # The same moment is the only one worth reporting to a phone: what
+            # the agent finally said, once.
+            if frame.get("type") == "result":
+                await self.gate_registry.notify_turn_ended(
+                    self.gate_session, frame.get("text") or ""
+                )
         sink = self.sink
         if sink is None:
             return
@@ -142,6 +153,24 @@ class TurnRunner:
         self.sink = sink
         self._idle_since = None
         return list(self.buffer)
+
+    async def request_resolved(self, request_id: str, by: str) -> None:
+        """A pending request is over, whoever ended it.
+
+        Drops the buffered card so a reconnect does not bring it back, and
+        tells the browser so a card someone answered from a phone stops asking
+        for a decision that is already made."""
+        self.discard_request(request_id)
+        await self.emit(
+            {
+                "type": "request_resolved",
+                "text": "",
+                "session_id": None,
+                "is_error": False,
+                "request_id": request_id,
+                "by": by,
+            }
+        )
 
     def discard_request(self, request_id: str) -> None:
         """An answered card must not return when the browser reconnects."""
