@@ -30,7 +30,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       // next-themes writes the class before paint; without this React warns
       // about the attribute it did not render.
       suppressHydrationWarning
-      className={`${pretendard.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${pretendard.variable} ${geistMono.variable} h-full font-sans antialiased`}
     >
       <body className="flex min-h-full flex-col">
         <ThemeProvider>
