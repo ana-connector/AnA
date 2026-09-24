@@ -130,7 +130,7 @@ async def test_listing_reports_conversation_activity(workspace_pool, tmp_path, m
     await store_turn(
         workspace_pool, EmbeddingModel(),
         thread_id=workspace.id, session_id="sid", prompt="p", response="r",
-        cost_usd=None, agent="codex",
+        cost_usd=None, agent="codex", meta={"tokens": 1200},
     )
 
     rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
@@ -138,6 +138,37 @@ async def test_listing_reports_conversation_activity(workspace_pool, tmp_path, m
     # The workspace *is* the thread, so its turns are its activity.
     assert rows[workspace.id]["turn_count"] == 1
     assert rows[workspace.id]["last_agent"] == "codex"
+    assert rows[workspace.id]["total_tokens"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_tokens_are_summed_over_the_conversation(workspace_pool, tmp_path, monkeypatch):
+    """What a workspace has cost so far, which is what the sidebar shows under
+    its name. Turns that never reported a token count contribute nothing rather
+    than breaking the sum."""
+    from packages.memory.embeddings import EmbeddingModel
+    from packages.memory.rag import store_turn
+
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    workspace = await create_workspace(workspace_pool, name="Counted")
+    for meta in ({"tokens": 1000}, {"tokens": 500}, {}, {"tokens": None}):
+        await store_turn(
+            workspace_pool, EmbeddingModel(),
+            thread_id=workspace.id, session_id="sid", prompt="p", response="r",
+            cost_usd=None, agent="claude", meta=meta,
+        )
+
+    rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
+
+    assert rows[workspace.id]["total_tokens"] == 1500
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_with_no_turns_reports_no_tokens(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    await create_workspace(workspace_pool, name="Untouched")
+
+    assert (await list_workspaces(workspace_pool))[0]["total_tokens"] == 0
 
 
 @pytest.mark.asyncio
