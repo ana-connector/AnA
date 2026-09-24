@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { SessionSidebar } from "@/components/session-sidebar";
 import {
   Breadcrumb,
@@ -11,8 +11,8 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Separator } from "@/components/ui/separator";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { fetchWorkspaces, type WorkspaceSummary } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
 /** The frame every non-chat page sits in: project navigation on the left, a
  *  header that says where you are, and one content column.
@@ -26,23 +26,17 @@ export function PageShell({
   title,
   description,
   actions,
+  center,
   children,
 }: {
   title: string;
   description?: ReactNode;
   actions?: ReactNode;
+  /** Sits the column in the middle of the panel while it fits. For a page
+   *  that is short by design; a long one scrolls from the top either way. */
+  center?: boolean;
   children: ReactNode;
 }) {
-  const [current, setCurrent] = useState<WorkspaceSummary | null>(null);
-
-  useEffect(() => {
-    const id = window.localStorage.getItem("ana_thread_id");
-    if (!id) return;
-    void fetchWorkspaces()
-      .then((items) => setCurrent(items.find((item) => item.id === id) ?? null))
-      .catch(() => {});
-  }, []);
-
   const openWorkspace = (id: string | null) => {
     if (id) window.localStorage.setItem("ana_thread_id", id);
     else window.localStorage.removeItem("ana_thread_id");
@@ -50,26 +44,25 @@ export function PageShell({
   };
 
   return (
-    <SidebarProvider className="min-h-svh">
-      <SessionSidebar
-        workspaceId={current?.id ?? null}
-        workspace={current?.path ?? null}
-        workspaceName={current?.name ?? null}
-        onOpenWorkspace={openWorkspace}
-        reloadKey={0}
-      />
-      <main className="flex min-w-0 flex-1 flex-col bg-background">
-        {/* Sticky, because these pages scroll and "where am I" should not
-            scroll away with them. */}
-        <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    // Bounded rather than min-height: the inset panel is what scrolls, not the
+    // window. A document-height panel would carry its rounded corners and its
+    // bottom margin off the bottom of the screen, which is why these pages
+    // stopped looking inset as soon as they were long enough to scroll.
+    <SidebarProvider className="h-svh overflow-hidden">
+      {/* No workspace is active here: settings, the tool log and the secrets
+          belong to the installation, not to whichever conversation you were
+          last in. Highlighting one said you were still inside it. */}
+      <SessionSidebar workspaceId={null} onOpenWorkspace={openWorkspace} reloadKey={0} />
+      <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Outside the scroll area rather than sticky inside it: "where am I"
+            stays put, and the panel's top corners stay clean. */}
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
           <SidebarTrigger />
           <Separator orientation="vertical" className="mr-1 h-4" />
           <Breadcrumb>
             <BreadcrumbList>
               <BreadcrumbItem className="hidden sm:block">
-                <BreadcrumbLink href="/">
-                  {current?.name ?? "채팅"}
-                </BreadcrumbLink>
+                <BreadcrumbLink href="/">AnA</BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator className="hidden sm:block" />
               <BreadcrumbItem>
@@ -80,13 +73,23 @@ export function PageShell({
           {actions ? <div className="ml-auto flex items-center gap-1">{actions}</div> : null}
         </header>
 
-        <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-6 sm:px-6">
-          {description ? (
-            <p className="max-w-[70ch] text-sm text-muted-foreground">{description}</p>
-          ) : null}
-          {children}
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div
+            className={cn(
+              "mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-6 sm:px-6",
+              // Auto margins rather than justify-center: a centred flex child
+              // that outgrows its scroll container has its top cut off, and an
+              // auto margin simply stops giving room.
+              center && "my-auto"
+            )}
+          >
+            {description ? (
+              <p className="max-w-[70ch] text-sm text-muted-foreground">{description}</p>
+            ) : null}
+            {children}
+          </div>
         </div>
-      </main>
+      </SidebarInset>
     </SidebarProvider>
   );
 }

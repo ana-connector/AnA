@@ -3,16 +3,16 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTheme } from "next-themes";
 import {
-  BoxIcon,
-  FolderIcon,
   KeyRoundIcon,
+  MoonIcon,
   PlusIcon,
   RefreshCwIcon,
-  RepeatIcon,
   SearchIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
+  SunIcon,
   TerminalIcon,
 } from "lucide-react";
 import {
@@ -28,7 +28,6 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Logo } from "@/components/logo";
 import { WorkspaceEditor } from "@/components/workspace-editor";
 import {
@@ -52,6 +51,14 @@ function shortPath(path: string | null): string {
   return parts.length ? `…/${parts[parts.length - 1]}` : path;
 }
 
+/** "1.1M", "19.7K", "840" — a sidebar row has space for a magnitude, not for
+ *  a nine-digit number, and the magnitude is what the figure is read for. */
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return String(tokens);
+}
+
 /** Filtering only appears once the list is long enough to need it: a search box
  *  above three rows is furniture. */
 const FILTER_THRESHOLD = 7;
@@ -62,14 +69,10 @@ const FILTER_THRESHOLD = 7;
  *  up behind the same name. */
 export function SessionSidebar({
   workspaceId,
-  workspace,
-  workspaceName,
   onOpenWorkspace,
   reloadKey,
 }: {
   workspaceId: string | null;
-  workspace: string | null;
-  workspaceName: string | null;
   onOpenWorkspace: (id: string | null) => void;
   /** Changes when a turn finishes, so activity shows up without a refresh. */
   reloadKey: number;
@@ -77,6 +80,7 @@ export function SessionSidebar({
   // Which utility page is open, so the footer nav can mark it: a link that
   // never looks selected leaves the user guessing where they are.
   const pathname = usePathname();
+  const { resolvedTheme, setTheme } = useTheme();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   // The id of the workspace whose folder is ANA's own source tree, when the
   // repository is mounted. Work there changes ANA, so that row says so.
@@ -148,14 +152,22 @@ export function SessionSidebar({
 
   return (
     <>
-    <Sidebar>
+    {/* variant="inset": the sidebar sits on the page's own background and the
+        content floats beside it as a rounded panel. SidebarInset styles itself
+        off this, so without it the inset element is an ordinary <main>. */}
+    <Sidebar variant="inset">
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
             {/* The shadcn header pattern: one large menu row carrying the
-                mark and the name. The mark takes the square's foreground
-                colour, so it reads white on the sidebar's primary. */}
-            <SidebarMenuButton size="lg" render={<Link href="/" />}>
+                mark and the name. It opens the start page rather than the
+                console: "/" resumes whichever conversation you were last in,
+                which is not what clicking the product's own name means. */}
+            <SidebarMenuButton
+              size="lg"
+              isActive={pathname === "/start"}
+              render={<Link href="/start" />}
+            >
               <div className="flex aspect-square size-10 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                 {/* size-6! because the menu button sizes every descendant svg
                     to 16px, and that descendant rule outranks a plain class. */}
@@ -171,30 +183,6 @@ export function SessionSidebar({
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>지금 작업 중</SidebarGroupLabel>
-          <SidebarGroupContent className="px-2">
-            <div className="flex items-start gap-2 rounded-md border border-border bg-sidebar-accent/40 px-2 py-1.5">
-              <FolderIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="truncate text-xs font-medium">
-                    {workspaceName ?? workspaceId ?? "연결 중…"}
-                  </span>
-                  {workspaceId && workspaceId === selfWorkspaceId && (
-                    <RepeatIcon className="size-3 shrink-0 text-muted-foreground" />
-                  )}
-                </div>
-                {/* Both CLIs run here, and the gate escalates anything that
-                    reaches outside it. */}
-                <div className="truncate font-mono text-[11px] text-muted-foreground" title={workspace ?? undefined}>
-                  {shortPath(workspace)}
-                </div>
-              </div>
-            </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
         <SidebarGroup>
           <SidebarGroupLabel>모든 워크스페이스</SidebarGroupLabel>
           <SidebarGroupAction title="목록 새로고침" onClick={() => void refresh()}>
@@ -234,7 +222,7 @@ export function SessionSidebar({
                 「{filter}」와 맞는 워크스페이스 없음
               </p>
             ) : (
-              <SidebarMenu>
+              <SidebarMenu className="gap-1">
                 {visible.map((item) => (
                   <SidebarMenuItem key={item.id}>
                     <SidebarMenuButton
@@ -244,31 +232,10 @@ export function SessionSidebar({
                       title={`${item.id}\n${item.path}`}
                     >
                       <div className="flex min-w-0 flex-col gap-0.5">
-                        <span className="flex min-w-0 items-center gap-1">
-                          <span className="truncate text-xs">{item.name}</span>
-                          {item.id === selfWorkspaceId && (
-                            // ANA's own repository: the same list, the same
-                            // gate, but work here changes ANA itself.
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={<RepeatIcon className="size-3 shrink-0 text-muted-foreground" />}
-                              />
-                              <TooltipContent>AnA 자기 자신의 소스 트리</TooltipContent>
-                            </Tooltip>
-                          )}
-                          {item.container_enabled && (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={<BoxIcon className="size-3 shrink-0 text-muted-foreground" />}
-                              />
-                              <TooltipContent>전용 컨테이너에서 실행</TooltipContent>
-                            </Tooltip>
-                          )}
-                        </span>
+                        <span className="truncate text-xs">{item.name}</span>
                         <span className="truncate text-[11px] text-muted-foreground">
                           {shortPath(item.path)}
-                          {item.turn_count > 0 ? ` · ${item.turn_count}턴` : " · 새 대화"}
-                          {item.last_agent ? ` · ${item.last_agent}` : ""}
+                          {item.total_tokens > 0 ? ` · ${compactTokens(item.total_tokens)}` : " · 새 대화"}
                         </span>
                       </div>
                     </SidebarMenuButton>
@@ -314,6 +281,18 @@ export function SessionSidebar({
             <SidebarMenuButton isActive={pathname === "/secrets"} render={<a href="/secrets" />}>
               <KeyRoundIcon />
               시크릿
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            {/* Both icons render and CSS picks one, so the row does not change
+                between the server and the client render. */}
+            <SidebarMenuButton
+              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+            >
+              <SunIcon className="dark:hidden" />
+              <MoonIcon className="hidden dark:block" />
+              <span className="dark:hidden">라이트</span>
+              <span className="hidden dark:inline">다크</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

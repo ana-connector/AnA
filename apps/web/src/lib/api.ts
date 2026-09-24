@@ -102,6 +102,8 @@ export type WorkspaceSummary = {
   last_turn_at: string | null;
   turn_count: number;
   last_agent: string | null;
+  /** Every token this conversation has spent, as the sidebar shows it. */
+  total_tokens: number;
   container_enabled: boolean;
   container_image: string | null;
   container_ports: PortMapping[];
