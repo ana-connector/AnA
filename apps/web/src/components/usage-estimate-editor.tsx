@@ -14,6 +14,8 @@ const rows = [
   { agent: "codex", window: "seven_day", label: "Codex · 7일" },
   { agent: "kimi", window: "five_hour", label: "Kimi · 5시간" },
   { agent: "kimi", window: "seven_day", label: "Kimi · 7일" },
+  { agent: "tapie", window: "five_hour", label: "TAPIE · 5시간" },
+  { agent: "tapie", window: "seven_day", label: "TAPIE · 7일" },
 ] as const;
 
 type Estimate = { utilization: number; resets_at: number | null };

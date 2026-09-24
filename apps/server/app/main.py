@@ -35,10 +35,13 @@ from packages.governance.workspace import session_workspace, workspace_root
 from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
 from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports, stop_workspace
-from packages.orchestrator.routing import load_routing_table
+from packages.orchestrator.handoff import AGENTS
+from packages.orchestrator.routing import EFFORTS, load_routing_table
 from packages.orchestrator.settings import (
     AUTH_MODES,
     read_auth_mode,
+    read_routing_structured,
+    write_routing_structured,
     read_routing,
     read_system_prompt,
     write_auth_mode,
@@ -323,6 +326,48 @@ class SettingsUpdate(BaseModel):
     # "pro" (subscription) or "api" (key + base URL) — the two modes
     # ~/.bashrc defines. Changing it used to mean editing .env and restarting.
     auth_mode: str | None = None
+
+
+class RoutingRung(BaseModel):
+    agent: str
+    model: str = ""
+    effort: str = ""
+    # The window this rung watches and the utilization at which it is spent.
+    # Both empty means the last rung, where everything lands.
+    window: str = ""
+    utilization: float | None = None
+
+
+class RoutingUpdate(BaseModel):
+    lead: list[RoutingRung]
+    workers: dict[str, list[RoutingRung]] = {}
+
+
+@app.get("/routing")
+async def routing_rules() -> dict:
+    """The ladder as data, plus what a rung may say.
+
+    The editor used to be a YAML text box, which asked the person changing one
+    threshold to know the file format. The vocabulary travels with the rules so
+    the form can offer exactly what the router accepts."""
+    return {
+        **read_routing_structured(),
+        "agents": list(AGENTS),
+        "efforts": {agent: list(levels) for agent, levels in EFFORTS.items()},
+        "windows": [
+            {"key": "five_hour", "label": "5시간"},
+            {"key": "seven_day", "label": "7일"},
+        ],
+    }
+
+
+@app.put("/routing")
+async def update_routing_rules(body: RoutingUpdate) -> dict:
+    try:
+        write_routing_structured(body.model_dump())
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return read_routing_structured()
 
 
 @app.get("/models")

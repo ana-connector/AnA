@@ -89,7 +89,10 @@ export function WorkspaceSearch({
                   // The path is searchable too: two projects often share a name
                   // and differ only in where they live.
                   value={`${item.name} ${item.path}`}
-                  onClick={() => {
+                  // onSelect, not onClick: cmdk drives both the click and the
+                  // Enter key through this one, and an onClick handler is
+                  // never reached by the keyboard.
+                  onSelect={() => {
                     setOpen(false);
                     onOpenWorkspace(item.id);
                   }}

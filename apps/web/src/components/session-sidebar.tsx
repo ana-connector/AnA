@@ -8,7 +8,6 @@ import {
   KeyRoundIcon,
   MoonIcon,
   PlusIcon,
-  RefreshCwIcon,
   SearchIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
@@ -185,8 +184,10 @@ export function SessionSidebar({
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>모든 워크스페이스</SidebarGroupLabel>
-          <SidebarGroupAction title="목록 새로고침" onClick={() => void refresh()}>
-            <RefreshCwIcon />
+          {/* Adding is what people come to this header for; the list
+              refetches itself whenever a turn finishes. */}
+          <SidebarGroupAction title="워크스페이스 추가" onClick={() => setAdding(true)}>
+            <PlusIcon />
           </SidebarGroupAction>
           <SidebarGroupContent>
             {(workspaces?.length ?? 0) >= FILTER_THRESHOLD && (
@@ -251,14 +252,6 @@ export function SessionSidebar({
               </SidebarMenu>
             )}
 
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton onClick={() => setAdding(true)}>
-                  <PlusIcon />
-                  워크스페이스 추가
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>

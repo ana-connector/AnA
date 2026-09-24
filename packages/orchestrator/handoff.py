@@ -8,7 +8,11 @@ gap: the thread's own recent turns, attributed by agent, prepended to the
 user's prompt.
 """
 
-AGENTS = ("claude", "codex", "kimi")
+# "tapie" is the Claude Code CLI again, authenticated with a key against
+# TAPIE's endpoint rather than the Pro subscription. It is its own agent
+# rather than a mode on `claude` because the two bill against different
+# accounts, which is the only thing routing cares about.
+AGENTS = ("claude", "codex", "kimi", "tapie")
 DEFAULT_AGENT = "claude"
 
 # Bound on each past turn's prompt/response before interpolation, same

@@ -184,7 +184,7 @@ def test_usage_endpoint_lists_every_agent_before_any_turn(client, tmp_path, monk
 
     agents = client.get("/usage").json()["agents"]
 
-    assert set(agents) == {"claude", "codex", "kimi"}
+    assert set(agents) == {"claude", "codex", "kimi", "tapie"}
     for windows in agents.values():
         assert [w["key"] for w in windows["windows"]] == ["five_hour", "seven_day"]
         # Nothing spent and nothing reported: the bar says "estimated 0%",
@@ -485,3 +485,59 @@ def test_an_unknown_auth_mode_is_refused(client, tmp_path, monkeypatch):
     monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
 
     assert client.put("/settings", json={"auth_mode": "free"}).status_code == 422
+
+
+def test_routing_reads_as_rungs_not_yaml(client, tmp_path, monkeypatch):
+    """The settings form edits rungs. The vocabulary travels with them so it
+    can offer exactly what the router accepts."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+
+    body = client.get("/routing").json()
+
+    assert body["lead"], "the lead ladder is never empty"
+    first = body["lead"][0]
+    assert set(first) == {"agent", "model", "effort", "window", "utilization"}
+    assert "tapie" in body["agents"]
+    assert set(body["efforts"]) >= {"claude", "codex", "kimi", "tapie"}
+    assert [w["key"] for w in body["windows"]] == ["five_hour", "seven_day"]
+
+
+def test_routing_round_trips_through_the_form(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+
+    saved = client.put(
+        "/routing",
+        json={
+            "lead": [
+                {
+                    "agent": "tapie",
+                    "model": "opus",
+                    "effort": "high",
+                    "window": "five_hour",
+                    "utilization": 0.4,
+                },
+                {"agent": "claude", "model": "fable", "effort": "", "window": "", "utilization": None},
+            ],
+            "workers": {"default": [{"agent": "codex", "model": "gpt-6-astra"}]},
+        },
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["lead"][0] == {
+        "agent": "tapie",
+        "model": "opus",
+        "effort": "high",
+        "window": "five_hour",
+        "utilization": 0.4,
+    }
+    # The last rung keeps no threshold: it is where everything lands.
+    assert saved.json()["lead"][1]["window"] == ""
+    assert saved.json()["workers"]["default"][0]["agent"] == "codex"
+
+
+def test_an_empty_ladder_is_refused(client, tmp_path, monkeypatch):
+    """A ladder with no rungs would leave the router with nothing to choose,
+    and the failure would land on the next turn rather than on the save."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+
+    assert client.put("/routing", json={"lead": [], "workers": {}}).status_code == 400

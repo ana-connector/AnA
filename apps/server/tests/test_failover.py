@@ -125,14 +125,14 @@ async def _run(graph, config, prompt="hello", agent="claude", values=None):
 
 
 @pytest.mark.asyncio
-async def test_usage_limit_falls_back_to_the_other_auth_mode(db_pool):
-    limited = LimitedAdapter("claude/pro")
-    working = WorkingAdapter("claude/api")
+async def test_usage_limit_falls_back_to_the_other_account(db_pool):
+    limited = LimitedAdapter("claude")
+    working = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        if agent == "claude" and auth_mode == "pro":
+        if agent == "claude":
             return limited
-        if agent == "claude" and auth_mode == "api":
+        if agent == "tapie":
             return working
         return WorkingAdapter("codex")
 
@@ -140,8 +140,8 @@ async def test_usage_limit_falls_back_to_the_other_auth_mode(db_pool):
     frames, values = await _run(graph, _config(db_pool, factory, "fo-1"))
 
     failover = next(f for f in frames if f["type"] == "failover")
-    assert (failover["from_rung"], failover["to_rung"]) == ("claude/pro", "claude/api")
-    assert values["response_text"] == "claude/api answered"
+    assert (failover["from_rung"], failover["to_rung"]) == ("claude", "tapie")
+    assert values["response_text"] == "tapie answered"
     # The user gets an answer, not an error.
     assert not [f for f in frames if f["type"] == "error"]
 
@@ -153,7 +153,7 @@ async def test_exhausted_claude_hands_over_to_codex_with_context(db_pool):
     def factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "codex":
             return codex
-        return LimitedAdapter(f"claude/{auth_mode}")
+        return LimitedAdapter(agent)
 
     graph = build_graph(InMemorySaver())
     # A previous turn gives the handoff brief something to carry.
@@ -175,10 +175,10 @@ async def test_exhausted_claude_hands_over_to_codex_with_context(db_pool):
 @pytest.mark.asyncio
 async def test_ordinary_failure_does_not_fail_over(db_pool):
     broken = BrokenAdapter()
-    other = WorkingAdapter("claude/api")
+    other = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return broken if auth_mode == "pro" else other
+        return broken if agent == "claude" else other
 
     graph = build_graph(InMemorySaver())
     frames, _ = await _run(graph, _config(db_pool, factory, "fo-3"))
@@ -203,11 +203,11 @@ async def test_chain_exhaustion_reports_the_last_error(db_pool):
 
 @pytest.mark.asyncio
 async def test_thread_stays_on_the_fallback_until_the_cooldown_expires(db_pool):
-    limited = LimitedAdapter("claude/pro")
-    api = WorkingAdapter("claude/api")
+    limited = LimitedAdapter("claude")
+    api = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        if agent == "claude" and auth_mode == "pro":
+        if agent == "claude":
             return limited
         if agent == "claude":
             return api
@@ -216,28 +216,28 @@ async def test_thread_stays_on_the_fallback_until_the_cooldown_expires(db_pool):
     graph = build_graph(InMemorySaver())
     config = _config(db_pool, factory, "fo-5", breaker=BreakerConfig(cooldown_seconds=900))
     _, values = await _run(graph, config)
-    assert values["failover_rung"] == "claude/api"
+    assert values["failover_rung"] == "tapie"
 
     calls_before = len(limited.calls)
     _, values = await _run(graph, config, prompt="second", values=values)
 
     # Still inside the cooldown: the exhausted rung is not retried.
     assert len(limited.calls) == calls_before
-    assert values["failover_rung"] == "claude/api"
+    assert values["failover_rung"] == "tapie"
 
 
 @pytest.mark.asyncio
 async def test_preferred_rung_returns_after_the_cooldown(db_pool):
-    pro = WorkingAdapter("claude/pro")
-    api = WorkingAdapter("claude/api")
+    pro = WorkingAdapter("claude")
+    api = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return pro if auth_mode == "pro" else api
+        return pro if agent == "claude" else api
 
     graph = build_graph(InMemorySaver())
     config = _config(db_pool, factory, "fo-6", breaker=BreakerConfig(cooldown_seconds=60))
     stale = {
-        "failover_rung": "claude/api",
+        "failover_rung": "tapie",
         "failover_tripped_at": time.time() - 3600,  # long expired
         "failover_reason": "limit",
     }
@@ -251,11 +251,11 @@ async def test_preferred_rung_returns_after_the_cooldown(db_pool):
 
 @pytest.mark.asyncio
 async def test_budget_breaker_starts_one_rung_down(db_pool):
-    pro = WorkingAdapter("claude/pro")
-    api = WorkingAdapter("claude/api")
+    pro = WorkingAdapter("claude")
+    api = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return pro if auth_mode == "pro" else api
+        return pro if agent == "claude" else api
 
     graph = build_graph(InMemorySaver())
     config = _config(
@@ -267,16 +267,16 @@ async def test_budget_breaker_starts_one_rung_down(db_pool):
     # Over budget: do not spend another turn proving the limit is still there.
     assert pro.calls == []
     assert api.calls
-    assert values["failover_rung"] == "claude/api"
+    assert values["failover_rung"] == "tapie"
 
 
 @pytest.mark.asyncio
 async def test_rate_limit_warning_trips_the_breaker_even_on_success(db_pool):
     warning = RateLimitWarningAdapter()
-    api = WorkingAdapter("claude/api")
+    api = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return warning if auth_mode == "pro" else api
+        return warning if agent == "claude" else api
 
     graph = build_graph(InMemorySaver())
     frames, _ = await _run(graph, _config(db_pool, factory, "fo-8"))
@@ -304,16 +304,16 @@ class CreditlessAdapter(AgentAdapter):
 
 @pytest.mark.asyncio
 async def test_a_reply_that_is_only_a_limit_message_fails_over(db_pool):
-    working = WorkingAdapter("claude/api")
+    working = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return CreditlessAdapter() if auth_mode == "pro" else working
+        return CreditlessAdapter() if agent == "claude" else working
 
     graph = build_graph(InMemorySaver())
     frames, values = await _run(graph, _config(db_pool, factory, "fo-credits"))
 
-    assert [f["to_rung"] for f in frames if f["type"] == "failover"] == ["claude/api"]
-    assert values["response_text"] == "claude/api answered"
+    assert [f["to_rung"] for f in frames if f["type"] == "failover"] == ["tapie"]
+    assert values["response_text"] == "tapie answered"
 
 
 @pytest.mark.asyncio
@@ -321,10 +321,10 @@ async def test_a_retried_attempt_does_not_announce_the_turn_as_finished(db_pool)
     """A failed rung's end-of-turn frame must not reach the client before the
     retry: the UI treats `result` as "the turn is over" and would stop there,
     showing the failure as the answer."""
-    working = WorkingAdapter("claude/api")
+    working = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return CreditlessAdapter() if auth_mode == "pro" else working
+        return CreditlessAdapter() if agent == "claude" else working
 
     graph = build_graph(InMemorySaver())
     frames, _ = await _run(graph, _config(db_pool, factory, "fo-order"))
@@ -356,16 +356,16 @@ class CreditlessThenEmptyExitAdapter(AgentAdapter):
 async def test_an_empty_trailing_error_does_not_erase_the_reason(db_pool):
     """The empty error used to overwrite the limit message, leaving a turn that
     was limited but did not look failed — so it never moved to the next rung."""
-    working = WorkingAdapter("claude/api")
+    working = WorkingAdapter("tapie")
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return CreditlessThenEmptyExitAdapter() if auth_mode == "pro" else working
+        return CreditlessThenEmptyExitAdapter() if agent == "claude" else working
 
     graph = build_graph(InMemorySaver())
     frames, values = await _run(graph, _config(db_pool, factory, "fo-empty-exit"))
 
-    assert [f["to_rung"] for f in frames if f["type"] == "failover"] == ["claude/api"]
-    assert values["response_text"] == "claude/api answered"
+    assert [f["to_rung"] for f in frames if f["type"] == "failover"] == ["tapie"]
+    assert values["response_text"] == "tapie answered"
 
 
 @pytest.mark.asyncio
@@ -377,15 +377,15 @@ async def test_a_rung_that_cannot_be_built_is_skipped(db_pool):
     def factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "codex":
             return codex
-        if auth_mode == "api":
+        if agent == "tapie":
             raise RuntimeError("ANTHROPIC_API_KEY_SAVED is not set")
-        return LimitedAdapter("claude/pro")
+        return LimitedAdapter("claude")
 
     graph = build_graph(InMemorySaver())
     frames, values = await _run(graph, _config(db_pool, factory, "fo-unbuildable"))
 
     assert [f["to_rung"] for f in frames if f["type"] == "failover"] == [
-        "claude/api",
+        "tapie",
         "codex",
     ]
     assert values["response_text"] == "codex answered"
@@ -408,7 +408,9 @@ async def test_each_rung_uses_its_own_model(db_pool, tmp_path, monkeypatch):
 
     def factory(agent, auth_mode=None, model=None, effort=None):
         seen.append((agent, model))
-        return LimitedAdapter("claude") if agent == "claude" else WorkingAdapter("codex")
+        # Both Claude rungs are spent, so the turn reaches the Codex one and
+        # the assertion below is about the model it was given.
+        return WorkingAdapter("codex") if agent == "codex" else LimitedAdapter(agent)
 
     graph = build_graph(InMemorySaver())
     await _run(graph, _config(db_pool, factory, "fo-models"))

@@ -195,7 +195,7 @@ async def test_stalled_planner_times_out_and_switches_lead(db_pool, monkeypatch)
     def adapter_factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "codex":
             return codex
-        return hanging if auth_mode == "pro" else LimitedWorker()
+        return hanging if agent == "claude" else LimitedWorker()
 
     def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
         raise AssertionError("direct plan must not create a worker")
@@ -221,7 +221,7 @@ async def test_synthesis_failover_keeps_worker_results(db_pool):
     def adapter_factory(agent, auth_mode=None, model=None, effort=None):
         if agent == "codex":
             return codex
-        return claude if auth_mode == "pro" else LimitedWorker()
+        return claude if agent == "claude" else LimitedWorker()
 
     def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
         return ScriptedAdapter(["파일 수정 완료"], label=agent)
@@ -249,7 +249,7 @@ async def test_replanning_limit_can_assign_another_worker(db_pool):
     worker_prompts = []
 
     def adapter_factory(agent, auth_mode=None, model=None, effort=None):
-        return codex if agent == "codex" else claude if auth_mode == "pro" else LimitedWorker()
+        return codex if agent == "codex" else claude if agent == "claude" else LimitedWorker()
 
     def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
         worker = ScriptedAdapter(["검토 완료" if not worker_prompts else "수정 완료"], label=agent)

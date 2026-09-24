@@ -79,6 +79,89 @@ def write_routing(text: str) -> None:
     routing_path().write_text(text, encoding="utf-8")
 
 
+# What the settings UI writes above the rules it generates. The hand-written
+# file this replaces carried a long explanation; a generated one cannot keep
+# comments, so it says where it came from and what a rung means instead.
+ROUTING_HEADER = """\
+# Which model answers, by how much of its usage window is already spent.
+#
+# Written by the settings UI. Each rung names a CLI and a model; `until` is the
+# utilization at which ANA leaves that rung for the next one. The last rung has
+# no `until` -- it is where everything lands once the cheaper ones are spent.
+# Editing takes effect on the next turn.
+"""
+
+
+def read_routing_structured() -> dict:
+    """The ladder as data rather than text, for an editor that is not a text
+    box. Unknown keys in the file are dropped, which is the same thing the
+    router itself does with them."""
+    raw = yaml.safe_load(read_routing()) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("routing rules must be a YAML mapping")
+    return {
+        "lead": _rung_dicts(raw.get("lead")),
+        "workers": {
+            str(name): _rung_dicts(rungs)
+            for name, rungs in (raw.get("workers") or {}).items()
+        },
+    }
+
+
+def write_routing_structured(data: dict) -> None:
+    """Serializes the ladder and stores it through the same validation the
+    text editor uses, so a form cannot write a file the router rejects."""
+    document: dict = {"lead": _rung_yaml(data.get("lead"))}
+    workers = {
+        str(name): _rung_yaml(rungs)
+        for name, rungs in (data.get("workers") or {}).items()
+    }
+    if workers:
+        document["workers"] = workers
+    body = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
+    write_routing(ROUTING_HEADER + "\n" + body)
+
+
+def _rung_dicts(raw) -> list[dict]:
+    rungs = []
+    for entry in raw or []:
+        if not isinstance(entry, dict) or not entry.get("agent"):
+            continue
+        until = entry.get("until") if isinstance(entry.get("until"), dict) else {}
+        rungs.append(
+            {
+                "agent": str(entry["agent"]),
+                "model": entry.get("model") or "",
+                "effort": entry.get("effort") or "",
+                "window": until.get("window") or "",
+                # None rather than 0: "no limit" and "leave immediately" are
+                # different rungs, and 0 is a real threshold.
+                "utilization": until.get("utilization"),
+            }
+        )
+    return rungs
+
+
+def _rung_yaml(rungs) -> list[dict]:
+    out = []
+    for rung in rungs or []:
+        if not isinstance(rung, dict) or not rung.get("agent"):
+            continue
+        entry: dict = {"agent": str(rung["agent"])}
+        if rung.get("model"):
+            entry["model"] = str(rung["model"])
+        if rung.get("effort"):
+            entry["effort"] = str(rung["effort"])
+        window = rung.get("window")
+        utilization = rung.get("utilization")
+        if window and isinstance(utilization, (int, float)):
+            entry["until"] = {"window": str(window), "utilization": float(utilization)}
+        out.append(entry)
+    if not out:
+        raise ValueError("a ladder needs at least one rung")
+    return out
+
+
 def _write_temp(text: str) -> Path:
     path = state_dir() / ".routing-check.yaml"
     path.write_text(text, encoding="utf-8")

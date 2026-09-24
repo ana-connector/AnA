@@ -261,6 +261,31 @@ and the answers come back as the tool's result.
   `tools/call`) is ~200 lines of stdlib, against `@shadcn/questionnaire` on the
   browser side.
 
+### TAPIE, the fourth agent
+
+`tapie` is the Claude Code CLI again — the same binary, the same adapter, the
+same behaviour — authenticated with a key against TAPIE's endpoint instead of
+the Pro subscription. It is a separate agent rather than a mode on `claude`
+because routing only ever asks "which account still has room", and these two
+bill against different ones.
+
+| Variable | Meaning |
+| --- | --- |
+| `TAPIE_API_KEY` | The key. `ANTHROPIC_API_KEY_SAVED` is still read, because that is where it lived before this had a name |
+| `TAPIE_BASE_URL` | Endpoint (default `https://panel.tapie.kr/api/claude-code`) |
+
+- **Unset means three agents, not a broken fourth.** Without a key the adapter
+  is skipped at startup; a ladder rung that names it reports which variable is
+  missing rather than `KeyError('tapie')`.
+- **The failover chain treats it as Claude's neighbour**: a Claude rung that
+  hits its limit lands on TAPIE before another CLI, because the same CLI on
+  another account keeps the conversation's session and needs no handoff brief.
+- **It fails more often than a subscription does**, being a key against someone
+  else's endpoint, so the status bar turns its mark red when its last attempt
+  errored and clears it when it answers again.
+- `claude` itself stays on the subscription. The auth-mode switch that used to
+  live in the settings page is gone: the choice is now a rung in the ladder.
+
 ### Answering from a phone (Discord)
 
 An approval card and an `ask_user` questionnaire both park on one future
