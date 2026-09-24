@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Logo } from "@/components/logo";
 import { WorkspaceEditor } from "@/components/workspace-editor";
 import {
   Sidebar,
@@ -152,19 +153,12 @@ export function SessionSidebar({
         <SidebarMenu>
           <SidebarMenuItem>
             {/* The shadcn header pattern: one large menu row carrying the
-                mark and the name. The mark brings its own white disc, so it
-                needs no coloured square behind it. */}
+                mark and the name. The mark takes the square's foreground
+                colour, so it reads white on the sidebar's primary. */}
             <SidebarMenuButton size="lg" render={<Link href="/" />}>
-              {/* A plain <img>: next/image refuses to optimise an SVG unless
-                  dangerouslyAllowSVG is set, and a 1 KB mark has nothing to
-                  gain from the optimiser anyway. */}
-              <img
-                src="/logo.svg"
-                alt=""
-                width={32}
-                height={32}
-                className="size-8 shrink-0 rounded-full"
-              />
+              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                <Logo className="size-4" />
+              </div>
               <div className="grid flex-1 text-left leading-tight">
                 <span className="truncate font-heading text-sm font-semibold">AnA</span>
                 <span className="truncate text-xs text-muted-foreground">AnA is Not Agent</span>
