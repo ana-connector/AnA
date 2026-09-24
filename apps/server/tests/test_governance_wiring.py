@@ -208,23 +208,42 @@ def _session_for(registry, thread_id):
     return [s for s in registry._sessions.values() if s.thread_id == thread_id]
 
 
-def test_websocket_connection_registers_and_releases_a_gate_token(client):
+def test_a_gate_token_outlives_the_connection(client):
+    """The token belongs to the conversation, not to the browser tab.
+
+    It used to be invalidated the moment the socket closed, which is also what
+    killed every turn in flight: the CLI subprocesses hold that token in their
+    environment, so a turn that keeps running needs it to keep working. It is
+    dropped when the runner is (idle sweep, shutdown, ANA_BACKGROUND_TURNS=off),
+    and an escalation with nobody attached still ends in a denial, because the
+    approval has no one to answer it."""
     registry = client.app.state.gate_registry
 
     with client.websocket_connect("/ws/chat?thread_id=gate-ws-1") as ws:
         ws.receive_json()  # thread_id
         assert len(_session_for(registry, "gate-ws-1")) == 1
 
-    # Closing the connection must invalidate the token: a hook that outlives
-    # its conversation should not keep getting approvals. Teardown runs on the
-    # app's own loop, so this polls rather than assuming it finished the
-    # instant the client-side context manager exited.
+    assert len(_session_for(registry, "gate-ws-1")) == 1
+
+
+def test_background_turns_off_releases_the_token_with_the_connection(client, monkeypatch):
+    """The old lifetime, still available: ANA_BACKGROUND_TURNS=off tears the
+    conversation down with the connection that opened it."""
     import time
 
+    monkeypatch.setenv("ANA_BACKGROUND_TURNS", "off")
+    registry = client.app.state.gate_registry
+
+    with client.websocket_connect("/ws/chat?thread_id=gate-ws-off") as ws:
+        ws.receive_json()  # thread_id
+        assert len(_session_for(registry, "gate-ws-off")) == 1
+
+    # Teardown runs on the app's own loop, so this polls rather than assuming it
+    # finished the instant the client-side context manager exited.
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and _session_for(registry, "gate-ws-1"):
+    while time.monotonic() < deadline and _session_for(registry, "gate-ws-off"):
         time.sleep(0.02)
-    assert _session_for(registry, "gate-ws-1") == []
+    assert _session_for(registry, "gate-ws-off") == []
 
 
 def test_websocket_ignores_an_approval_for_an_unknown_request(client):

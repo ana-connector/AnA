@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from apps.server.app.capabilities import router as capabilities_router
+from apps.server.app.runners import RunnerRegistry
 from apps.server.app.gate import router as gate_router
 from apps.server.app.graph import build_graph
 from apps.server.app.websocket import allowed_origins, router as chat_router
@@ -85,6 +86,10 @@ async def lifespan(app: FastAPI):
         # No Langfuse configuration means a no-op tracer, not a failure.
         app.state.tracer = Tracer.from_env()
         app.state.usage_tracker = UsageTracker()
+        # One runner per conversation, outliving the browser tabs that watch it:
+        # a turn takes minutes and must not die because someone opened another
+        # workspace (apps/server/app/runners.py).
+        app.state.runners = RunnerRegistry()
         app.state.gate_registry = GateRegistry(
             approval_timeout=float(os.environ.get("ANA_APPROVAL_TIMEOUT_SECONDS", 300)),
             # Longer than an approval on purpose: an approval interrupts someone
@@ -95,6 +100,10 @@ async def lifespan(app: FastAPI):
         )
 
         yield
+
+        # Every runner, with its CLI subprocesses and gate tokens, belongs to
+        # this process: shutting down without closing them leaves orphans.
+        await app.state.runners.close_all()
 
     await pool.close()
 

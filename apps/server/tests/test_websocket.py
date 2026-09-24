@@ -283,3 +283,93 @@ def test_websocket_terminates_adapter_on_disconnect(db_pool, postgres_dsn, monke
                 ws.receive_json()  # thread_id
 
     assert adapter.terminated is True
+
+
+class SlowThenDoneAdapter(AgentAdapter):
+    """Streams a first chunk, waits for a release, then finishes — so a test can
+    disconnect while the turn is genuinely still running."""
+
+    released = asyncio.Event()
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def run_stream(
+        self, prompt: str, session_id: Optional[str] = None
+    ) -> AsyncIterator[AdapterEvent]:
+        self.calls.append(prompt)
+        yield AdapterEvent(type="text", text="working…", session_id="sid-bg")
+        await SlowThenDoneAdapter.released.wait()
+        yield AdapterEvent(type="text", text="done", session_id="sid-bg")
+        yield AdapterEvent(type="result", text="working…done", session_id="sid-bg", cost_usd=0.0)
+
+    async def terminate(self) -> None:
+        return None
+
+
+def test_a_turn_survives_the_browser_leaving_and_shows_what_it_missed(
+    db_pool, postgres_dsn, monkeypatch, tmp_path
+):
+    """Leaving a workspace mid-turn used to cancel the relay and kill the CLI, so
+    the request was simply gone when you came back. Now the turn keeps running
+    and the next connection is handed what it missed."""
+    from packages.adapters.transcript import TranscriptLogger
+
+    monkeypatch.setenv("DATABASE_URL", postgres_dsn)
+    adapter = SlowThenDoneAdapter()
+    SlowThenDoneAdapter.released = asyncio.Event()
+    with patch(
+        "apps.server.app.websocket.build_adapter", return_value=adapter
+    ), patch(
+        "apps.server.app.websocket.build_transcript",
+        return_value=TranscriptLogger(str(tmp_path)),
+    ):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/chat?thread_id=bg-1") as ws:
+                ws.receive_json()  # thread_id
+                ws.send_json({"prompt": "long job", "agent": "claude", "plan_mode": False})
+                assert next_content(ws)["text"] == "working…"
+                # The browser goes to another workspace.
+
+            with client.websocket_connect("/ws/chat?thread_id=bg-1") as ws:
+                opened = ws.receive_json()
+                # The conversation says it is mid-turn before anything renders.
+                assert opened["running"] is True
+                replay = ws.receive_json()
+                assert replay["type"] == "replay"
+                kinds = [frame["type"] for frame in replay["frames"]]
+                assert kinds[0] == "prompt"  # the request it never saw
+                assert "text" in kinds
+
+                # The same turn, still the same CLI process, finishes here.
+                SlowThenDoneAdapter.released.set()
+                frame = next_content(ws)
+                while frame["type"] == "text" and frame["text"] != "done":
+                    frame = next_content(ws)
+                assert frame["text"] == "done"
+
+    # One CLI call for one prompt: the turn was never restarted.
+    assert adapter.calls == ["long job"]
+
+
+def test_background_turns_off_restores_the_old_lifetime(
+    db_pool, postgres_dsn, monkeypatch, tmp_path
+):
+    from packages.adapters.transcript import TranscriptLogger
+
+    monkeypatch.setenv("DATABASE_URL", postgres_dsn)
+    monkeypatch.setenv("ANA_BACKGROUND_TURNS", "off")
+    with patch(
+        "apps.server.app.websocket.build_adapter", return_value=FakeAdapter()
+    ), patch(
+        "apps.server.app.websocket.build_transcript",
+        return_value=TranscriptLogger(str(tmp_path)),
+    ):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/chat?thread_id=bg-off") as ws:
+                ws.receive_json()
+            # The runner went with the connection, so the next one starts fresh
+            # and has nothing to replay.
+            with client.websocket_connect("/ws/chat?thread_id=bg-off") as ws:
+                opened = ws.receive_json()
+                assert opened["running"] is False

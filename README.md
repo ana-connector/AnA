@@ -146,6 +146,8 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_SELF_WORKSPACE` | Absolute host path of ANA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
 | `ANA_ROUTING_RULES` | Path to the routing rules (default `config/routing.yaml`) |
 | `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own |
+| `ANA_BACKGROUND_TURNS` | `off` ties a turn's life to the connection that asked for it (the old behavior); anything else keeps it running when the browser leaves |
+| `ANA_RUNNER_IDLE_SECONDS` | How long a conversation's runner — queue, gate token, CLI subprocesses — is kept after the last browser detaches and nothing is running (default 900) |
 | `ANA_PLAN_ROUNDS` | How many planning rounds one turn may use: the first plan plus that many chances to extend it (default 2; 1 = plan once) |
 | `ANA_SECRET_KEY` | Key that encrypts stored secrets at rest. Changing it makes existing rows unreadable (they are skipped, and listed so you can re-enter them) |
 | `ANA_MAX_THREAD_COST_USD` / `ANA_MAX_THREAD_TOKENS` | Circuit-breaker budget per thread (defaults 5.0 / 2,000,000) |
@@ -415,6 +417,23 @@ settings page and English instructions for the worker that follows them.
 
 ## Chat behavior
 
+- **Turns run in the background.** A turn belongs to the conversation, not to
+  the browser tab that started it: opening another workspace, closing the tab or
+  losing wifi leaves it running. Come back and the conversation says it is
+  mid-turn, replays what you missed (the prompt, the text so far, the tool
+  calls, the plan, an approval still waiting) and streams the rest live. It used
+  to be the opposite — the relay was cancelled and both CLIs killed with the
+  connection, so leaving mid-turn threw the work away.
+  - One runner per thread owns the queue, the gate token and the CLI
+    subprocesses (`apps/server/app/runners.py`). It is closed when it has been
+    idle and unwatched for `ANA_RUNNER_IDLE_SECONDS` (default 900), on server
+    shutdown, or immediately with `ANA_BACKGROUND_TURNS=off`.
+  - The gate token therefore outlives the connection, because the CLI
+    subprocesses hold it. An escalation raised while nobody is attached still
+    ends in a denial — there is no one to approve it — and the card is waiting
+    when you return, within the approval timeout.
+  - Two tabs on one conversation: the last to open receives the stream. They
+    would otherwise race to answer the same approval.
 - **Reload-safe screen**: the browser refetches the thread's turns from
   `GET /threads/{id}/turns` on load, so the chat comes back instead of
   appearing empty while the agents still remember everything.
