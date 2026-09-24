@@ -247,7 +247,7 @@ def build_replan_prompt(
     anything that is not a delegation with tasks ends the fan-out."""
     rendered = "\n\n".join(
         f"[{r.get('id', '?')} · {r.get('title', '')} · {r.get('status', '')}]{_verdict(r)}\n"
-        f"{(r.get('output') or '').strip()[:2000]}"
+        f"{r.get('output') or ''}"
         for r in results
     )
     return REPLAN_INSTRUCTIONS % {
@@ -315,7 +315,7 @@ def build_task_prompt(task, upstream: list[dict]) -> str:
         return prompt
     rendered = "\n\n".join(
         f"[{entry['title']} · {entry['status']}]\n"
-        f"{(entry.get('output') or '(no output)').strip()[:3000]}"
+        f"{entry.get('output') or '(no output)'}"
         for entry in upstream
     )
     return UPSTREAM_INSTRUCTIONS % {"results": rendered, "prompt": prompt}
@@ -324,7 +324,7 @@ def build_task_prompt(task, upstream: list[dict]) -> str:
 def build_synthesis_prompt(prompt: str, results: list[dict]) -> str:
     rendered = "\n\n".join(
         f"[{r['title']} · {r['agent']} · {r['status']}]{_verdict(r)}\n"
-        f"{(r.get('output') or '').strip()[:4000]}"
+        f"{r.get('output') or ''}"
         for r in results
     )
     return SYNTHESIS_INSTRUCTIONS % {"prompt": prompt, "results": rendered or "(no results)"}

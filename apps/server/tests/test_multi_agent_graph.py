@@ -336,6 +336,30 @@ async def test_subagent_frames_track_each_task(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_worker_final_result_replaces_intermediate_text_for_lead(db_pool):
+    complete = "BEGIN\n" + "final" * 1000 + "\nEND"
+    lead = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"보고","prompt":"report"}]}',
+        DONE_JSON, "완료",
+    ])
+
+    class Worker(AgentAdapter):
+        async def run_stream(self, prompt, session_id=None):
+            yield AdapterEvent(type="text", text="intermediate progress")
+            yield AdapterEvent(type="result", text=complete)
+
+        async def terminate(self):
+            return None
+
+    graph = build_graph(InMemorySaver())
+    frames, _ = await _run(graph, _config(db_pool, lead, lambda *args, **kwargs: Worker(), "ma-final-result"))
+    done = next(f["task"] for f in frames if f["type"] == "subagent" and f["task"]["status"] == "done")
+    assert done["output"] == complete
+    assert complete in lead.prompts[-1]
+    assert "intermediate progress" not in lead.prompts[-1]
+
+
+@pytest.mark.asyncio
 async def test_a_failing_worker_still_produces_an_answer(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, DONE_JSON, "일부 실패를 포함한 답변"])
 

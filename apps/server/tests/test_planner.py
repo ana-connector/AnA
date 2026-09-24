@@ -5,6 +5,8 @@ from packages.orchestrator.planner import (
     DELEGATE,
     DIRECT,
     build_planning_prompt,
+    build_replan_prompt,
+    build_task_prompt,
     build_synthesis_prompt,
     max_tasks,
     parse_plan,
@@ -145,3 +147,21 @@ def test_synthesis_prompt_includes_failures():
     assert "결과 A" in prompt
     # The lead must be able to tell the user what did not finish.
     assert "timeout" in prompt
+
+
+def test_complete_worker_result_reaches_replan_dependents_and_synthesis():
+    result_text = "BEGIN\n" + "내역" * 3000 + "\nEND"
+    result = {
+        "id": "t1", "title": "긴 보고", "agent": "codex",
+        "status": "done", "output": result_text,
+    }
+    task = parse_plan(
+        '{"mode":"delegate","tasks":[{"title":"후속 작업","prompt":"continue"}]}'
+    ).tasks[0]
+
+    prompts = [
+        build_replan_prompt("요청", [result], ["t1"]),
+        build_task_prompt(task, [result]),
+        build_synthesis_prompt("요청", [result]),
+    ]
+    assert all(result_text in prompt for prompt in prompts)

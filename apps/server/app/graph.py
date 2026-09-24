@@ -165,6 +165,11 @@ async def _run_worker(adapter, prompt: str) -> WorkerRun:
             if event.type == "text":
                 run.output += event.text
             elif event.type == "result":
+                # The result event is the CLI's final answer. Streaming text
+                # can contain earlier progress messages, or miss a final
+                # chunk; pass the complete final answer to the lead.
+                if event.text:
+                    run.output = event.text
                 if event.cost_usd:
                     run.cost_usd += event.cost_usd
                 run.tokens += _tokens_from_usage(event.usage)
