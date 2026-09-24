@@ -1,8 +1,7 @@
 """Planning step: the lead agent decides whether to split a request.
 
-The routing rule ("which CLI should do this?") lives in the prompt rather than
-in Python, per the roadmap: the lead judges the task, ANA executes the plan it
-gets back. Python's job is to parse that answer safely — a model's JSON arrives
+The lead describes tasks and dependencies; the worker routing ladder chooses
+their models at execution time. Python parses the plan safely — a model's JSON arrives
 wrapped in prose, fenced, truncated, or with fields it invented.
 """
 import json
@@ -12,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from packages.governance.subagent_scope import Scope
-from packages.orchestrator.handoff import AGENTS, DEFAULT_AGENT
+from packages.orchestrator.handoff import AGENTS
 
 DIRECT = "direct"
 DELEGATE = "delegate"
@@ -47,17 +46,16 @@ tools at all:
 If the request needs the machine (reading or writing files, running commands,
 inspecting code, searching):
 {"mode": "delegate", "tasks": [
-  {"id": "t1", "title": "짧은 제목", "agent": "codex", "needs": [],
+  {"id": "t1", "title": "짧은 제목", "needs": [],
    "prompt": "a self-contained instruction for this task alone",
    "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"},
-  {"id": "t2", "title": "다음 단계", "agent": "codex", "needs": ["t1"],
+  {"id": "t2", "title": "다음 단계", "needs": ["t1"],
    "prompt": "what to do with t1's result", "skill": "code-review"}
 ], "verify": "docker compose config -q"}
 
 Rules:
-- `agent` is one of "claude", "codex", "kimi". Code generation, refactoring and
-  implementation go to codex; explanation, review, investigation and planning to
-  claude; sweeping a long file or a large body of context at once to kimi.
+- Do not set `agent`. ANA chooses each worker's CLI and model automatically
+  from the worker routing ladder when the task starts.
 - `title` is what the user sees in the UI, so **write titles in Korean**.
   `prompt` is read by a sub-agent, so write it in English.
 - `scope` is the permission you grant that sub-agent (optional, defaults to full
@@ -134,12 +132,12 @@ Nothing further is needed — ANA will ask you for the user's answer next:
 
 Something the results revealed still has to be done:
 {"mode": "delegate", "tasks": [
-  {"id": "t9", "title": "짧은 제목", "agent": "codex", "needs": ["t2"],
+  {"id": "t9", "title": "짧은 제목", "needs": ["t2"],
    "prompt": "a self-contained instruction", "verify": ""}
 ]}
 
 Rules:
-- Same task format as the original plan: Korean `title`, English `prompt`,
+- Same task format as the original plan: no `agent`, Korean `title`, English `prompt`,
   optional `scope`, `verify` and `skill`.
 - Ids already used, which you may name in `needs` but must not reuse:
   %(existing_ids)s
@@ -165,7 +163,7 @@ class PlanTask:
     id: str
     title: str
     prompt: str
-    agent: str = DEFAULT_AGENT
+    agent: str = "auto"
     # What the lead is willing to let this task do (roadmap stage 3's
     # "권한 스코프"). Enforced at the gate, not by the CLI.
     scope: Scope = field(default_factory=Scope)
@@ -480,7 +478,7 @@ def parse_plan(
                 skill=_parse_skill(raw.get("skill")),
                 # Client-of-the-model data: an invented agent name would
                 # otherwise pick a subprocess that does not exist.
-                agent=agent if agent in AGENTS else DEFAULT_AGENT,
+                agent=agent if agent in AGENTS else "auto",
             )
         )
 

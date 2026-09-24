@@ -44,6 +44,7 @@ class TaskResult:
     # "claude", "codex" — says less than which model did the work, and a plan
     # routes its tasks to different ones on purpose.
     model: Optional[str] = None
+    agent: Optional[str] = None
     # What ANA checked after the worker said it was done, and what happened to
     # its branch. Both are None when the task asked for neither.
     verification: Optional[dict] = None
@@ -54,7 +55,7 @@ class TaskResult:
             "id": self.task.id,
             "title": self.task.title,
             "prompt": self.task.prompt,
-            "agent": self.task.agent,
+            "agent": self.agent or self.task.agent,
             # Shown in the UI next to the task: which permissions this
             # sub-agent was given is part of what happened, not a detail.
             "scope": self.task.scope.as_dict(),
@@ -146,6 +147,7 @@ async def run_tasks(
                 result.cost_usd = run.cost_usd
                 result.tokens = run.tokens
                 result.model = run.model or result.model
+                result.agent = run.extras.get("agent") or result.agent
                 result.verification = run.extras.get("verification")
                 result.merge = run.extras.get("merge")
                 if run.failed or run.error:

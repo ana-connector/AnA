@@ -368,14 +368,15 @@ the server, so adding a file is live on the next turn — no rebuild.
 
 Toggle **Plan** in the composer and the lead first answers with a plan instead
 of the request: either "just answer this" or a list of independent sub-tasks,
-each routed to the CLI it judges right for the job (roughly: implementation to
-Codex, explanation and review to Claude). ANA runs those workers as separate
+each routed automatically through the worker model ladder. ANA runs those workers as separate
 CLI sessions, then hands their results back to the lead to synthesize one
 answer. The chat draws the fan-out with React Flow as each worker starts and
 finishes.
 
 - Workers share the thread's workspace and gate token, so every tool call they
   make is screened and confined exactly like the lead's.
+- If a worker hits a session or usage limit, ANA retries that task on the next
+  worker model in `config/routing.yaml`.
 - `ANA_MAX_SUBAGENTS` (default 5) caps concurrency; extra tasks queue.
 - `ANA_SUBAGENT_TIMEOUT_SECONDS` (default 600) bounds each worker. A timeout or
   an error is a task result, not a turn failure — the lead is told what failed

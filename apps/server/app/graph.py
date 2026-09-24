@@ -34,6 +34,7 @@ from packages.orchestrator.routing import (
     WORKER,
     decide,
     planning_effort,
+    load_routing_table,
     settings_for,
 )
 from packages.orchestrator.planner import (
@@ -190,17 +191,40 @@ async def _work_the_task(task, prompt, base_prompt, cwd, worker_route, worker_fa
     always merges and removes the worktree."""
     run = None
     checked = None
+    rungs = load_routing_table().rungs_for(WORKER)
+    selected = next(
+        (i for i, rung in enumerate(rungs)
+         if (rung.agent, rung.model) == (worker_route.agent, worker_route.model)),
+        -1,
+    )
+    routes = [worker_route] + (rungs[selected + 1:] if selected >= 0 else [])
     for attempt in range(verification.max_retries() + 1):
-        run = await _run_worker(
-            worker_factory(
-                worker_route.agent,
-                worker_route.model,
-                worker_route.effort,
-                task.scope,
-                cwd,
-            ),
-            prompt,
-        )
+        for index, route in enumerate(routes):
+            run = await _run_worker(
+                worker_factory(route.agent, route.model, route.effort, task.scope, cwd),
+                prompt,
+            )
+            run.extras["agent"] = route.agent
+            if not run.model:
+                run.model = route.model
+            if not run.failed or not is_usage_limit(f"{run.error}\n{run.output}"):
+                break
+            if index + 1 < len(routes):
+                next_route = routes[index + 1]
+                record_failover(
+                    f"{route.agent}/{route.model}",
+                    f"{next_route.agent}/{next_route.model}",
+                )
+                writer({
+                    "type": "failover", "text": run.error or run.output,
+                    "session_id": None, "is_error": False,
+                    "agent": next_route.agent,
+                    "from_rung": f"{route.agent}/{route.model}",
+                    "to_rung": f"{next_route.agent}/{next_route.model}",
+                    "task_id": task.id,
+                })
+        if run.failed:
+            break
         if not task.verify:
             break
         checked = await verification.verify(task.verify, cwd or ".")
@@ -614,7 +638,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                         "text": result.error,
                         "session_id": None,
                         "is_error": result.status in ("error", "timeout"),
-                        "agent": result.task.agent,
+                        "agent": result.agent or result.task.agent,
                         "task": result.as_dict(),
                     }
                 )
@@ -652,7 +676,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 ]
                 base_prompt = build_handoff_prompt(
                     build_task_prompt(task, carried + [r.as_dict() for r in upstream]),
-                    incoming_agent=task.agent,
+                    incoming_agent=worker_route.agent,
                     previous_agent="lead",
                     turns=await recent_turns(pool, thread_id=thread_id, limit=2),
                 )
@@ -816,7 +840,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             subagent_cost = totals["cost_usd"]
             subagent_tokens = totals["tokens"]
             for result in results:
-                record_subagent(result.task.agent, result.status)
+                record_subagent(result.agent or result.task.agent, result.status)
             # The lead answers from what the workers produced; this is the
             # prompt the normal (failover-protected) turn loop below runs.
             _status(writer, "synthesizing", agent)

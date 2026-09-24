@@ -143,6 +143,14 @@ class TurnRunner:
         self._idle_since = None
         return list(self.buffer)
 
+    def discard_request(self, request_id: str) -> None:
+        """An answered card must not return when the browser reconnects."""
+        self.buffer = [
+            frame for frame in self.buffer
+            if not (frame.get("type") in ("approval_request", "question")
+                    and frame.get("request_id") == request_id)
+        ]
+
     def detach(self, sink: Sink) -> None:
         """The connection is gone. Nothing stops."""
         if self.sink is sink:

@@ -448,6 +448,8 @@ export function useChatSocket() {
             setPlan(null);
             setMessages((prev) => prev.slice(0, start));
           }
+          setApprovals([]);
+          setQuestions([]);
           for (const frame of event.frames ?? []) handleEvent(frame);
           return;
         }
