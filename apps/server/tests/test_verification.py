@@ -22,6 +22,13 @@ async def test_a_failing_command_carries_its_output(tmp_path):
     assert "3" in result.reason
 
 
+async def test_missing_verification_command_is_not_retryable(tmp_path):
+    result = await verification.verify("Verify that the site works", str(tmp_path))
+    assert result.failed
+    assert result.retryable is False
+    assert "127" in result.reason
+
+
 async def test_a_command_the_rules_forbid_never_runs(tmp_path):
     """`verify` is model-written text heading for a shell. It goes through the
     same rule set as any agent command, so a plan cannot smuggle one past the

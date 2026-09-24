@@ -38,6 +38,9 @@ class VerificationResult:
     command: str = ""
     output: str = ""
     reason: str = ""
+    # A missing executable is a bad verifier, not evidence that the worker's
+    # file changes are wrong. Sending the whole task back repeats side effects.
+    retryable: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -46,6 +49,7 @@ class VerificationResult:
             "command": self.command,
             "output": self.output,
             "reason": self.reason,
+            "retryable": self.retryable,
         }
 
     @property
@@ -141,7 +145,10 @@ async def verify(
         passed=process.returncode == 0,
         command=command,
         output=_tail(text),
-        reason="" if process.returncode == 0 else f"종료 코드 {process.returncode}",
+        reason=("" if process.returncode == 0 else
+                "검증 명령을 찾지 못함 (종료 코드 127)" if process.returncode == 127 else
+                f"종료 코드 {process.returncode}"),
+        retryable=process.returncode != 127,
     )
 
 
