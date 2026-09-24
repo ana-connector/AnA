@@ -149,7 +149,12 @@ export function SessionSidebar({
     <Sidebar>
       <SidebarHeader>
         <div className="flex items-center justify-between gap-2 px-2 py-1">
-          <span className="font-heading text-sm font-semibold">ANA</span>
+          <span className="flex items-center gap-2">
+            {/* The mark carries its own white disc, so it stays legible on the
+                dark sidebar without a wrapper of its own. */}
+            <img src="/logo.svg" alt="" width={24} height={24} className="size-6 rounded-full" />
+            <span className="font-heading text-sm font-semibold">AnA</span>
+          </span>
           <Button size="xs" variant="outline" onClick={() => setAdding((open) => !open)}>
             <PlusIcon data-icon="inline-start" />
             워크스페이스
@@ -281,7 +286,7 @@ export function SessionSidebar({
                               <TooltipTrigger
                                 render={<RepeatIcon className="size-3 shrink-0 text-muted-foreground" />}
                               />
-                              <TooltipContent>ANA 자기 자신의 소스 트리</TooltipContent>
+                              <TooltipContent>AnA 자기 자신의 소스 트리</TooltipContent>
                             </Tooltip>
                           )}
                           {item.container_enabled && (

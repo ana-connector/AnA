@@ -107,7 +107,7 @@ export function WorkspaceSettings({
             placeholder="ana-server:latest"
             disabled={!enabled}
           />
-          <FieldDescription>비우면 두 CLI가 들어 있는 ANA 서버 이미지를 씀</FieldDescription>
+          <FieldDescription>비우면 두 CLI가 들어 있는 AnA 서버 이미지를 씀</FieldDescription>
         </Field>
 
         <Field>

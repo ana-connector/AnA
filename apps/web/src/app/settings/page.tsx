@@ -182,7 +182,7 @@ export default function SettingsPage() {
                   className="min-h-48"
                 />
                 <FieldDescription>
-                  각 CLI의 자기 시스템 프롬프트 뒤에 붙습니다. 비워두면 ANA는 아무 말도 얹지
+                  각 CLI의 자기 시스템 프롬프트 뒤에 붙습니다. 비워두면 AnA는 아무 말도 얹지
                   않습니다.
                 </FieldDescription>
               </Field>

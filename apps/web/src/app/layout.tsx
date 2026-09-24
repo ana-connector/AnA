@@ -19,8 +19,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ANA",
-  description: "ANA is Not Agent — Claude Code and Codex, orchestrated",
+  title: "AnA",
+  description: "AnA is Not Agent — Claude Code and Codex, orchestrated",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

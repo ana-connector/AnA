@@ -87,7 +87,7 @@ export function WorkspaceEditor({
         <div className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground">
           <RepeatIcon className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            ANA 자기 자신의 소스 트리다. 규칙과 스킬 파일은 다음 턴부터, 서버 코드는 다시
+            AnA 자기 자신의 소스 트리다. 규칙과 스킬 파일은 다음 턴부터, 서버 코드는 다시
             빌드한 뒤부터 적용된다. 게이트 규칙 파일을 건드리는 도구 호출은 승인을 받는다.
           </span>
         </div>

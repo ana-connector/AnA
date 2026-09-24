@@ -33,7 +33,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   "session-isolation": "워크스페이스 밖 경로",
   "scope-partitioning": "권한 범위 밖",
   "privilege-scope": "권한 범위 밖",
-  "self-modification": "ANA 자체 수정",
+  "self-modification": "AnA 자체 수정",
   delegation: "위임",
 };
 
