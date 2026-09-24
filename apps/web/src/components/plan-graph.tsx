@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useTheme } from "next-themes";
 import {
   Background,
+  Controls,
   Position,
   ReactFlow,
   type Edge,
@@ -95,7 +96,7 @@ export function PlanGraph({
     (task) => task.status === "error" || task.status === "timeout"
   ).length;
 
-  const { nodes, edges } = useMemo(() => {
+  const { nodes, edges, rows } = useMemo(() => {
     const laneHeight = 56;
     const columnWidth = 230;
     // A task's column is one past the deepest task it waits for, so the graph
@@ -177,8 +178,14 @@ export function PlanGraph({
       }));
     });
 
-    return { nodes: nodeList, edges: edgeList };
+    return { nodes: nodeList, edges: edgeList, rows: Math.max(...[...rows.values(), 1]) };
   }, [plan]);
+
+  // The canvas grows with the plan instead of fitting everything into 200px:
+  // a ten-task fan-out used to shrink until the titles were unreadable. Capped
+  // so a huge plan does not push the reply off the screen either — past that,
+  // panning and zoom take over.
+  const canvasHeight = Math.min(Math.max(200, rows * 72 + 60), 420);
 
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border p-3">
@@ -203,7 +210,10 @@ export function PlanGraph({
 
       {!open ? null : (
       <>
-      <div className="h-[200px] w-full">
+      {/* Draggable and pannable: the layout is ANA's guess at a readable
+          arrangement, and the person reading it is allowed to disagree —
+          especially once the fan-out is wide enough that nodes overlap. */}
+      <div className="w-full" style={{ height: canvasHeight }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -216,13 +226,20 @@ export function PlanGraph({
             const task = plan.tasks.find((item) => item.id === node.id);
             if (task) onSelectTask?.(task);
           }}
-          nodesDraggable={false}
+          nodesDraggable
           nodesConnectable={false}
           elementsSelectable={false}
+          // Wheel keeps scrolling the transcript rather than zooming the graph:
+          // a canvas that swallows the page scroll is a trap halfway through a
+          // long conversation. Zoom is the buttons, pinch, or double-click.
           zoomOnScroll={false}
-          panOnDrag={false}
+          preventScrolling={false}
+          panOnDrag
+          minZoom={0.2}
+          maxZoom={2}
         >
           <Background gap={16} size={1} />
+          <Controls showInteractive={false} className="!shadow-none" />
         </ReactFlow>
       </div>
 

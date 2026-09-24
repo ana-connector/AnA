@@ -38,11 +38,7 @@ import {
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Composer } from "@/components/composer";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import {
-  Message,
-  MessageContent,
-  MessageHeader,
-} from "@/components/ui/message";
+import { Message, MessageContent } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -310,73 +306,67 @@ export default function ChatPage() {
                       <Marker variant="separator">
                         <MarkerContent>{message.text}</MarkerContent>
                       </Marker>
-                    ) : (
-                      <Message align={message.role === "user" ? "end" : "start"}>
+                    ) : message.role === "user" ? (
+                      // What you said is a message in a conversation: short,
+                      // attributable, and worth setting apart from the page.
+                      <Message align="end">
                         <MessageContent>
-                          {message.reasoning && (
-                            <Reasoning
-                              text={message.reasoning}
-                              streaming={streaming && index === messages.length - 1}
-                            />
-                          )}
-                          {message.role === "agent" && (
-                            <MessageHeader>
-                              {/* The model that answered, when the CLI said
-                                  which — the product name matters less. */}
-                              {message.model ??
-                                models[message.agent] ??
-                                AGENT_LABELS[message.agent]}
-                            </MessageHeader>
-                          )}
-                          {message.role === "user" ? (
-                            <Bubble align="end" variant="default">
-                              <BubbleContent>
-                                {/* The user's own text is not markdown;
-                                    showing it verbatim keeps their
-                                    formatting intact. */}
-                                <span className="whitespace-pre-wrap">{message.text}</span>
-                              </BubbleContent>
-                            </Bubble>
-                          ) : (
-                            // Text and tool calls in the order they happened,
-                            // so a command sits between the two things the
-                            // agent said around it — with neighbouring calls in
-                            // one card rather than one card each.
-                            groupBlocks(
-                              message.blocks ?? [{ kind: "text" as const, text: message.text }]
-                            ).map((block, blockIndex) =>
-                              block.kind === "text" ? (
-                                block.text.trim().length > 0 && (
-                                  <Bubble key={blockIndex} align="start" variant="muted">
-                                    <BubbleContent>
-                                      <Markdown>{block.text}</Markdown>
-                                    </BubbleContent>
-                                  </Bubble>
-                                )
-                              ) : (
-                                <ToolCalls
-                                  key={blockIndex}
-                                  tools={block.tools}
-                                  // The turn in flight keeps its card open, so
-                                  // you can watch what the agent is doing.
-                                  defaultOpen={
-                                    streaming && index === messages.length - 1
-                                      ? true
-                                      : undefined
-                                  }
-                                />
-                              )
-                            )
-                          )}
-                          {message.plan && (
-                            <PlanGraph
-                              plan={message.plan}
-                              onSelectTask={setOpenTask}
-                              defaultOpen={false}
-                            />
-                          )}
+                          <Bubble align="end" variant="default">
+                            <BubbleContent>
+                              {/* The user's own text is not markdown; showing
+                                  it verbatim keeps their formatting intact. */}
+                              <span className="whitespace-pre-wrap">{message.text}</span>
+                            </BubbleContent>
+                          </Bubble>
                         </MessageContent>
                       </Message>
+                    ) : (
+                      // The agent's reply is not a chat message, it is the
+                      // document you asked for: a bubble put a hundred-line
+                      // answer with tables and code inside a tinted box with a
+                      // width of its own, and made long-form output look like
+                      // an aside. Full width, plain body text.
+                      <div className="flex min-w-0 flex-col gap-2">
+                        {message.reasoning && (
+                          <Reasoning
+                            text={message.reasoning}
+                            streaming={streaming && index === messages.length - 1}
+                          />
+                        )}
+                        {/* Who answered, as a quiet line above the text rather
+                            than a label attached to a box. */}
+                        <div className="text-xs text-muted-foreground">
+                          {message.model ??
+                            models[message.agent] ??
+                            AGENT_LABELS[message.agent]}
+                        </div>
+                        {groupBlocks(
+                          message.blocks ?? [{ kind: "text" as const, text: message.text }]
+                        ).map((block, blockIndex) =>
+                          block.kind === "text" ? (
+                            block.text.trim().length > 0 && (
+                              <Markdown key={blockIndex}>{block.text}</Markdown>
+                            )
+                          ) : (
+                            <ToolCalls
+                              key={blockIndex}
+                              tools={block.tools}
+                              // The turn in flight keeps its card open, so you
+                              // can watch what the agent is doing.
+                              defaultOpen={
+                                streaming && index === messages.length - 1 ? true : undefined
+                              }
+                            />
+                          )
+                        )}
+                        {message.plan && (
+                          <PlanGraph
+                            plan={message.plan}
+                            onSelectTask={setOpenTask}
+                            defaultOpen={false}
+                          />
+                        )}
+                      </div>
                     )}
                   </MessageScrollerItem>
                 ))}
@@ -498,9 +488,11 @@ export default function ChatPage() {
               {shownTask.prompt && (
                 <section className="flex min-w-0 flex-col gap-1">
                   <h3 className="text-xs font-medium text-muted-foreground">받은 지시</h3>
-                  <Bubble align="start" variant="muted">
-                    <BubbleContent><Markdown>{shownTask.prompt}</Markdown></BubbleContent>
-                  </Bubble>
+                  {/* The instruction stays in a box: it is quoted material, not
+                      this panel's own text. */}
+                  <div className="rounded-md border border-border bg-muted/50 px-3 py-2">
+                    <Markdown>{shownTask.prompt}</Markdown>
+                  </div>
                 </section>
               )}
 
@@ -516,9 +508,9 @@ export default function ChatPage() {
               <section className="flex min-w-0 flex-col gap-1">
                 <h3 className="text-xs font-medium text-muted-foreground">결과</h3>
                 {shownTask.output ? (
-                  <Bubble align="start" variant="muted">
-                    <BubbleContent><Markdown>{shownTask.output}</Markdown></BubbleContent>
-                  </Bubble>
+                  // What the worker answered, as body text for the same reason
+                  // the lead's reply is: it is the document, not an aside.
+                  <Markdown>{shownTask.output}</Markdown>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     {shownTask.error || "작업 결과를 기다리는 중…"}
