@@ -11,6 +11,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Badge } from "@/components/ui/badge";
+import { ChevronRightIcon } from "lucide-react";
 import type { PlanState, SubagentTask } from "@/hooks/useChatSocket";
 
 const STATUS_LABEL: Record<SubagentTask["status"], string> = {
@@ -62,7 +63,17 @@ function nodeStyle(status?: SubagentTask["status"]): React.CSSProperties {
  *  than beside it, because "these two are parallel and that one is next" is
  *  the whole point of the plan. The same data drives the list below, so this
  *  is a view rather than the source of truth. */
-export function PlanGraph({ plan }: { plan: PlanState }) {
+export function PlanGraph({
+  plan,
+  onSelectTask,
+}: {
+  plan: PlanState;
+  /** Opens one sub-agent's own transcript. The task you want to read is the
+   *  one you are already looking at, so the graph and the list are where you
+   *  ask for it — this used to be a dropdown in the window's title bar,
+   *  listing every task of every turn by number. */
+  onSelectTask?: (task: SubagentTask) => void;
+}) {
   const { resolvedTheme } = useTheme();
 
   const { nodes, edges } = useMemo(() => {
@@ -165,6 +176,10 @@ export function PlanGraph({ plan }: { plan: PlanState }) {
           // the controls stay light-mode while the app is dark.
           colorMode={resolvedTheme === "dark" ? "dark" : "light"}
           proOptions={{ hideAttribution: true }}
+          onNodeClick={(_, node) => {
+            const task = plan.tasks.find((item) => item.id === node.id);
+            if (task) onSelectTask?.(task);
+          }}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
@@ -175,21 +190,31 @@ export function PlanGraph({ plan }: { plan: PlanState }) {
         </ReactFlow>
       </div>
 
-      {/* The list is the accessible, always-readable version of the same data. */}
-      <ul className="flex flex-col gap-1">
+      {/* The list is the accessible, always-readable version of the same data,
+          and the keyboard path to one sub-agent's transcript. */}
+      <ul className="flex flex-col gap-0.5">
         {plan.tasks.map((task) => (
-          <li key={task.id} className="flex items-center gap-2 text-xs">
-            <Badge variant="outline">{task.agent}</Badge>
-            {scopeLabel(task) && (
-              <Badge variant="outline" title="대장이 이 하위 에이전트에게 준 권한 범위">
-                {scopeLabel(task)}
-              </Badge>
-            )}
-            <span className="truncate">{task.title}</span>
-            <span className="ml-auto shrink-0 text-muted-foreground">
-              {STATUS_LABEL[task.status]}
-              {task.error ? ` · ${task.error}` : ""}
-            </span>
+          <li key={task.id} className="min-w-0">
+            <button
+              type="button"
+              onClick={() => onSelectTask?.(task)}
+              disabled={!onSelectTask}
+              className="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors enabled:hover:bg-accent enabled:hover:text-accent-foreground disabled:cursor-default"
+              title={onSelectTask ? `${task.title} 하위 에이전트 기록 보기` : undefined}
+            >
+              <Badge variant="outline">{task.agent}</Badge>
+              {scopeLabel(task) && (
+                <Badge variant="outline" title="대장이 이 하위 에이전트에게 준 권한 범위">
+                  {scopeLabel(task)}
+                </Badge>
+              )}
+              <span className="truncate">{task.title}</span>
+              <span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground">
+                {STATUS_LABEL[task.status]}
+                {task.error ? ` · ${task.error}` : ""}
+                {onSelectTask && <ChevronRightIcon className="size-3" />}
+              </span>
+            </button>
           </li>
         ))}
       </ul>

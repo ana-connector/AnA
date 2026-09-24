@@ -31,7 +31,7 @@ from packages.memory.rag import list_threads, thread_history
 from packages.governance.workspace import session_workspace, workspace_root
 from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
 from packages.observability.limits import UsageTracker
-from packages.orchestrator.containers import containers_enabled, parse_ports
+from packages.orchestrator.containers import containers_enabled, parse_ports, stop_workspace
 from packages.orchestrator.routing import load_routing_table
 from packages.orchestrator.settings import (
     AUTH_MODES,
@@ -43,14 +43,17 @@ from packages.orchestrator.settings import (
     write_system_prompt,
 )
 from packages.orchestrator.workspaces import (
+    SELF_WORKSPACE_ID,
     WorkspacePathError,
     create_workspace,
+    ensure_self_workspace,
     get_workspace,
     set_container_settings,
     forget_workspace,
     list_workspaces,
     rename_workspace,
     run_workspace_migrations,
+    self_workspace_path,
 )
 from packages.observability.metrics import active_sessions, render
 from packages.observability.tracing import Tracer
@@ -65,6 +68,11 @@ async def lifespan(app: FastAPI):
     await run_audit_migrations(pool)
     await run_secret_migrations(pool)
     await run_workspace_migrations(pool)
+    # ANA's own repository as a workspace, when it is mounted: the agent that
+    # edits this file is reachable from the same list, and under the same gate,
+    # as every other project. A no-op when ANA_SELF_WORKSPACE is unset.
+    with contextlib.suppress(Exception):
+        await ensure_self_workspace(pool)
 
     async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
         await checkpointer.setup()
@@ -224,10 +232,17 @@ async def patch_workspace(request: Request, workspace_id: str, body: WorkspaceRe
 
 @app.get("/workspaces/capabilities")
 async def workspace_capabilities() -> dict:
-    """Whether per-workspace containers can run here at all. The UI disables
-    the switch rather than letting a user turn on something that would only
-    fail at the first turn."""
-    return {"containers": containers_enabled()}
+    """What this deployment can do with workspaces.
+
+    `containers`: whether per-workspace containers can run here at all — the UI
+    disables the switch rather than letting a user turn on something that would
+    only fail at the first turn. `self_workspace`: the id of the workspace that
+    points at ANA's own source tree, or null when the repository is not
+    mounted; the UI marks that row, since work done there changes ANA."""
+    return {
+        "containers": containers_enabled(),
+        "self_workspace": SELF_WORKSPACE_ID if self_workspace_path() else None,
+    }
 
 
 @app.delete("/workspaces/{workspace_id}")
@@ -240,6 +255,11 @@ async def delete_workspace(
     the conversation that caused it."""
     if not await forget_workspace(request.app.state.pool, workspace_id, purge=purge):
         raise HTTPException(status_code=404, detail="no such workspace")
+    # The container is named after the workspace, so one left running would
+    # outlive the thing that asked for it — holding its published ports, and
+    # waiting to be inherited by whatever next takes this id.
+    with contextlib.suppress(Exception):
+        await stop_workspace(workspace_id)
     return {"status": "forgotten", "id": workspace_id}
 
 

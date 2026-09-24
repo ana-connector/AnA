@@ -42,8 +42,9 @@ export function WorkspaceSettings({
 }: {
   workspace: WorkspaceSummary;
   onSaved: () => void;
-  /** Unregisters the workspace. Lives here rather than as a second row action:
-   *  one icon per item stays legible, and removal is not a one-click thing. */
+  /** Asks to delete the workspace — the caller confirms first. Lives here
+   *  rather than as a second row action: one icon per item stays legible, and
+   *  removal is not a one-click thing. */
   onForget: () => void;
 }) {
   const [enabled, setEnabled] = useState(workspace.container_enabled);
@@ -133,10 +134,10 @@ export function WorkspaceSettings({
             size="sm"
             variant="ghost"
             className="ml-auto text-destructive"
-            title="목록에서 제거 (폴더는 그대로)"
+            title="이 워크스페이스와 대화를 삭제 (폴더는 그대로)"
             onClick={onForget}
           >
-            제거
+            삭제
           </Button>
         </Field>
       </FieldGroup>

@@ -57,6 +57,22 @@ services:
       # the governance hook lives here, and the CLI inside the workspace
       # container has to read the same one.
       - ana_state:/home/ana/.ana
+      # ANA's own source tree, so the "ana-self" workspace can develop ANA
+      # itself (README: "재귀 워크스페이스"). Mounted at the path the repository
+      # has on the *host*, not somewhere under /app: a per-workspace container's
+      # bind mounts are resolved by the daemon on the host, so the server and
+      # the daemon have to agree on one path for this folder. If the checkout
+      # lives somewhere other than /home/hello/ana, set ANA_SELF_WORKSPACE to
+      # that absolute host path and both sides follow.
+      # Read-write: the point is that the agent can change these files. What it
+      # cannot do unasked is rewrite the gate's own rules — the
+      # `ana-governance-self-edit` rule in config/governance.yaml escalates any
+      # tool call touching them to an approval.
+      - ./:${ANA_SELF_WORKSPACE:-/home/hello/ana}
+      # The skill library, for the same reason ./config is mounted below: the
+      # loader re-reads it on mtime change, so a skill can be added or edited
+      # without rebuilding the image.
+      - ./packages/skills/library:/app/packages/skills/library:ro
       # The YAML config (governance rules, routing ladder, MCP registry) is
       # also baked into the image, but all three are re-read on mtime change
       # precisely so they can be edited without a code change — which only
@@ -78,6 +94,10 @@ services:
       # threads cannot overwrite each other's work; the gate escalates any
       # tool call that reaches outside the calling thread's directory.
       - ANA_WORKSPACE_ROOT=${ANA_WORKSPACE_ROOT:-/home/hello/workspace/sessions}
+      # Where ANA's own repository is, as mounted above. Registers the
+      # "ana-self" workspace on startup; unset it and the recursive workspace
+      # simply does not appear.
+      - ANA_SELF_WORKSPACE=${ANA_SELF_WORKSPACE:-/home/hello/ana}
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-ana_dev_password}@postgres:5432/ana
       # Must match the web service's published port (3005), or the origin
       # check in /ws/chat closes every browser connection with 1008.

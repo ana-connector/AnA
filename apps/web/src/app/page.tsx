@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NetworkIcon } from "lucide-react";
-import { useChatSocket } from "@/hooks/useChatSocket";
+import { useChatSocket, type SubagentTask } from "@/hooks/useChatSocket";
 import {
   AGENT_CHOICES,
   AGENT_LABELS,
@@ -19,14 +19,19 @@ import { PlanGraph } from "@/components/plan-graph";
 import { Reasoning } from "@/components/reasoning";
 import { SessionSidebar } from "@/components/session-sidebar";
 import { Badge } from "@/components/ui/badge";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Composer } from "@/components/composer";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import { Toggle } from "@/components/ui/toggle";
 import {
   Message,
   MessageContent,
@@ -41,20 +46,32 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import {
-  SidebarInset,
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 
 const AGENT_STORAGE_KEY = "ana_agent";
 
+const TASK_STATUS_LABEL: Record<SubagentTask["status"], string> = {
+  running: "실행 중",
+  done: "완료",
+  error: "실패",
+  timeout: "시간 초과",
+  blocked: "대기 취소",
+  unknown: "상태 확인 불가",
+};
+
+/** What a fresh workspace can be asked for. Three concrete requests beat a
+ *  blank rectangle: they say what this thing is for, and one click is faster
+ *  than composing the first sentence. */
+const STARTERS = [
+  "이 폴더 구조를 읽고 무슨 프로젝트인지 한 단락으로 정리해줘",
+  "테스트를 실행하고 실패하는 것만 보고해줘",
+  "최근 커밋 5개를 읽고 지금 작업 중인 흐름을 설명해줘",
+];
+
 function isAgentChoice(value: string | null): value is AgentChoice {
   return value !== null && (AGENT_CHOICES as readonly string[]).includes(value);
-}
-
-function formatTokens(tokens: number): string {
-  if (tokens < 1000) return `${tokens} tok`;
-  return `${(tokens / 1000).toFixed(1)}k tok`;
 }
 
 export default function ChatPage() {
@@ -80,46 +97,11 @@ export default function ChatPage() {
   // Auto by default: the routing rules pick per message, and the manual
   // options stay as an override.
   const [agent, setAgent] = useState<AgentChoice>("auto");
-  const [selectedView, setSelectedView] = useState("lead");
-
-  const taskChoices = useMemo(() => {
-    const choices: { value: string; title: string; task: NonNullable<typeof plan>["tasks"][number] }[] = [];
-    const latestTurn = messages.filter((message) => message.role === "user").length;
-    let turn = 0;
-    for (const message of messages) {
-      if (message.role === "user") turn += 1;
-      for (const task of message.plan?.tasks ?? []) {
-        choices.push({ value: `task:${turn}:${task.id}`, title: task.title, task });
-      }
-      const hasNativeTasks = Boolean(
-        message.plan?.tasks.some((task) => task.id.startsWith("native:")) ||
-        (turn === latestTurn && plan?.tasks.some((task) => task.id.startsWith("native:")))
-      );
-      if (message.role === "agent" && !hasNativeTasks) {
-        for (const block of message.blocks ?? []) {
-          if (block.kind !== "tool" || block.tool.tool_name.toLowerCase() !== "collaborationspawn_agent" || block.tool.verdict !== "allow") continue;
-          const name = typeof block.tool.input.task_name === "string" ? block.tool.input.task_name : "하위 에이전트";
-          const id = `spawn:${block.tool.tool_use_id ?? name}`;
-          choices.push({
-            value: `task:${turn}:${id}`,
-            title: name,
-            task: { id, title: name, agent: message.agent, status: streaming && turn === latestTurn ? "running" : "unknown" },
-          });
-        }
-      }
-    }
-    if (plan) {
-      for (const task of plan.tasks) {
-        const value = `task:${turn}:${task.id}`;
-        const index = choices.findIndex((choice) => choice.value === value);
-        const choice = { value, title: task.title, task };
-        if (index >= 0) choices[index] = choice;
-        else choices.push(choice);
-      }
-    }
-    return choices;
-  }, [messages, plan, streaming]);
-  const selectedTask = taskChoices.find((choice) => choice.value === selectedView)?.task;
+  // The sub-agent whose own transcript is open, if any. A panel over the
+  // conversation rather than a replacement for it: the lead's reply is the
+  // context that makes a worker's output mean anything, so leaving the
+  // transcript on screen is the point.
+  const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
 
   // Read on mount rather than in useState's initializer: this component
   // renders on the server first (Next app router), where localStorage does
@@ -137,49 +119,58 @@ export default function ChatPage() {
     [messages]
   );
 
+  // The live task carries the status and output the panel should show: a task
+  // opened while it was still running would otherwise stay frozen at the
+  // moment it was clicked.
+  const shownTask = useMemo(() => {
+    if (!openTask) return null;
+    const live = plan?.tasks.find((task) => task.id === openTask.id);
+    return live ?? openTask;
+  }, [openTask, plan]);
+
   const handleAgentChange = (next: AgentChoice) => {
     setAgent(next);
     window.localStorage.setItem(AGENT_STORAGE_KEY, next);
   };
 
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!draft.trim()) return;
-    sendMessage(draft, agent);
-    setDraft("");
-  };
-
   return (
-    // h-svh + overflow-hidden here is what makes the transcript scroll: without
-    // a bounded height the inset grows with the messages, the page itself
-    // scrolls, and the composer is pushed off the bottom of the screen.
-    // pb-2 keeps the inset card (and the status bar inside it) off the window
-    // edge at every width — the inset variant only applies its own margin from
-    // md up.
-    <SidebarProvider className="h-svh overflow-hidden pb-2">
+    // h-svh + overflow-hidden bounds the transcript so it scrolls while the
+    // composer and status bar remain visible at the bottom of the window.
+    <SidebarProvider className="h-svh overflow-hidden">
       <SessionSidebar
         workspaceId={threadId}
         workspace={workspace}
         workspaceName={workspaceName}
         onOpenWorkspace={(nextThreadId) => {
-          setSelectedView("lead");
+          setOpenTask(null);
           openThread(nextThreadId);
         }}
         reloadKey={completedTurns}
       />
 
-      <SidebarInset className="flex h-full min-h-0 flex-col overflow-hidden">
-        {/* One line at every width: the workspace you are in, whether the
-            socket is up, which transcript you are reading, and the two
-            controls that change the next turn. The status used to be an
-            always-on English badge and the route a bare arrow of text; both
-            shouted at the same volume as the things you can act on. */}
+      <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        {/* One line at every width: which workspace you are in, where it is on
+            disk, whether the socket is up, and the two controls that change the
+            next turn. Reading one sub-agent's transcript used to be a Select
+            here — a picker in the title bar, listing tasks by turn number,
+            that swapped the whole conversation out for one worker's output.
+            That now happens where the plan is drawn. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
           <SidebarTrigger />
           <Separator orientation="vertical" className="h-4" />
-          <span className="truncate text-sm font-medium">
-            {workspaceName ?? "새 대화"}
-          </span>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-sm font-medium">
+              {workspaceName ?? "새 대화"}
+            </span>
+            {workspace && (
+              <span
+                className="hidden truncate font-mono text-[11px] text-muted-foreground lg:inline"
+                title={workspace}
+              >
+                {workspace}
+              </span>
+            )}
+          </div>
 
           {connected ? (
             <Tooltip>
@@ -195,27 +186,6 @@ export default function ChatPage() {
             </Tooltip>
           ) : (
             <Badge variant="destructive">연결 끊김</Badge>
-          )}
-
-          {taskChoices.length > 0 && (
-            <Select
-              value={selectedView}
-              onValueChange={(value) => setSelectedView(value ?? "lead")}
-            >
-              <SelectTrigger size="sm" aria-label="표시할 에이전트" className="ml-1 max-w-48">
-                <SelectValue placeholder="대장 Agent" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="lead">대장 Agent</SelectItem>
-                  {taskChoices.map((choice) => (
-                    <SelectItem key={choice.value} value={choice.value}>
-                      하위 · {choice.title}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
           )}
 
           {route && (
@@ -248,7 +218,7 @@ export default function ChatPage() {
                 {/* A fresh conversation used to be a blank rectangle above
                     the composer, which says nothing about what this thing
                     does or what it may do on your behalf. */}
-                {!selectedTask && messages.length === 0 && (
+                {messages.length === 0 && (
                   <MessageScrollerItem messageId="empty">
                     <Empty className="py-16">
                       <EmptyHeader>
@@ -265,102 +235,98 @@ export default function ChatPage() {
                           위험한 명령은 실행 전에 승인을 받습니다.
                         </EmptyDescription>
                       </EmptyHeader>
+                      <EmptyContent>
+                        <div className="flex flex-col gap-1.5">
+                          {STARTERS.map((starter) => (
+                            <Button
+                              key={starter}
+                              variant="outline"
+                              size="sm"
+                              className="h-auto justify-start whitespace-normal py-1.5 text-left"
+                              onClick={() => setDraft(starter)}
+                            >
+                              {starter}
+                            </Button>
+                          ))}
+                        </div>
+                      </EmptyContent>
                     </Empty>
                   </MessageScrollerItem>
                 )}
 
                 {/* No "handoff" divider: which CLI answered is already on the
                     reply's header, and the extra line said nothing more. */}
-                {selectedTask ? (
-                  <MessageScrollerItem messageId={selectedView}>
-                    <Message align="start">
-                      <MessageContent>
-                        <MessageHeader>{selectedTask.agent} · {selectedTask.title}</MessageHeader>
-                        <Badge variant="outline">{selectedTask.status === "running" ? "실행 중" : selectedTask.status === "done" ? "완료" : selectedTask.status === "timeout" ? "시간 초과" : selectedTask.status === "unknown" ? "상태 확인 불가" : "실패"}</Badge>
-                        {selectedTask.prompt ? <Bubble align="start" variant="muted"><BubbleContent><Markdown>{selectedTask.prompt}</Markdown></BubbleContent></Bubble> : null}
-                        {selectedTask.tools?.length ? <ToolCalls tools={selectedTask.tools} /> : null}
-                        {selectedTask.output ? (
-                          <Bubble align="start" variant="muted"><BubbleContent><Markdown>{selectedTask.output}</Markdown></BubbleContent></Bubble>
-                        ) : (
-                          <p className="text-sm text-muted-foreground">{selectedTask.error || "작업 결과를 기다리는 중…"}</p>
-                        )}
-                      </MessageContent>
-                    </Message>
-                  </MessageScrollerItem>
-                ) : messages.map((message, index) => {
-                  // A turn whose agent differs from the previous turn's is
-                  // where the server built a handoff brief for the incoming
-                  // CLI; mark it so the switch is visible in the transcript.
-                  return (
-                    <MessageScrollerItem
-                      key={index}
-                      messageId={`m-${index}`}
-                      scrollAnchor={message.role === "user"}
-                    >
-                      {message.notice ? (
-                        // A failover notice is the system talking, not the
-                        // agent — a marker, not a bubble.
-                        <Marker variant="separator">
-                          <MarkerContent>{message.text}</MarkerContent>
-                        </Marker>
-                      ) : (
-                        <Message align={message.role === "user" ? "end" : "start"}>
-                          <MessageContent>
-                            {message.reasoning && (
-                              <Reasoning
-                                text={message.reasoning}
-                                streaming={streaming && index === messages.length - 1}
-                              />
-                            )}
-                            {message.role === "agent" && (
-                              <MessageHeader>
-                                {/* The model that answered, when the CLI said
-                                    which — the product name matters less. */}
-                                {message.model ??
-                                  models[message.agent] ??
-                                  AGENT_LABELS[message.agent]}
-                              </MessageHeader>
-                            )}
-                            {message.role === "user" ? (
-                              <Bubble align="end" variant="default">
-                                <BubbleContent>
-                                  {/* The user's own text is not markdown;
-                                      showing it verbatim keeps their
-                                      formatting intact. */}
-                                  <span className="whitespace-pre-wrap">{message.text}</span>
-                                </BubbleContent>
-                              </Bubble>
-                            ) : (
-                              // Text and tool calls in the order they happened,
-                              // so a command sits between the two things the
-                              // agent said around it.
-                              (
-                                message.blocks ?? [{ kind: "text" as const, text: message.text }]
-                              ).map((block, blockIndex) =>
-                                block.kind === "text" ? (
-                                  block.text.trim().length > 0 && (
-                                    <Bubble key={blockIndex} align="start" variant="muted">
-                                      <BubbleContent>
-                                        <Markdown>{block.text}</Markdown>
-                                      </BubbleContent>
-                                    </Bubble>
-                                  )
-                                ) : (
-                                  <ToolCalls key={blockIndex} tools={[block.tool]} />
+                {messages.map((message, index) => (
+                  <MessageScrollerItem
+                    key={index}
+                    messageId={`m-${index}`}
+                    scrollAnchor={message.role === "user"}
+                  >
+                    {message.notice ? (
+                      // A failover notice is the system talking, not the
+                      // agent — a marker, not a bubble.
+                      <Marker variant="separator">
+                        <MarkerContent>{message.text}</MarkerContent>
+                      </Marker>
+                    ) : (
+                      <Message align={message.role === "user" ? "end" : "start"}>
+                        <MessageContent>
+                          {message.reasoning && (
+                            <Reasoning
+                              text={message.reasoning}
+                              streaming={streaming && index === messages.length - 1}
+                            />
+                          )}
+                          {message.role === "agent" && (
+                            <MessageHeader>
+                              {/* The model that answered, when the CLI said
+                                  which — the product name matters less. */}
+                              {message.model ??
+                                models[message.agent] ??
+                                AGENT_LABELS[message.agent]}
+                            </MessageHeader>
+                          )}
+                          {message.role === "user" ? (
+                            <Bubble align="end" variant="default">
+                              <BubbleContent>
+                                {/* The user's own text is not markdown;
+                                    showing it verbatim keeps their
+                                    formatting intact. */}
+                                <span className="whitespace-pre-wrap">{message.text}</span>
+                              </BubbleContent>
+                            </Bubble>
+                          ) : (
+                            // Text and tool calls in the order they happened,
+                            // so a command sits between the two things the
+                            // agent said around it.
+                            (
+                              message.blocks ?? [{ kind: "text" as const, text: message.text }]
+                            ).map((block, blockIndex) =>
+                              block.kind === "text" ? (
+                                block.text.trim().length > 0 && (
+                                  <Bubble key={blockIndex} align="start" variant="muted">
+                                    <BubbleContent>
+                                      <Markdown>{block.text}</Markdown>
+                                    </BubbleContent>
+                                  </Bubble>
                                 )
+                              ) : (
+                                <ToolCalls key={blockIndex} tools={[block.tool]} />
                               )
-                            )}
-                            {message.plan && <PlanGraph plan={message.plan} />}
-                          </MessageContent>
-                        </Message>
-                      )}
-                    </MessageScrollerItem>
-                  );
-                })}
+                            )
+                          )}
+                          {message.plan && (
+                            <PlanGraph plan={message.plan} onSelectTask={setOpenTask} />
+                          )}
+                        </MessageContent>
+                      </Message>
+                    )}
+                  </MessageScrollerItem>
+                ))}
 
                 {/* The current turn's fan-out, above the approvals it may
                     still be waiting on. */}
-                {selectedView === "lead" && planOutcome && !plan && (
+                {planOutcome && !plan && (
                   // A Plan toggle that silently changes nothing looks broken:
                   // say that the lead planned and chose to answer alone.
                   <MessageScrollerItem messageId="plan-outcome">
@@ -372,9 +338,9 @@ export default function ChatPage() {
                   </MessageScrollerItem>
                 )}
 
-                {selectedView === "lead" && plan && (
+                {plan && (
                   <MessageScrollerItem messageId="plan">
-                    <PlanGraph plan={plan} />
+                    <PlanGraph plan={plan} onSelectTask={setOpenTask} />
                   </MessageScrollerItem>
                 )}
 
@@ -419,7 +385,72 @@ export default function ChatPage() {
           totalCostUsd={usage.totalCostUsd}
           totalTokens={usage.totalTokens}
         />
-      </SidebarInset>
+      </main>
+
+      {/* One sub-agent's own record: what it was told, what it ran, what it
+          answered. Opened from the plan it belongs to, and closed with Esc. */}
+      <Sheet
+        open={shownTask !== null}
+        onOpenChange={(open) => { if (!open) setOpenTask(null); }}
+      >
+        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle className="pr-8">{shownTask?.title}</SheetTitle>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {shownTask && <Badge variant="outline">{shownTask.agent}</Badge>}
+              {shownTask && (
+                <Badge variant={shownTask.status === "error" || shownTask.status === "timeout" ? "destructive" : "secondary"}>
+                  {TASK_STATUS_LABEL[shownTask.status]}
+                </Badge>
+              )}
+              {shownTask?.scope && (
+                <Badge variant="outline" title="대장이 이 하위 에이전트에게 준 권한 범위">
+                  {shownTask.scope.mode === "read" ? "읽기 전용" : "쓰기 가능"}
+                  {shownTask.scope.paths?.length ? ` · ${shownTask.scope.paths.join(", ")}` : ""}
+                </Badge>
+              )}
+              {typeof shownTask?.tokens === "number" && (
+                <Badge variant="outline">{shownTask.tokens.toLocaleString()} tok</Badge>
+              )}
+            </div>
+          </SheetHeader>
+
+          {shownTask && (
+            <div className="flex min-w-0 flex-col gap-3 px-4 pb-4">
+              {shownTask.prompt && (
+                <section className="flex min-w-0 flex-col gap-1">
+                  <h3 className="text-xs font-medium text-muted-foreground">받은 지시</h3>
+                  <Bubble align="start" variant="muted">
+                    <BubbleContent><Markdown>{shownTask.prompt}</Markdown></BubbleContent>
+                  </Bubble>
+                </section>
+              )}
+
+              {shownTask.tools?.length ? (
+                <section className="flex min-w-0 flex-col gap-1">
+                  <h3 className="text-xs font-medium text-muted-foreground">
+                    도구 호출 {shownTask.tools.length}건
+                  </h3>
+                  <ToolCalls tools={shownTask.tools} />
+                </section>
+              ) : null}
+
+              <section className="flex min-w-0 flex-col gap-1">
+                <h3 className="text-xs font-medium text-muted-foreground">결과</h3>
+                {shownTask.output ? (
+                  <Bubble align="start" variant="muted">
+                    <BubbleContent><Markdown>{shownTask.output}</Markdown></BubbleContent>
+                  </Bubble>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    {shownTask.error || "작업 결과를 기다리는 중…"}
+                  </p>
+                )}
+              </section>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </SidebarProvider>
   );
 }

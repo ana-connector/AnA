@@ -1,20 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
-import { SaveIcon } from "lucide-react";
 import {
+  fetchWorkspaceCapabilities,
   fetchWorkspaces,
-  forgetWorkspace,
-  updateWorkspace,
   type WorkspaceSummary,
 } from "@/lib/api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { WorkspaceSettings } from "@/components/workspace-settings";
+import { WorkspaceEditor } from "@/components/workspace-editor";
 import { PageShell } from "@/components/page-shell";
 import { notify } from "@/lib/notify";
 
@@ -24,18 +19,20 @@ import { notify } from "@/lib/notify";
 export default function WorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [workspace, setWorkspace] = useState<WorkspaceSummary | null | undefined>(undefined);
-  const [name, setName] = useState("");
+  const [selfWorkspaceId, setSelfWorkspaceId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const all = await fetchWorkspaces();
-    const found = all.find((w) => w.id === id) ?? null;
-    setWorkspace(found);
-    if (found) setName(found.name);
+    setWorkspace(all.find((w) => w.id === id) ?? null);
   }, [id]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void fetchWorkspaceCapabilities().then((caps) => setSelfWorkspaceId(caps.self_workspace));
+  }, []);
 
   if (workspace === undefined) {
     return (
@@ -73,38 +70,19 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
         </>
       }
     >
-      <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor="ws-rename">이름</FieldLabel>
-          <Input id="ws-rename" value={name} onChange={(e) => setName(e.target.value)} />
-          <FieldDescription className="font-mono break-all">{workspace.path}</FieldDescription>
-        </Field>
-        <Field orientation="horizontal">
-          <Button
-            size="sm"
-            disabled={!name.trim() || name === workspace.name}
-            onClick={async () => {
-              await updateWorkspace(workspace.id, { name });
-              notify.success("이름 저장됨");
-              await load();
-            }}
-          >
-            <SaveIcon data-icon="inline-start" />
-            이름 저장
-          </Button>
-        </Field>
-      </FieldGroup>
-
-      <WorkspaceSettings
+      <WorkspaceEditor
         workspace={workspace}
-        onSaved={() => {
-          notify.success("워크스페이스 설정 저장됨", "다음 턴부터 적용됩니다.");
-          void load();
+        isSelf={workspace.id === selfWorkspaceId}
+        onSaved={async () => {
+          notify.success("워크스페이스 저장됨", "컨테이너 설정은 다음 턴부터 적용됩니다.");
+          await load();
         }}
-        onForget={async () => {
-          await forgetWorkspace(workspace.id);
-          // The folder stays; only the registration is gone, so going back to
-          // the chat is the right landing place.
+        onDeleted={() => {
+          // The stored conversation is gone, so a chat that reopened this id
+          // would make the server mint a brand-new workspace under it.
+          if (window.localStorage.getItem("ana_thread_id") === workspace.id) {
+            window.localStorage.removeItem("ana_thread_id");
+          }
           window.location.href = "/";
         }}
       />

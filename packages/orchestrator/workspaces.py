@@ -39,6 +39,18 @@ ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_ports JSONB NOT NULL D
 
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
+# Ids the server mints for a conversation nobody named yet (uuid4).
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+# The workspace that points at ANA's own repository, so ANA can work on
+# itself (docs/plans/2026-09-24-recursive-workspace.md). Reserved: a user
+# workspace never gets this id, or registering one called "ANA self" would
+# collide with the row the server maintains.
+SELF_WORKSPACE_ID = "ana-self"
+SELF_WORKSPACE_NAME = "ANA (자기 자신)"
+
 
 class WorkspacePathError(ValueError):
     """The requested folder cannot be created or reached from the server."""
@@ -78,10 +90,26 @@ async def run_workspace_migrations(pool: AsyncConnectionPool) -> None:
         await conn.execute(WORKSPACE_MIGRATIONS)
 
 
+def _like_prefix(base: str) -> str:
+    """`base` as a LIKE prefix pattern, with the wildcards escaped.
+
+    Slugs may contain `_`, which LIKE reads as "any character" — so a
+    workspace named "my_app" used to collect every "myXapp" as well. Harmless
+    for uniqueness, but it is the kind of quiet wrongness that turns into a
+    bug the moment this query is used for anything but counting."""
+    escaped = base.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"{escaped}%"
+
+
 async def _unique_id(pool: AsyncConnectionPool, base: str) -> str:
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT id FROM workspaces WHERE id LIKE %s", (f"{base}%",))
+        cur = await conn.execute(
+            "SELECT id FROM workspaces WHERE id LIKE %s ESCAPE '!'", (_like_prefix(base),)
+        )
         taken = {row[0] for row in await cur.fetchall()}
+    # Reserved even when the row does not exist yet: the server registers it on
+    # startup, and a user workspace holding the id would make that an error.
+    taken.add(SELF_WORKSPACE_ID)
     if base not in taken:
         return base
     for suffix in range(2, 1000):
@@ -233,15 +261,68 @@ async def ensure_workspace(pool: AsyncConnectionPool, workspace_id: str) -> Work
         return existing
 
     path = str(session_workspace(workspace_root(), workspace_id, create=True))
+    name = _adopted_name(workspace_id)
     async with pool.connection() as conn:
         await conn.execute(
             """
             INSERT INTO workspaces (id, name, path) VALUES (%s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET last_used_at = now()
             """,
-            (workspace_id, workspace_id, path),
+            (workspace_id, name, path),
         )
-    return Workspace(id=workspace_id, name=workspace_id, path=path)
+    return Workspace(id=workspace_id, name=name, path=path)
+
+
+def _adopted_name(workspace_id: str) -> str:
+    """The name to give a workspace registered from an id alone.
+
+    The id is the name for anything a human chose, but a conversation the server
+    minted carries a uuid — and a sidebar listing
+    "9f1c2b0e-4a1d-4c77-9f31-0b8c5a12e340" tells the user nothing about which
+    conversation that is."""
+    if _UUID_RE.match(workspace_id):
+        return f"새 대화 ({workspace_id[:6]})"
+    return workspace_id
+
+
+def self_workspace_path() -> Optional[str]:
+    """Where ANA's own source tree is mounted, or None when it is not.
+
+    Set by ANA_SELF_WORKSPACE (docker-compose mounts the repository at the same
+    path it has on the host, so a per-workspace container can bind-mount it
+    too). None when unset or not a directory: a pointer to a folder the server
+    cannot see would only fail at the first turn."""
+    raw = (os.environ.get("ANA_SELF_WORKSPACE") or "").strip()
+    if not raw:
+        return None
+    path = str(Path(raw).expanduser())
+    return path if Path(path).is_dir() else None
+
+
+async def ensure_self_workspace(pool: AsyncConnectionPool) -> Optional[Workspace]:
+    """Registers ANA's own repository as a workspace, so ANA can work on itself.
+
+    Recursive on purpose: the agent that edits this file should be reachable
+    from the same list as every other project, with the same gate, the same
+    worktrees per sub-agent and the same audit log. What it does *not* get is
+    special treatment — it is an ordinary workspace row, so it can be renamed,
+    given a container, or deleted (the next start registers it again).
+
+    The path is re-asserted on every start (the mount may have moved) while the
+    name is left alone, because renaming it is the user's call."""
+    path = self_workspace_path()
+    if path is None:
+        return None
+    await _ensure_git(path)
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO workspaces (id, name, path) VALUES (%s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET path = EXCLUDED.path
+            """,
+            (SELF_WORKSPACE_ID, SELF_WORKSPACE_NAME, path),
+        )
+    return await get_workspace(pool, SELF_WORKSPACE_ID)
 
 
 async def touch_workspace(pool: AsyncConnectionPool, workspace_id: str) -> None:

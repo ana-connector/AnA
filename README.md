@@ -142,6 +142,7 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_APPROVAL_TIMEOUT_SECONDS` | How long an approval card waits before the call is denied (default 300) |
 | `CODEX_SANDBOX` | Codex's own sandbox mode. Leave unset under Docker: codex sandboxes through bubblewrap, which cannot start in a container ("bwrap: No permissions to create a new namespace"). The hook still runs and still denies, so the gate plus the container stays the enforcement boundary |
 | `ANA_WORKSPACE_ROOT` | Root new workspaces are created under (default `$ANA_WORKSPACE_DIR/sessions`) |
+| `ANA_SELF_WORKSPACE` | Absolute host path of ANA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
 | `ANA_ROUTING_RULES` | Path to the routing rules (default `config/routing.yaml`) |
 | `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own |
 | `ANA_SECRET_KEY` | Key that encrypts stored secrets at rest. Changing it makes existing rows unreadable (they are skipped, and listed so you can re-enter them) |
@@ -158,7 +159,12 @@ behind one name.
 
 - The sidebar lists workspaces; creating one either makes a folder under
   `ANA_WORKSPACE_ROOT` or adopts a path you give it (the contents are never
-  touched). Removing one unregisters it and leaves the folder alone.
+  touched).
+- Deleting one destroys its **conversation** — turns and checkpoints, which
+  nothing undoes — so it goes through a confirmation that names what is lost.
+  The folder, and the audit log, stay; a per-workspace container is removed
+  with it rather than left holding its ports. Deleting the workspace you are
+  in opens another existing one instead of minting a fresh conversation.
 - Both CLIs run with that folder as their working directory, and the gate
   escalates any tool call whose paths reach outside it — read-only system
   paths (`/usr`, `/proc`, …) are exempt so the prompt stays meaningful.
@@ -166,6 +172,34 @@ behind one name.
   `WS /ws/chat?workspace=<id>` opens one (`thread_id=` is still accepted).
 - An id that was never registered is adopted rather than rejected, so
   conversations from before workspaces existed keep working.
+
+### The recursive workspace (ANA on ANA)
+
+Mount ANA's own checkout and it appears in the list as an ordinary workspace,
+`ana-self`, so the agent that edits ANA is reached the same way as any other
+project — same gate, same worktree-per-sub-agent isolation, same audit log:
+
+```yaml
+# docker-compose.yml (already wired)
+- ./:${ANA_SELF_WORKSPACE:-/home/hello/ana}
+```
+
+- `ANA_SELF_WORKSPACE` is the absolute **host** path of the checkout. It is the
+  path inside the server container too, because a per-workspace container's
+  bind mounts are resolved by the daemon on the host — one path, or the two
+  disagree about what the workspace is.
+- The row is re-asserted on every start (the mount may have moved) but its name
+  is not: renaming it is yours. Deleting it works like any other workspace; the
+  next start registers it again.
+- `config/` and `packages/skills/library` are mounted read-only from the
+  same checkout and re-read on mtime change, so a rule or a skill edited in
+  this workspace is live without a rebuild. That is also the hazard: an agent
+  could rewrite the rules that screen it. The `ana-governance-self-edit` rule
+  escalates every tool call touching `config/governance.yaml` or
+  `packages/governance/{rules,hook,secrets}.py` to an approval card.
+- Everything else (the FastAPI app, the adapters, the web UI) runs from the
+  image, so those edits need `docker compose up --build` — the workspace shows
+  you the source, it does not hot-swap the running orchestrator.
 
 ### Per-workspace containers
 
@@ -226,6 +260,12 @@ Built from shadcn/ui components (`base-nova` style, Base UI primitives):
   explanation and review to Claude; no match keeps the CLI that already holds
   the context), and the header shows which model answered and why. `Claude` /
   `Codex` remain as a manual override.
+- **Sub-agent transcripts** open from the plan they belong to — click a task
+  in the graph or its row in the list and a side panel shows what that worker
+  was told, what it ran and what it answered, with the conversation still on
+  screen behind it. This used to be a `Select` in the header that listed every
+  task of every turn and replaced the whole transcript with one worker's
+  output.
 - **Tool calls** appear under each reply as the gate screens them, and
   `/tools` is the full append-only log with a verdict filter.
 - **Status bar** shows each CLI's 5-hour and 7-day windows: Claude's are the
@@ -238,7 +278,37 @@ Built from shadcn/ui components (`base-nova` style, Base UI primitives):
   than hand-written scroll math.
 - **Marker** rows mark the two things that are the system talking rather than
   an agent: a handoff between CLIs and a failover switch.
-- **Alert** cards carry gate approvals inline in the transcript.
+- **Alert** cards carry gate approvals inline in the transcript, and an
+  **AlertDialog** guards workspace deletion (the one action here that destroys
+  something).
+- A fresh workspace offers three concrete first requests rather than an empty
+  rectangle, and the workspace list grows a filter once it is long enough to
+  need one.
+
+## Skills
+
+A skill is a named, parameterized instruction — the wording an agent should
+follow for a recurring job, its declared inputs, and the shape of the answer.
+They live as YAML in `packages/skills/library/` (validated by Pydantic; a
+broken file is reported, not fatal) and reach the agent the way Claude Code's
+own skills do: a terse catalog in the system prompt, with one skill's full body
+pulled in only when it is used. `$ANA_STATE_DIR/skills/` overrides a shipped
+file of the same name.
+
+| Skill | What it is for |
+|---|---|
+| `code-review` | Review a change for correctness and report only findings |
+| `git-commit` | Read the diff and commit one intent, Conventional Commits |
+| `github-pr` | Open or handle a PR / issue |
+| `db-inspect` | Read ANA's own memory database |
+| `ponytail` | Reuse what exists, stdlib and platform features before new code; the shortest working diff ([DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail), MIT) |
+| `kill-ai-slop` | Find and strip the machine-default UI and copy tics (gradients, emoji, badge spam, AI voice) ([yetone/kill-ai-slop](https://github.com/yetone/kill-ai-slop)) |
+| `caveman` | Compress a report to its technical substance, negations and numbers intact ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman)) |
+
+The last three are working-style skills: they change how a worker builds or
+writes, not which tools it may call, so they carry no MCP requirement and apply
+to any task. `packages/skills/library` is mounted read-only into the server, so
+adding a file is live on the next turn — no rebuild.
 
 ## Planner-Worker (sub-agents)
 
