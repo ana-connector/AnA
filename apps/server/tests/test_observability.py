@@ -105,7 +105,7 @@ async def test_failover_is_counted(db_pool):
     graph = build_graph(InMemorySaver())
 
     def factory(agent, auth_mode=None, model=None, effort=None):
-        return LimitedAdapter() if auth_mode == "pro" else WorkingAdapter()
+        return LimitedAdapter() if agent == "claude" else WorkingAdapter()
 
     config = {
         "configurable": {
@@ -118,7 +118,7 @@ async def test_failover_is_counted(db_pool):
         }
     }
     before = _counter_value(
-        metrics.failovers_total, from_rung="claude/pro", to_rung="claude/api"
+        metrics.failovers_total, from_rung="claude", to_rung="tapie"
     )
 
     async for _ in graph.astream(
@@ -129,7 +129,7 @@ async def test_failover_is_counted(db_pool):
         pass
 
     assert (
-        _counter_value(metrics.failovers_total, from_rung="claude/pro", to_rung="claude/api")
+        _counter_value(metrics.failovers_total, from_rung="claude", to_rung="tapie")
         == before + 1
     )
 

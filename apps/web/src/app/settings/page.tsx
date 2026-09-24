@@ -6,26 +6,15 @@ import { fetchSettings, saveSettings } from "@/lib/api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { PageShell } from "@/components/page-shell";
+import { RoutingEditor } from "@/components/routing-editor";
 import { UsageEstimateEditor } from "@/components/usage-estimate-editor";
 import { CapabilityPanel } from "@/components/capability-panel";
 
-const AUTH_LABELS: Record<string, string> = {
-  pro: "pro · 구독 세션",
-  api: "api · 키 + base URL",
-};
 
 /** Settings the user should be able to change without touching the repo.
  *
@@ -36,8 +25,9 @@ const AUTH_LABELS: Record<string, string> = {
 export default function SettingsPage() {
   const [routing, setRouting] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [authMode, setAuthMode] = useState("api");
-  const [authModes, setAuthModes] = useState<string[]>(["pro", "api"]);
+  // Claude runs on the subscription; the key path is the `tapie` agent now,
+  // and the ladder is where you choose between them.
+  const authMode = "pro";
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -47,8 +37,6 @@ export default function SettingsPage() {
       const settings = await fetchSettings();
       setRouting(settings.routing);
       setSystemPrompt(settings.system_prompt);
-      if (settings.auth_mode) setAuthMode(settings.auth_mode);
-      if (settings.auth_modes?.length) setAuthModes(settings.auth_modes);
     } catch (e) {
       setRouting("");
       setError(String(e));
@@ -69,7 +57,6 @@ export default function SettingsPage() {
       });
       setRouting(stored.routing);
       setSystemPrompt(stored.system_prompt);
-      if (stored.auth_mode) setAuthMode(stored.auth_mode);
       setError(null);
       setDirty(false);
       notify.success("저장됨", "다음 턴부터 적용됩니다.");
@@ -118,53 +105,9 @@ export default function SettingsPage() {
           </TabsList>
 
           <TabsContent value="routing">
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="routing">자동 라우팅 규칙</FieldLabel>
-                <Textarea
-                  id="routing"
-                  value={routing ?? ""}
-                  onChange={(event) => {
-                    setRouting(event.target.value);
-                    setDirty(true);
-                  }}
-                  spellCheck={false}
-                  className="min-h-80 font-mono text-xs"
-                />
-                <FieldDescription>
-                  각 단계는 CLI와 모델, 그리고 그 단계를 떠나는 사용률(`until`)입니다. 위에서부터
-                  아직 여유가 있는 첫 단계가 그 턴을 맡습니다.
-                </FieldDescription>
-              </Field>
-
-              <Field>
-                <FieldLabel htmlFor="auth-mode">Claude 인증 모드</FieldLabel>
-                <Select
-                  value={authMode}
-                  onValueChange={(value) => {
-                    setAuthMode((value as string) ?? authMode);
-                    setDirty(true);
-                  }}
-                >
-                  <SelectTrigger id="auth-mode" className="w-72">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {authModes.map((mode) => (
-                        <SelectItem key={mode} value={mode}>
-                          {AUTH_LABELS[mode] ?? mode}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FieldDescription>
-                  ~/.bashrc의 use-claude-pro / use-claude-api에 해당합니다. 이미 열려 있는 대화는
-                  시작할 때의 모드를 유지합니다.
-                </FieldDescription>
-              </Field>
-            </FieldGroup>
+            {/* Its own editor, with its own save: the ladder is structured
+                data, and the rest of this page is two text fields. */}
+            <RoutingEditor />
           </TabsContent>
 
           <TabsContent value="prompt">

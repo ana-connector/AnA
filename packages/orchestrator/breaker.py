@@ -19,6 +19,7 @@ from typing import Optional
 CLAUDE = "claude"
 CODEX = "codex"
 KIMI = "kimi"
+TAPIE = "tapie"
 
 # Substrings seen in a CLI's error output when the provider refuses on usage
 # rather than on the request itself. Deliberately broad: a missed match keeps
@@ -110,26 +111,26 @@ def rate_limit_exceeded(usage: Optional[dict], threshold: float) -> bool:
 def build_chain(preferred_agent: str, preferred_mode: Optional[str]) -> list[Rung]:
     """The order to try, starting from what the user asked for.
 
-    Claude's other auth mode comes before Codex: the two modes bill against
-    different buckets, so the cheapest way out of a limit is usually the same
-    CLI on the other one. Codex is last because switching CLI costs the
-    conversation its native session and needs a handoff brief."""
+    TAPIE comes before Codex: it is the same CLI on a different account, so
+    the cheapest way out of a limit is usually the same CLI billed elsewhere.
+    Another CLI is last because switching costs the conversation its native
+    session and needs a handoff brief.
+
+    `preferred_mode` is vestigial — the API-key path is the `tapie` agent now
+    — and is accepted so existing callers keep working."""
     if preferred_agent == CODEX:
         # Nothing to re-auth on the Codex side, so the rungs below it are the
-        # other CLIs, Claude starting from its configured mode.
-        return [Rung(CODEX), Rung(CLAUDE, preferred_mode or "pro"), Rung(KIMI)]
+        # other CLIs.
+        return [Rung(CODEX), Rung(CLAUDE), Rung(TAPIE), Rung(KIMI)]
     if preferred_agent == KIMI:
         # Same shape: one account, one bucket, so the way out of a Kimi limit
         # is another CLI entirely.
-        return [Rung(KIMI), Rung(CLAUDE, preferred_mode or "pro"), Rung(CODEX)]
-    current_mode = preferred_mode or "pro"
-    other_mode = "api" if current_mode == "pro" else "pro"
-    return [
-        Rung(CLAUDE, current_mode),
-        Rung(CLAUDE, other_mode),
-        Rung(CODEX),
-        Rung(KIMI),
-    ]
+        return [Rung(KIMI), Rung(CLAUDE), Rung(TAPIE), Rung(CODEX)]
+    if preferred_agent == TAPIE:
+        # TAPIE is the same CLI on a key; the subscription is the nearest
+        # place to land, for the same reason it is TAPIE's neighbour below.
+        return [Rung(TAPIE), Rung(CLAUDE), Rung(CODEX), Rung(KIMI)]
+    return [Rung(CLAUDE), Rung(TAPIE), Rung(CODEX), Rung(KIMI)]
 
 
 def next_rung(chain: list[Rung], tried: list[str]) -> Optional[Rung]:

@@ -245,6 +245,11 @@ export function useChatSocket() {
   const [streaming, setStreaming] = useState(false);
   const [usage, setUsage] = useState<UsageTotals>({ totalCostUsd: 0, totalTokens: 0 });
   const [hasUnpricedUsage, setHasUnpricedUsage] = useState(false);
+  // Agents whose last attempt ended in an error, and what it said. TAPIE is
+  // the reason this exists: it is a key against someone else's endpoint, so
+  // "the provider is having a moment" is a state the status bar should show
+  // rather than something you discover one failed turn at a time.
+  const [failingAgents, setFailingAgents] = useState<Record<string, string>>({});
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   // Questions the agent is waiting on. Plural because one call can ask several,
   // and a second call can arrive while the first is unanswered.
@@ -729,6 +734,13 @@ export function useChatSocket() {
         }
 
         if (event.type === "failover") {
+          // from_rung is the rung being left, as "agent/model": that agent is
+          // the one that just failed, not event.agent, which is where the turn
+          // is going next.
+          const failed = (event.from_rung ?? "").split("/")[0];
+          if (failed) {
+            setFailingAgents((prev) => ({ ...prev, [failed]: event.text || "오류" }));
+          }
           // The turn is continuing on another rung, so this is a notice in the
           // transcript rather than an error: the answer still arrives.
           messageCountRef.current += 1;
@@ -756,6 +768,7 @@ export function useChatSocket() {
           setStatus(null);
           messageCountRef.current += 1;
           const agent = event.agent ?? pendingAgentRef.current;
+          setFailingAgents((prev) => ({ ...prev, [agent]: event.text || "오류" }));
           setMessages((prev) => [...prev, { role: "agent", text: `⚠️ ${event.text}`, agent }]);
           agentMessageIndexRef.current = null;
           setStreaming(false);
@@ -770,6 +783,15 @@ export function useChatSocket() {
         }
 
         if (event.type === "result") {
+          // It answered, so whatever it was is over.
+          if (event.agent) {
+            setFailingAgents((prev) => {
+              if (!(event.agent! in prev)) return prev;
+              const next = { ...prev };
+              delete next[event.agent!];
+              return next;
+            });
+          }
           // The fan-out belongs to the turn that ran it: moving it onto the
           // message keeps it on screen after the turn ends and through a
           // reload, instead of vanishing with the next prompt.
@@ -929,6 +951,7 @@ export function useChatSocket() {
     streaming,
     usage,
     hasUnpricedUsage,
+    failingAgents,
     workspace,
     workspaceName,
     threadId,

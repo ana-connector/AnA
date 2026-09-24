@@ -17,14 +17,20 @@ class EnvBuilder:
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
             env.pop("ANTHROPIC_BASE_URL", None)
         else:
-            api_key = env.get("ANTHROPIC_API_KEY_SAVED")
+            # TAPIE: the same CLI, authenticated with a key against its own
+            # endpoint instead of the Pro subscription. ANTHROPIC_API_KEY_SAVED
+            # is still read, because that is where the key lived before this
+            # mode had a name of its own.
+            api_key = env.get("TAPIE_API_KEY") or env.get("ANTHROPIC_API_KEY_SAVED")
             if not api_key:
                 raise RuntimeError(
-                    "ANTHROPIC_API_KEY_SAVED is not set; cannot build API-mode env"
+                    "TAPIE_API_KEY is not set; cannot build the TAPIE environment"
                 )
             env["ANTHROPIC_API_KEY"] = api_key
             env["ANTHROPIC_AUTH_TOKEN"] = api_key
-            env["ANTHROPIC_BASE_URL"] = "https://panel.tapie.kr/api/claude-code"
+            env["ANTHROPIC_BASE_URL"] = (
+                env.get("TAPIE_BASE_URL") or "https://panel.tapie.kr/api/claude-code"
+            )
         # The auto-approved agent subprocess (run with
         # --dangerously-skip-permissions) has no legitimate need for direct
         # database access; leaving DATABASE_URL in its environment would

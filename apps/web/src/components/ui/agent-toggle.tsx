@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export const AGENTS = ["claude", "codex", "kimi"] as const;
+export const AGENTS = ["claude", "codex", "kimi", "tapie"] as const;
 export type Agent = (typeof AGENTS)[number];
 /** "auto" is not an agent: it hands the choice to the ladder. */
 export type AgentChoice = Agent | "auto";
@@ -21,6 +21,8 @@ export const AGENT_LABELS: Record<Agent, string> = {
   claude: "Claude Code",
   codex: "Codex",
   kimi: "Kimi Code",
+  // The same CLI as claude, billed to a key instead of the subscription.
+  tapie: "TAPIE",
 };
 
 /** Which model answers the next turn.

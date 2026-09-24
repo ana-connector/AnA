@@ -121,6 +121,9 @@ def build_adapter(
     role: str = "lead",
     scope: Optional[Scope] = None,
 ):
+    # "pro" unless the caller asks for the key path explicitly (that caller is
+    # the `tapie` agent). The stored setting is still honoured so an existing
+    # installation that ran on the key keeps working.
     mode = auth_mode or read_auth_mode()
     env = EnvBuilder(mode).build()
     # Registered secrets, injected as environment variables so the agent can
@@ -345,7 +348,7 @@ class ClientFrame:
 def _parse_client_frame(data: str) -> ClientFrame:
     """Parses one client frame.
 
-    The protocol is JSON — {"prompt": ..., "agent": "claude"|"codex"|"kimi"} for a
+    The protocol is JSON — {"prompt": ..., "agent": "claude"|"codex"|"kimi"|"tapie"} for a
     turn, {"type": "cancel"} to stop the in-flight one, {"type": "approval",
     "request_id": ..., "decision": "allow"|"deny"} to answer the governance
     gate — but a bare text frame is still accepted as a prompt, so clients
@@ -714,6 +717,20 @@ async def _build_runner(
         )
         transcript = build_transcript()
         adapters.update({"claude": adapter, "codex": codex_adapter, "kimi": kimi_adapter})
+        # TAPIE is the same CLI on a key rather than the subscription. Built
+        # here so a rung that names it costs nothing extra at turn time, and
+        # skipped without comment when no key is configured: an installation
+        # without one simply has three agents, not a broken fourth.
+        try:
+            adapters["tapie"] = build_adapter(
+                gate_session.token,
+                auth_mode="api",
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                command_prefix=prefix,
+            )
+        except Exception:  # noqa: BLE001 - no key configured
+            pass
     except Exception:
         # Nothing to attach to: drop the token and let the caller report it.
         gate_registry.unregister(gate_session.token)
@@ -745,7 +762,19 @@ async def _build_runner(
             )
             adapters[f"claude/{auth_mode}"] = extra
             return extra
-        chosen = adapters[agent]
+        chosen = adapters.get(agent)
+        if chosen is None:
+            # A rung naming an agent this installation could not build — TAPIE
+            # without a key, so far the only one. Built on demand so the error
+            # says which variable is missing rather than KeyError('tapie').
+            chosen = adapters[agent] = build_adapter(
+                gate_session.token,
+                auth_mode="api" if agent == "tapie" else None,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                model=model,
+                effort=effort,
+            )
         # Assigned even when None: the value is what this rung asked for, and
         # leaving the previous call's setting in place is how the planning
         # call's cheap effort used to leak into the answer.
@@ -788,6 +817,8 @@ async def _build_runner(
             if agent == "kimi"
             else build_adapter(
                 gate_session.token,
+                # Same CLI as claude, different account.
+                auth_mode="api" if agent == "tapie" else None,
                 extra_env=secret_env,
                 workspace_dir=worker_workspace or workspace_dir,
                 model=model,

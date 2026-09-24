@@ -41,6 +41,8 @@ EFFORTS = {
     # Kimi has no effort flag at all; ANA writes the level into the prepared
     # home's config.toml, which is why each level gets its own home.
     "kimi": ("low", "high", "max"),
+    # The same CLI as claude, so the same flag and the same vocabulary.
+    "tapie": ("low", "medium", "high", "xhigh", "max"),
 }
 
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"
@@ -195,7 +197,7 @@ def load_routing_table(path: os.PathLike | str | None = None) -> ModelLadder:
 # "none" turns reasoning off entirely, and the judgement being made — does
 # this request need sub-agents, and which — is exactly the kind a model gets
 # wrong without any.
-PLANNING_EFFORT = {"claude": "low", "codex": "low", "kimi": "low"}
+PLANNING_EFFORT = {"claude": "low", "codex": "low", "kimi": "low", "tapie": "low"}
 
 
 def planning_effort(agent: str) -> Optional[str]:

@@ -26,12 +26,16 @@ const AGENT_ICON: Record<string, (props: { className?: string; "aria-label"?: st
   claude: ClaudeIcon,
   codex: OpenAIIcon,
   kimi: KimiIcon,
+  // TAPIE runs the same CLI, so it carries the same mark; the name in the
+  // tooltip is what tells the two accounts apart.
+  tapie: ClaudeIcon,
 };
 
 const AGENT_NAME: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   kimi: "Kimi Code",
+  tapie: "TAPIE",
 };
 
 /** "4.3M", "10.0K", "840" — the magnitude is what a status bar is read for. */
@@ -73,10 +77,14 @@ export function UsageBar({
   refreshKey,
   totalCostUsd,
   totalTokens,
+  failingAgents = {},
 }: {
   refreshKey: number;
   totalCostUsd: number;
   totalTokens: number;
+  /** agent -> what its last attempt said. Its mark turns red until the agent
+   *  answers again. */
+  failingAgents?: Record<string, string>;
 }) {
   const [usage, setUsage] = useState<UsageSnapshot>({});
 
@@ -108,12 +116,16 @@ export function UsageBar({
           const sevenDay = data.windows.find((w) => w.key === "seven_day");
           if (!fiveHour) return null;
           const Icon = AGENT_ICON[agent] ?? CircleDotIcon;
+          const failure = failingAgents[agent];
           return (
             <Tooltip key={agent}>
               <TooltipTrigger
                 render={
                   <span className="flex cursor-default items-center gap-1.5">
-                    <Icon className="size-3.5 shrink-0" aria-label={AGENT_NAME[agent] ?? agent} />
+                    <Icon
+                      className={cn("size-3.5 shrink-0", failure && "text-destructive")}
+                      aria-label={AGENT_NAME[agent] ?? agent}
+                    />
                     <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
                       <span
                         className={cn(
@@ -130,6 +142,9 @@ export function UsageBar({
               />
               <TooltipContent className="flex flex-col gap-0.5">
                 <span className="font-medium">{AGENT_NAME[agent] ?? agent}</span>
+                {failure ? (
+                  <span className="max-w-64 text-destructive">직전 호출 실패: {failure}</span>
+                ) : null}
                 {resetLabel(fiveHour.resets_at) ? (
                   <span>5시간 초기화 {resetLabel(fiveHour.resets_at)}</span>
                 ) : null}

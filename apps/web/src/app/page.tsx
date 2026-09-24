@@ -96,6 +96,7 @@ export default function ChatPage() {
     connected,
     streaming,
     usage,
+    failingAgents,
     workspace,
     workspaceName,
     threadId,
@@ -434,6 +435,7 @@ export default function ChatPage() {
           refreshKey={completedTurns}
           totalCostUsd={usage.totalCostUsd}
           totalTokens={usage.totalTokens}
+          failingAgents={failingAgents}
         />
       </SidebarInset>
 

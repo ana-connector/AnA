@@ -68,18 +68,19 @@ def test_any_exhausted_window_trips():
     assert rate_limit_exceeded(usage, 0.95) is True
 
 
-def test_chain_tries_the_other_auth_mode_before_the_other_cli():
-    chain = build_chain("claude", "api")
+def test_chain_tries_the_other_account_before_the_other_cli():
+    chain = build_chain("tapie", None)
 
-    # The two Claude modes bill against different buckets, so re-auth is the
-    # cheapest escape; switching CLI costs the conversation its session.
-    assert [r.label for r in chain] == ["claude/api", "claude/pro", "codex", "kimi"]
+    # TAPIE and the subscription are the same CLI billed to different
+    # accounts, so the other account is the cheapest escape; switching CLI
+    # costs the conversation its session.
+    assert [r.label for r in chain] == ["tapie", "claude", "codex", "kimi"]
 
 
 def test_chain_from_pro_mode():
     assert [r.label for r in build_chain("claude", "pro")] == [
-        "claude/pro",
-        "claude/api",
+        "claude",
+        "tapie",
         "codex",
         "kimi",
     ]
@@ -87,22 +88,24 @@ def test_chain_from_pro_mode():
 
 def test_unspecified_claude_mode_does_not_repeat_pro():
     assert [r.label for r in build_chain("claude", None)] == [
-        "claude/pro", "claude/api", "codex", "kimi",
+        "claude", "tapie", "codex", "kimi",
     ]
 
 
 def test_chain_from_codex_falls_back_to_claude():
     # Nothing to re-auth on the Codex side.
-    assert [r.label for r in build_chain("codex", "pro")] == ["codex", "claude/pro", "kimi"]
+    assert [r.label for r in build_chain("codex", "pro")] == [
+        "codex", "claude", "tapie", "kimi",
+    ]
 
 
 def test_next_rung_skips_what_was_tried():
     chain = build_chain("claude", "api")
 
-    assert next_rung(chain, ["claude/api"]).label == "claude/pro"
-    assert next_rung(chain, ["claude/api", "claude/pro"]).label == "codex"
-    assert next_rung(chain, ["claude/api", "claude/pro", "codex"]).label == "kimi"
-    assert next_rung(chain, ["claude/api", "claude/pro", "codex", "kimi"]) is None
+    assert next_rung(chain, ["claude"]).label == "tapie"
+    assert next_rung(chain, ["claude", "tapie"]).label == "codex"
+    assert next_rung(chain, ["claude", "tapie", "codex"]).label == "kimi"
+    assert next_rung(chain, ["claude", "tapie", "codex", "kimi"]) is None
 
 
 def test_breaker_state_expires_after_the_cooldown():
