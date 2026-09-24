@@ -45,6 +45,11 @@ from packages.orchestrator.containers import (
     exec_prefix,
     parse_ports,
 )
+from apps.server.app.runners import (
+    RunnerRegistry,
+    TurnRunner,
+    background_turns_enabled,
+)
 from packages.orchestrator.workspaces import ensure_workspace
 from packages.observability.metrics import active_sessions
 from packages.orchestrator.handoff import AGENTS
@@ -478,12 +483,15 @@ async def chat_ws(websocket: WebSocket) -> None:
         except OSError:
             workspace_dir = WORKSPACE_DIR
 
-    gate_registry = websocket.app.state.gate_registry
-    gate_session = gate_registry.register(
-        thread_id, websocket.send_json, workspace=workspace_dir
-    )
+    app = websocket.app
+    registry: RunnerRegistry = app.state.runners
+    registry.start_sweeper()
     active_sessions.inc()
 
+    runner = registry.get(thread_id) if background_turns_enabled() else None
+
+    # Sent before anything can fail: a client that learns the conversation could
+    # not be started still needs to know which conversation that was.
     await websocket.send_json(
         {
             "type": "thread_id",
@@ -499,88 +507,30 @@ async def chat_ws(websocket: WebSocket) -> None:
             # container — or why it is not.
             "container": bool(container_prefix),
             "container_error": container_error,
+            # Whether this conversation is mid-turn right now. A client that
+            # left and came back has to know before it renders anything, or it
+            # shows an idle composer over a turn that is still running.
+            "running": runner is not None and runner.busy,
         }
     )
 
-    # build_adapter() defaults to "api" mode (default_mode_from_settings()),
-    # where EnvBuilder.build() raises RuntimeError if ANTHROPIC_API_KEY_SAVED
-    # isn't set — a real misconfiguration, not a hypothetical. This must be
-    # guarded the same way the old build_session() was: send an error frame
-    # and close(1011) instead of letting the exception propagate unhandled,
-    # which would otherwise leave the client with the thread_id frame and
-    # then a dead socket (no error frame, no close).
-    # Registered before the adapters are built: the token is what the CLI
-    # subprocess's PreToolUse hook presents to the gate, so it has to exist
-    # before either adapter's environment is assembled.
-
-    # Populated during setup and read by the teardown below. Setup now awaits
-    # the database (registered secrets), so a client that disconnects during
-    # setup cancels this coroutine *before* the old inner try/finally existed
-    # — cleanup has to live in one block that covers setup as well, or a quick
-    # disconnect leaks the gate token and any subprocess already started.
-    adapters: dict = {}
-    try:
+    if runner is None:
         try:
-            prefix = (
-                [
-                    part.replace("__token__", gate_session.token)
-                    for part in container_prefix
-                ]
-                if container_prefix
-                else None
-            )
-            adapter = build_adapter(
-                gate_session.token,
-                extra_env=secret_env,
+            runner = await _build_runner(
+                app,
+                thread_id=thread_id,
                 workspace_dir=workspace_dir,
-                command_prefix=prefix,
+                workspace_name=workspace_name,
+                secret_env=secret_env,
+                registered_secrets=registered_secrets,
+                container_prefix=container_prefix,
+                container_spec=container_spec,
+                container_error=container_error,
             )
-            codex_adapter = build_codex_adapter(
-                gate_session.token,
-                extra_env=secret_env,
-                workspace_dir=workspace_dir,
-                # The Codex side needs its home inside the container too.
-                command_prefix=(
-                    exec_prefix(
-                        container_spec,
-                        env={
-                            "ANA_GATE_URL": CONTAINER_GATE_URL,
-                            "ANA_GATE_TOKEN": gate_session.token,
-                            "CODEX_HOME": os.path.join(ANA_STATE_DIR, "codex_home"),
-                        },
-                    )
-                    if container_spec is not None
-                    else None
-                ),
-            )
-            kimi_adapter = build_kimi_adapter(
-                gate_session.token,
-                extra_env=secret_env,
-                workspace_dir=workspace_dir,
-                # Kimi reads hooks, effort and MCP servers out of its home, so
-                # the container needs to see the same prepared directory.
-                command_prefix=(
-                    exec_prefix(
-                        container_spec,
-                        env={
-                            "ANA_GATE_URL": CONTAINER_GATE_URL,
-                            "ANA_GATE_TOKEN": gate_session.token,
-                            "KIMI_CODE_HOME": os.path.join(
-                                ANA_STATE_DIR,
-                                "kimi_home",
-                                default_kimi_effort_from_settings() or "default",
-                            ),
-                        },
-                    )
-                    if container_spec is not None
-                    else None
-                ),
-            )
-            transcript = build_transcript()
-            adapters.update(
-                {"claude": adapter, "codex": codex_adapter, "kimi": kimi_adapter}
-            )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - build_adapter() raises on a
+            # real misconfiguration (no API key in "api" mode). Say so and
+            # close, rather than leaving the client with a dead socket.
+            active_sessions.dec()
             with contextlib.suppress(Exception):
                 await websocket.send_json(
                     {"type": "error", "text": str(exc), "session_id": None, "is_error": True}
@@ -588,302 +538,305 @@ async def chat_ws(websocket: WebSocket) -> None:
             with contextlib.suppress(Exception):
                 await websocket.close(code=1011)
             return
+        registry.put(runner)
 
-        graph = websocket.app.state.graph
+    missed = runner.attach(websocket.send_json)
 
-        def adapter_factory(
-            agent: str,
-            auth_mode: Optional[str] = None,
-            model: Optional[str] = None,
-            effort: Optional[str] = None,
-        ):
-            """Builds the adapter for one failover rung.
-
-            The pre-built pair covers the normal case; a Claude rung on the *other*
-            auth mode needs a new adapter, since the mode is baked into the
-            subprocess environment. Adapters built here are tracked so a client
-            disconnect terminates their subprocesses too."""
-            if agent == "claude" and auth_mode and auth_mode != read_auth_mode():
-                extra = build_adapter(
-                    gate_session.token,
-                    auth_mode=auth_mode,
-                    extra_env=secret_env,
-                    workspace_dir=workspace_dir,
-                    model=model,
-                    effort=effort,
-                )
-                adapters[f"claude/{auth_mode}"] = extra
-                return extra
-            adapter = adapters[agent]
-            # Assigned even when None: the value is what this rung asked for,
-            # and leaving the previous call's setting in place is how the
-            # planning call's cheap effort used to leak into the answer.
-            adapter.model = model
-            adapter.effort = effort
-            return adapter
-
-        def worker_factory(
-            agent: str,
-            model: Optional[str] = None,
-            effort: Optional[str] = None,
-            scope: Optional[Scope] = None,
-            worker_workspace: Optional[str] = None,
-        ):
-            """A fresh adapter per sub-agent task. The pre-built pair each hold
-            one subprocess handle, so several concurrent workers sharing one
-            object would overwrite and terminate each other. Tracked in
-            `adapters` so a disconnect kills their subprocesses too."""
-            # role="worker": sub-agents are the ones allowed to touch files and
-            # run commands, and the gate reads that from their environment.
-            built = (
-                build_codex_adapter(
-                    gate_session.token,
-                    extra_env=secret_env,
-                    workspace_dir=worker_workspace or workspace_dir,
-                    model=model,
-                    effort=effort,
-                    role="worker",
-                    scope=scope,
-                )
-                if agent == "codex"
-                else build_kimi_adapter(
-                    gate_session.token,
-                    extra_env=secret_env,
-                    workspace_dir=worker_workspace or workspace_dir,
-                    model=model,
-                    effort=effort,
-                    role="worker",
-                    scope=scope,
-                )
-                if agent == "kimi"
-                else build_adapter(
-                    gate_session.token,
-                    extra_env=secret_env,
-                    workspace_dir=worker_workspace or workspace_dir,
-                    model=model,
-                    effort=effort,
-                    role="worker",
-                    scope=scope,
-                )
+    if missed:
+        # What happened while nobody was watching, in one frame so the client
+        # can tell a replay from live output: the prompt it never saw, the text
+        # so far, the tool calls, the plan, an approval still waiting.
+        with contextlib.suppress(Exception):
+            await websocket.send_json(
+                {
+                    "type": "replay",
+                    "text": "",
+                    "session_id": None,
+                    "is_error": False,
+                    "frames": missed,
+                }
             )
-            _drop_finished_workers(adapters)
-            adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built
-            return built
 
-        config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "adapters": adapters,
-                "adapter_factory": adapter_factory,
-                "worker_factory": worker_factory,
-                "claude_auth_mode": read_auth_mode(),
-                # Where this conversation works. The fan-out needs it to give
-                # each sub-agent its own git worktree under it.
-                "workspace_dir": workspace_dir,
-                "tracer": websocket.app.state.tracer,
-                "usage_tracker": websocket.app.state.usage_tracker,
-                # Kept alongside "adapters" for callers/tests that still wire a
-                # single adapter; graph._resolve_adapter prefers "adapters".
-                "adapter": adapter,
-                "pool": websocket.app.state.pool,
-                "embedding_model": websocket.app.state.embedding_model,
-                "transcript": transcript,
-                # The same registered secrets the gate scans tool calls for.
-                # A worker's *output* travels too — into the next task's
-                # prompt, the synthesis, the transcript and the turns table —
-                # so a credential it echoed would spread through all of them.
-                "secrets": registered_secrets,
-            }
-        }
-
-        # The queue lives here, in the websocket handler, not inside a
-        # ChatSession object: graph.astream() is called once per turn (not once
-        # forever like the old ChatSession.run() loop), so the queueing that
-        # ChatSession used to provide internally is now explicit here —
-        # relay_events() loops pulling one prompt at a time off `queue`, keeping
-        # concurrent user messages processed in order instead of interrupting an
-        # in-flight turn (see roadmap doc, "동시 메시지 처리: 큐잉").
-        queue: "asyncio.Queue[tuple[str, str, bool]]" = asyncio.Queue()
-        # Set when relay_events() hits an unrecoverable failure, so the receive
-        # loop below (which owns the only calls to websocket.close()) can stop
-        # and actually close the connection instead of leaving a dead socket
-        # that silently swallows every later message the client sends.
-        relay_failed = asyncio.Event()
-        # The turn currently being streamed, so a "cancel" frame from the client
-        # can stop that one turn without tearing down the connection. Written by
-        # relay_events(), read by the receive loop.
-        current_turn_task: Optional[asyncio.Task] = None
-        current_turn_agent: Optional[str] = None
-        # Distinguishes "the client asked to cancel this turn" from "the whole
-        # connection is being torn down": both surface as a CancelledError out of
-        # the awaited turn task, but only the first one should be reported to the
-        # client and followed by more turns.
-        cancel_requested = asyncio.Event()
-
-        async def run_turn(prompt: str, agent: str, plan_mode: bool) -> None:
-            # Session id continuity across turns now comes from
-            # graph.aget_state(config) (Postgres-backed via the checkpointer)
-            # instead of an in-memory ChatSession attribute — this is the whole
-            # point of this subproject. session_ids/last_agent come from the same
-            # snapshot, which is what lets an agent switch resume the incoming
-            # CLI's own session and hand it the other CLI's recent context.
-            timeline = TurnTimeline()
-            gate_session.timeline = timeline
-            gate_session.native_agents.clear()
-            config["configurable"]["timeline"] = timeline
-            config["configurable"]["native_agents"] = gate_session.native_agents
-            try:
-                snapshot = await graph.aget_state(config)
-                values = snapshot.values or {}
-                async for event in graph.astream(
-                    {
-                        "prompt": prompt,
-                        "agent": agent,
-                        # Planning applies only to the turn that requested it.
-                        "plan_mode": plan_mode,
-                        "session_id": values.get("session_id"),
-                        "session_ids": values.get("session_ids") or {},
-                        "last_agent": values.get("last_agent"),
-                        "response_text": "",
-                    },
-                    config=config,
-                    stream_mode="custom",
-                ):
-                    await websocket.send_json(event)
-            finally:
-                gate_session.timeline = None
-                config["configurable"].pop("timeline", None)
-                config["configurable"].pop("native_agents", None)
-
-        async def relay_events() -> None:
-            nonlocal current_turn_task, current_turn_agent
-            try:
-                while True:
-                    prompt, agent, plan_mode = await queue.get()
-                    # Each turn runs as its own task so it can be cancelled
-                    # individually; awaiting graph.astream() inline would make a
-                    # cancel request indistinguishable from killing the relay.
-                    current_turn_task = asyncio.create_task(run_turn(prompt, agent, plan_mode))
-                    current_turn_agent = agent
-                    # So an audit row names the CLI that actually made the call.
-                    gate_session.current_agent = agent
-                    try:
-                        await current_turn_task
-                    except asyncio.CancelledError:
-                        if not cancel_requested.is_set():
-                            raise  # connection teardown, not a client cancel
-                        cancel_requested.clear()
-                        with contextlib.suppress(Exception):
-                            await websocket.send_json(
-                                {
-                                    "type": "cancelled",
-                                    "text": "",
-                                    "session_id": None,
-                                    "is_error": False,
-                                    "agent": agent,
-                                }
-                            )
-                    finally:
-                        # A teardown cancel lands on the relay while it awaits
-                        # the turn task, leaving that task running against a
-                        # closing socket unless it is cancelled here too.
-                        if current_turn_task is not None and not current_turn_task.done():
-                            current_turn_task.cancel()
-                        current_turn_task = None
-                        current_turn_agent = None
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # Best-effort: the socket may already be closing/closed by the
-                # time a mid-turn failure happens, so swallow send errors here —
-                # the point is to try, not to guarantee delivery.
+    gate_registry = app.state.gate_registry
+    try:
+        while True:
+            receive_task = asyncio.ensure_future(websocket.receive_text())
+            failure_task = asyncio.ensure_future(runner.failed.wait())
+            done, pending = await asyncio.wait(
+                {receive_task, failure_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if failure_task in done:
+                # The relay is gone: close so the client sees the connection
+                # drop instead of queuing messages nobody will answer. The
+                # runner is dropped, so the next connection builds a fresh one.
                 with contextlib.suppress(Exception):
-                    await websocket.send_json(
-                        {"type": "error", "text": str(exc), "session_id": None, "is_error": True}
-                    )
-                relay_failed.set()
-
-        relay_task = asyncio.create_task(relay_events())
-        try:
-            while True:
-                receive_task = asyncio.ensure_future(websocket.receive_text())
-                failure_task = asyncio.ensure_future(relay_failed.wait())
-                done, pending = await asyncio.wait(
-                    {receive_task, failure_task}, return_when=asyncio.FIRST_COMPLETED
+                    await websocket.close(code=1011)
+                await registry.drop(thread_id)
+                break
+            data = await receive_task
+            frame = _parse_client_frame(data)
+            if frame.kind == "approval":
+                # Answers a pending gate request; the gate endpoint is what is
+                # actually waiting on this, not the turn loop.
+                gate_registry.resolve_approval(
+                    runner.gate_session, frame.request_id, frame.decision
                 )
-                for task in pending:
-                    task.cancel()
-                if failure_task in done:
-                    # relay_events() already sent an error frame; now actually
-                    # close so the client sees the connection drop instead of
-                    # silently queuing messages nobody will ever answer.
-                    with contextlib.suppress(Exception):
-                        await websocket.close(code=1011)
-                    break
-                data = await receive_task
-                frame = _parse_client_frame(data)
-                if frame.kind == "approval":
-                    # Answers a pending gate request; the gate endpoint is what is
-                    # actually waiting on this, not the turn loop.
-                    gate_registry.resolve_approval(
-                        gate_session, frame.request_id, frame.decision
-                    )
-                    continue
-                if frame.kind == "answer":
-                    # Same shape one level up: /gate/ask is parked on this, and
-                    # the agent's own tool call is parked on /gate/ask.
-                    gate_registry.resolve_answer(
-                        gate_session, frame.request_id, frame.answers
-                    )
-                    continue
-                if frame.kind == "cancel":
-                    task = current_turn_task
-                    if task is not None and not task.done():
-                        cancel_requested.set()
-                        task.cancel()
-                        # Cancelling the await unwinds the adapter's async
-                        # generator, but the CLI subprocess it spawned is a
-                        # separate OS process and outlives that unwinding unless
-                        # it is killed explicitly.
-                        if current_turn_agent is not None:
-                            with contextlib.suppress(Exception):
-                                await adapters[current_turn_agent].terminate()
-                    else:
-                        # Nothing in flight: still answer, so a client whose UI
-                        # thinks a turn is running can reset it.
+                continue
+            if frame.kind == "answer":
+                # Same shape one level up: /gate/ask is parked on this, and the
+                # agent's own tool call is parked on /gate/ask.
+                gate_registry.resolve_answer(
+                    runner.gate_session, frame.request_id, frame.answers
+                )
+                continue
+            if frame.kind == "cancel":
+                agent = runner.current_turn_agent
+                if runner.cancel_current():
+                    # Cancelling the await unwinds the adapter's async
+                    # generator, but the CLI subprocess it spawned is a separate
+                    # OS process and outlives that unwinding unless it is killed
+                    # explicitly.
+                    if agent is not None and agent in runner.adapters:
                         with contextlib.suppress(Exception):
-                            await websocket.send_json(
-                                {
-                                    "type": "cancelled",
-                                    "text": "",
-                                    "session_id": None,
-                                    "is_error": False,
-                                }
-                            )
-                    continue
-                # Queued rather than run inline: concurrent prompts are processed
-                # in order instead of interrupting the turn in flight. A cancel
-                # frame stops only that in-flight turn, not what is queued behind
-                # it.
-                await queue.put((frame.prompt, frame.agent, frame.plan_mode))
-        except WebSocketDisconnect:
-            pass
-        finally:
-            relay_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await relay_task
+                            await runner.adapters[agent].terminate()
+                else:
+                    # Nothing in flight: still answer, so a client whose UI
+                    # thinks a turn is running can reset it.
+                    with contextlib.suppress(Exception):
+                        await websocket.send_json(
+                            {
+                                "type": "cancelled",
+                                "text": "",
+                                "session_id": None,
+                                "is_error": False,
+                            }
+                        )
+                continue
+            # Queued rather than run inline: concurrent prompts are processed in
+            # order instead of interrupting the turn in flight. A cancel frame
+            # stops only that in-flight turn, not what is queued behind it.
+            await runner.submit(frame.prompt, frame.agent, frame.plan_mode)
+    except WebSocketDisconnect:
+        pass
     finally:
-        # Runs even when the client disconnects during setup, which cancels
-        # this coroutine before the loop above is ever reached.
-        #
-        # Both adapters, not just the one that ran last: a disconnect mid-turn
-        # can leave either CLI's subprocess alive, and terminate() is a no-op
-        # for an adapter that never started one.
-        for each_adapter in list(adapters.values()):
-            with contextlib.suppress(Exception):
-                await each_adapter.terminate()
-        # Invalidates the gate token with the connection: a hook that outlives
-        # its conversation must not keep getting approvals, and anything still
-        # waiting on this browser is failed (which denies) rather than hung.
-        gate_registry.unregister(gate_session.token)
         active_sessions.dec()
+        runner.detach(websocket.send_json)
+        # The turn keeps running: that is the whole point. What used to happen
+        # here — cancel the relay, terminate both CLIs, invalidate the gate
+        # token — now happens when the runner has been idle and unwatched for
+        # ANA_RUNNER_IDLE_SECONDS, or immediately when background turns are off.
+        if not background_turns_enabled():
+            await registry.drop(thread_id)
+
+
+async def _build_runner(
+    app,
+    *,
+    thread_id: str,
+    workspace_dir: str,
+    workspace_name: str,
+    secret_env: dict,
+    registered_secrets: list,
+    container_prefix: Optional[list],
+    container_spec,
+    container_error: str,
+) -> TurnRunner:
+    """Everything one conversation needs, built once and reused by every
+    connection that opens it.
+
+    The gate token is registered here rather than per connection, because the
+    CLI subprocesses hold it in their environment: a token that died with the
+    browser would leave a still-running turn unable to clear the gate."""
+    gate_registry = app.state.gate_registry
+    gate_session = gate_registry.register(
+        thread_id, _no_sink, workspace=workspace_dir
+    )
+
+    adapters: dict = {}
+    try:
+        prefix = (
+            [part.replace("__token__", gate_session.token) for part in container_prefix]
+            if container_prefix
+            else None
+        )
+        adapter = build_adapter(
+            gate_session.token,
+            extra_env=secret_env,
+            workspace_dir=workspace_dir,
+            command_prefix=prefix,
+        )
+        codex_adapter = build_codex_adapter(
+            gate_session.token,
+            extra_env=secret_env,
+            workspace_dir=workspace_dir,
+            # The Codex side needs its home inside the container too.
+            command_prefix=(
+                exec_prefix(
+                    container_spec,
+                    env={
+                        "ANA_GATE_URL": CONTAINER_GATE_URL,
+                        "ANA_GATE_TOKEN": gate_session.token,
+                        "CODEX_HOME": os.path.join(ANA_STATE_DIR, "codex_home"),
+                    },
+                )
+                if container_spec is not None
+                else None
+            ),
+        )
+        kimi_adapter = build_kimi_adapter(
+            gate_session.token,
+            extra_env=secret_env,
+            workspace_dir=workspace_dir,
+            # Kimi reads hooks, effort and MCP servers out of its home, so the
+            # container needs to see the same prepared directory.
+            command_prefix=(
+                exec_prefix(
+                    container_spec,
+                    env={
+                        "ANA_GATE_URL": CONTAINER_GATE_URL,
+                        "ANA_GATE_TOKEN": gate_session.token,
+                        "KIMI_CODE_HOME": os.path.join(
+                            ANA_STATE_DIR,
+                            "kimi_home",
+                            default_kimi_effort_from_settings() or "default",
+                        ),
+                    },
+                )
+                if container_spec is not None
+                else None
+            ),
+        )
+        transcript = build_transcript()
+        adapters.update({"claude": adapter, "codex": codex_adapter, "kimi": kimi_adapter})
+    except Exception:
+        # Nothing to attach to: drop the token and let the caller report it.
+        gate_registry.unregister(gate_session.token)
+        for built in list(adapters.values()):
+            with contextlib.suppress(Exception):
+                await built.terminate()
+        raise
+
+    def adapter_factory(
+        agent: str,
+        auth_mode: Optional[str] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
+    ):
+        """Builds the adapter for one failover rung.
+
+        The pre-built trio covers the normal case; a Claude rung on the *other*
+        auth mode needs a new adapter, since the mode is baked into the
+        subprocess environment. Adapters built here are tracked so closing the
+        runner terminates their subprocesses too."""
+        if agent == "claude" and auth_mode and auth_mode != read_auth_mode():
+            extra = build_adapter(
+                gate_session.token,
+                auth_mode=auth_mode,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                model=model,
+                effort=effort,
+            )
+            adapters[f"claude/{auth_mode}"] = extra
+            return extra
+        chosen = adapters[agent]
+        # Assigned even when None: the value is what this rung asked for, and
+        # leaving the previous call's setting in place is how the planning
+        # call's cheap effort used to leak into the answer.
+        chosen.model = model
+        chosen.effort = effort
+        return chosen
+
+    def worker_factory(
+        agent: str,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
+        scope: Optional[Scope] = None,
+        worker_workspace: Optional[str] = None,
+    ):
+        """A fresh adapter per sub-agent task. The pre-built trio each hold one
+        subprocess handle, so several concurrent workers sharing one object
+        would overwrite and terminate each other."""
+        # role="worker": sub-agents are the ones allowed to touch files and run
+        # commands, and the gate reads that from their environment.
+        built = (
+            build_codex_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=worker_workspace or workspace_dir,
+                model=model,
+                effort=effort,
+                role="worker",
+                scope=scope,
+            )
+            if agent == "codex"
+            else build_kimi_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=worker_workspace or workspace_dir,
+                model=model,
+                effort=effort,
+                role="worker",
+                scope=scope,
+            )
+            if agent == "kimi"
+            else build_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=worker_workspace or workspace_dir,
+                model=model,
+                effort=effort,
+                role="worker",
+                scope=scope,
+            )
+        )
+        _drop_finished_workers(adapters)
+        adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built
+        return built
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "adapters": adapters,
+            "adapter_factory": adapter_factory,
+            "worker_factory": worker_factory,
+            "claude_auth_mode": read_auth_mode(),
+            # Where this conversation works. The fan-out needs it to give each
+            # sub-agent its own git worktree under it.
+            "workspace_dir": workspace_dir,
+            "tracer": app.state.tracer,
+            "usage_tracker": app.state.usage_tracker,
+            # Kept alongside "adapters" for callers/tests that still wire a
+            # single adapter; graph._resolve_adapter prefers "adapters".
+            "adapter": adapters["claude"],
+            "pool": app.state.pool,
+            "embedding_model": app.state.embedding_model,
+            "transcript": transcript,
+            # The same registered secrets the gate scans tool calls for. A
+            # worker's *output* travels too — into the next task's prompt, the
+            # synthesis, the transcript and the turns table — so a credential it
+            # echoed would spread through all of them.
+            "secrets": registered_secrets,
+        }
+    }
+
+    return TurnRunner(
+        thread_id=thread_id,
+        workspace_dir=workspace_dir,
+        workspace_name=workspace_name,
+        gate_session=gate_session,
+        gate_registry=gate_registry,
+        adapters=adapters,
+        config=config,
+        graph=app.state.graph,
+        container=bool(container_prefix),
+        container_error=container_error,
+    )
+
+
+async def _no_sink(_frame: dict) -> None:
+    """The gate session's sink before a runner exists. Replaced immediately by
+    TurnRunner, which buffers instead of dropping."""
+    return None

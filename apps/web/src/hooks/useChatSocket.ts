@@ -19,6 +19,8 @@ export type ChatEvent =
         | "approval_request"
         | "question"
         | "status"
+        | "replay"
+        | "prompt"
         | "failover"
         | "plan"
         | "subagent"
@@ -48,6 +50,10 @@ export type ChatEvent =
       task?: SubagentTask;
       questions?: AgentQuestion[];
       count?: number;
+      /** Frames of a turn that ran while this browser was away. */
+      frames?: ChatEvent[];
+      /** Whether the conversation being opened is mid-turn right now. */
+      running?: boolean;
       role?: string;
       request_id?: string;
       rule_id?: string | null;
@@ -277,6 +283,12 @@ export function useChatSocket() {
   // React 18+ StrictMode invokes them twice in development specifically to
   // surface impure updaters.
   const agentMessageIndexRef = useRef<number | null>(null);
+  // Where the turn in flight starts in `messages` (the index of its user
+  // message), so a replay can discard what this browser rendered for that turn
+  // and rebuild it from the server's own buffer. Without it a reconnect
+  // mid-turn — a wifi blip, a laptop waking up — would append the replayed
+  // prompt and text on top of the copy already on screen.
+  const turnStartRef = useRef<number | null>(null);
   // Which agent the in-flight turn was sent to. A "text" frame carries no
   // agent field (it's a bare content delta), so the label for a streaming
   // reply comes from the request, not the response.
@@ -418,8 +430,37 @@ export function useChatSocket() {
       // handler above is what schedules the retry.
       socket.onerror = () => setConnected(false);
 
-      socket.onmessage = (raw) => {
-        const event = JSON.parse(raw.data) as ChatEvent;
+      // Named, because a replay feeds the same handler: a frame that arrived
+      // while this browser was elsewhere has to be processed exactly like one
+      // arriving now, or the two paths drift.
+      const handleEvent = (event: ChatEvent) => {
+        if (event.type === "replay") {
+          // Everything that happened while nobody was watching, in order. The
+          // turn kept running server-side; this is the catch-up, and the
+          // server's buffer is the authority — so anything this browser had
+          // already drawn for the turn in flight is dropped first.
+          const start = turnStartRef.current;
+          if (start !== null) {
+            messageCountRef.current = start;
+            agentMessageIndexRef.current = null;
+            pendingReasoningRef.current = "";
+            planRef.current = null;
+            setPlan(null);
+            setMessages((prev) => prev.slice(0, start));
+          }
+          for (const frame of event.frames ?? []) handleEvent(frame);
+          return;
+        }
+
+        if (event.type === "prompt") {
+          // Only ever replayed: the client that typed it already showed it.
+          turnStartRef.current = messageCountRef.current;
+          messageCountRef.current += 1;
+          const agent = isAgentName(event.agent ?? "") ? (event.agent as Agent) : pendingAgentRef.current;
+          pendingAgentRef.current = agent;
+          setMessages((prev) => [...prev, { role: "user", text: event.text, agent }]);
+          return;
+        }
 
         if (event.type === "thread_id") {
           window.localStorage.setItem(THREAD_STORAGE_KEY, event.text);
@@ -427,6 +468,18 @@ export function useChatSocket() {
           setThreadId(event.text);
           if (event.workspace) setWorkspace(event.workspace);
           if (event.workspace_name) setWorkspaceName(event.workspace_name);
+          // A conversation can be mid-turn when it is opened: the work belongs
+          // to the thread, not to whoever is looking at it, so the composer has
+          // to come up in its streaming state rather than pretending it is idle.
+          if (event.running) {
+            setStreaming(true);
+            setStatus((previous) => previous ?? {
+              phase: "answering",
+              agent: event.agent ?? pendingAgentRef.current,
+              count: 0,
+              since: Date.now(),
+            });
+          }
           return;
         }
 
@@ -698,6 +751,7 @@ export function useChatSocket() {
           setStatus(null);
           agentMessageIndexRef.current = null;
           pendingReasoningRef.current = "";
+          turnStartRef.current = null;
           setStreaming(false);
           // Server-side totals, not locally accumulated: they come from the
           // checkpointed graph state, so they stay right across reconnects.
@@ -707,6 +761,8 @@ export function useChatSocket() {
           });
         }
       };
+
+      socket.onmessage = (raw) => handleEvent(JSON.parse(raw.data) as ChatEvent);
     };
 
     void connect();
@@ -720,6 +776,7 @@ export function useChatSocket() {
 
   const sendMessage = useCallback(
     (text: string, agent: Agent | "auto") => {
+      turnStartRef.current = messageCountRef.current;
       messageCountRef.current += 1;
       // "auto" is resolved server-side; until the route frame arrives, label
       // the pending reply with whatever ran last.
@@ -787,6 +844,7 @@ export function useChatSocket() {
     // Held thinking belongs to the turn it arrived in: left behind, it used to
     // be attached to the first reply of the conversation being opened.
     pendingReasoningRef.current = "";
+    turnStartRef.current = null;
     setMessages([]);
     setApprovals([]);
     setQuestions([]);
