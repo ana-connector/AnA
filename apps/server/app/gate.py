@@ -580,7 +580,15 @@ async def get_secrets(request: Request, scope: str | None = None):
     """Names and scopes only. Values never leave the server — the whole point
     of holding them here is that they are injected into the agent's
     environment without passing through a chat message."""
-    return {"secrets": await list_secrets(request.app.state.pool, scope=scope)}
+    stored = await list_secrets(request.app.state.pool, scope=scope)
+    # Without ANA_SECRET_KEY the cipher takes a random key per process, so
+    # everything stored here stops being readable the next time the server
+    # restarts -- and the only symptom is an agent that says its key is
+    # missing while this list still shows the name. The UI says so up front.
+    return {
+        "secrets": stored,
+        "key_persistent": bool(os.environ.get("ANA_SECRET_KEY")),
+    }
 
 
 @router.put("/secrets")

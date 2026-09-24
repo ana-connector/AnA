@@ -283,15 +283,15 @@ def _status(writer, phase: str, agent: str, count: int = 0) -> None:
     )
 
 
-async def _plan_turn(adapter, prompt: str, *, tracer, trace):
+async def _plan_turn(adapter, prompt: str, *, tracer, trace, on_event=None):
     """Asks the lead for a plan. A planning call that fails costs latency, not
     the turn: parse_plan() falls back to a direct answer."""
     return await _ask_for_plan(adapter, build_planning_prompt(prompt), tracer=tracer,
-                               trace=trace, span="plan")
+                               trace=trace, span="plan", on_event=on_event)
 
 
 async def _replan_turn(adapter, prompt: str, results: list[dict], existing_ids, *,
-                       tracer, trace, round_index: int):
+                       tracer, trace, round_index: int, on_event=None):
     """Between rounds: shown what came back, does the lead want another step?
 
     A plan written before anything ran is a guess about what the work will need.
@@ -309,15 +309,20 @@ async def _replan_turn(adapter, prompt: str, results: list[dict], existing_ids, 
         # those finished ids in `needs`.
         id_offset=len(tuple(existing_ids)),
         known_ids=existing_ids,
+        on_event=on_event,
     )
 
 
 async def _ask_for_plan(adapter, prompt: str, *, tracer, trace, span: str,
-                        id_offset: int = 0, known_ids=()):
+                        id_offset: int = 0, known_ids=(), on_event=None):
     planning = WorkerRun()
     with tracer.span(trace, name=span):
         try:
             async for event in adapter.run_stream(prompt, session_id=None):
+                # Every event is a sign of life, which is what the caller's
+                # timeout is actually watching for.
+                if on_event is not None:
+                    on_event()
                 if event.type == "text":
                     planning.output += event.text
                 elif event.type == "result" and event.is_error:
@@ -343,11 +348,15 @@ async def _plan_with_failover(configurable, agent, model, effort, writer, tracer
                               prompt, *, results=None, existing_ids=(), round_index=0,
                               start_rung=None):
     """Run planning on the lead ladder, carrying the chosen model into work."""
+    # ANA_PLANNER_TIMEOUT_SECONDS is a *silence* budget, not a wall clock: a
+    # lead that is still streaming its plan is working, and killing it at sixty
+    # seconds threw away a plan that was arriving. The total is the backstop
+    # for the opposite case -- a model that talks forever without landing.
     try:
         per_model_timeout = max(1.0, float(os.environ.get("ANA_PLANNER_TIMEOUT_SECONDS", "60")))
-        total_timeout = max(1.0, float(os.environ.get("ANA_PLANNER_TOTAL_TIMEOUT_SECONDS", "180")))
+        total_timeout = max(1.0, float(os.environ.get("ANA_PLANNER_TOTAL_TIMEOUT_SECONDS", "600")))
     except ValueError:
-        per_model_timeout, total_timeout = 60.0, 180.0
+        per_model_timeout, total_timeout = 60.0, 600.0
     deadline = time.monotonic() + total_timeout
     chain = build_chain(agent, configurable.get("claude_auth_mode"))
     start_index = next(
@@ -369,18 +378,34 @@ async def _plan_with_failover(configurable, agent, model, effort, writer, tracer
                 model=rung_model, effort=planning_effort(rung.agent),
             )
             try:
-                async with asyncio.timeout(min(per_model_timeout, remaining)):
+                async with asyncio.timeout(min(per_model_timeout, remaining)) as limit:
+
+                    def saw_output() -> None:
+                        """Push the deadline out again, bounded by the total."""
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            return
+                        limit.reschedule(
+                            asyncio.get_running_loop().time()
+                            + min(per_model_timeout, left)
+                        )
+
                     if results is None:
-                        plan = await _plan_turn(adapter, prompt, tracer=tracer, trace=trace)
+                        plan = await _plan_turn(
+                            adapter, prompt, tracer=tracer, trace=trace, on_event=saw_output
+                        )
                     else:
                         plan = await _replan_turn(
                             adapter, prompt, results, existing_ids,
                             tracer=tracer, trace=trace, round_index=round_index,
+                            on_event=saw_output,
                         )
             except asyncio.TimeoutError:
                 with contextlib.suppress(Exception):
                     await adapter.terminate()
-                raise _PlanningLimit(f"planning exceeded {min(per_model_timeout, remaining):.0f}s")
+                raise _PlanningLimit(
+                    f"planning produced nothing for {min(per_model_timeout, remaining):.0f}s"
+                )
             return plan, rung.agent, rung_model, rung_effort, index > 0, last_error, rung.label
         except _PlanningLimit as exc:
             last_error = str(exc)

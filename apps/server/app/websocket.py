@@ -125,10 +125,14 @@ def build_adapter(
     # the `tapie` agent). The stored setting is still honoured so an existing
     # installation that ran on the key keeps working.
     mode = auth_mode or read_auth_mode()
-    env = EnvBuilder(mode).build()
-    # Registered secrets, injected as environment variables so the agent can
-    # use a credential without it ever appearing in a chat message — and so
-    # the gate's leak scan has a value to recognize on the way out.
+    # Registered secrets are part of the environment the builder reads, not
+    # something layered on afterwards: TAPIE's key is a secret like any other,
+    # and a builder that only looked at os.environ refused to build the agent
+    # whose key had just been entered in the secrets page.
+    env = EnvBuilder(mode).build({**os.environ, **(extra_env or {})})
+    # They stay as environment variables so the agent can use a credential
+    # without it ever appearing in a chat message — and so the gate's leak
+    # scan has a value to recognize on the way out.
     env.update(extra_env or {})
     # The gate refuses tool calls from the lead: the lead plans and answers,
     # sub-agents do the work (see apps/server/app/gate.py).

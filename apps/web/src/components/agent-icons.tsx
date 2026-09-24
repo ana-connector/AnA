@@ -61,3 +61,51 @@ export function KimiIcon({ className, ...props }: IconProps) {
     </svg>
   );
 }
+
+
+const TAPIE_PATHS = [
+  "M144.725 93.8233L32.3204 25.5548L33.4913 41.3525L9.5332 67.9311L110.184 138.395L122.478 114.135L134.772 109.621L144.725 93.8233Z",
+  "M153.803 48.7597L0 79.4902L4.50704 89.7337L5.562 109.58L160 79.4902L149.296 71.1673L153.803 48.7597Z",
+  "M13.0007 128.239L82.803 7.5L87.4183 15.8039L101.379 18.2198L116.578 26.1187L46.2131 152.5L31.0142 141.78L25.385 131.06L13.0007 128.239Z",
+];
+
+// Two fill sets over one geometry: the file the mark ships in is light-on-dark,
+// its sibling dark-on-light. CSS picks, so the icon does not change between the
+// server and the client render.
+const TAPIE_LIGHT = ['#B8B8B8', '#EBEBEB', '#FAFAFA'];
+const TAPIE_DARK = ['#676767', '#2F2F2F', '#050505'];
+
+/** TAPIE's own mark.
+ *
+ *  `mono` drops the brand fills for currentColor at three weights, which is how
+ *  the status bar turns it red without losing the layering. */
+export function TapieIcon({ mono, className, ...props }: IconProps & { mono?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 160 160"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label={props["aria-label"] ?? "TAPIE"}
+      className={className}
+    >
+      {mono ? (
+        TAPIE_PATHS.map((path, index) => (
+          <path key={path.slice(0, 12)} d={path} fill="currentColor" opacity={[0.45, 0.7, 1][index]} />
+        ))
+      ) : (
+        <>
+          <g className="dark:hidden">
+            {TAPIE_PATHS.map((path, index) => (
+              <path key={path.slice(0, 12)} d={path} fill={TAPIE_DARK[index]} />
+            ))}
+          </g>
+          <g className="hidden dark:block">
+            {TAPIE_PATHS.map((path, index) => (
+              <path key={path.slice(0, 12)} d={path} fill={TAPIE_LIGHT[index]} />
+            ))}
+          </g>
+        </>
+      )}
+    </svg>
+  );
+}

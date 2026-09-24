@@ -43,12 +43,20 @@ export default function SecretsPage() {
   const [scope, setScope] = useState("global");
   const [error, setError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<SecretRow | null>(null);
+  // Whether what is stored here survives a restart. It does not when
+  // ANA_SECRET_KEY is unset: the cipher takes a random key per process.
+  const [keyPersistent, setKeyPersistent] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
       const response = await fetch(`${apiBase()}/secrets`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setSecrets(((await response.json()) as { secrets: SecretRow[] }).secrets);
+      const body = (await response.json()) as {
+        secrets: SecretRow[];
+        key_persistent?: boolean;
+      };
+      setSecrets(body.secrets);
+      setKeyPersistent(body.key_persistent !== false);
       setError(null);
     } catch (e) {
       setSecrets([]);
@@ -177,6 +185,18 @@ export default function SecretsPage() {
           </form>
         </CardContent>
       </Card>
+
+      {!keyPersistent ? (
+        <Alert variant="destructive">
+          <AlertTitle>저장한 값이 재시작 후 사라집니다</AlertTitle>
+          <AlertDescription>
+            <code>ANA_SECRET_KEY</code>가 설정돼 있지 않아 값이 프로세스마다 새로 만들어지는
+            임시 키로 암호화됩니다. 서버가 재시작되면 여기 적힌 이름은 남고 값만 읽을 수 없게
+            되며, 에이전트는 키가 없다고 말합니다. <code>.env</code>에 고정 키를 넣고 다시
+            시작한 뒤 값을 다시 입력하세요.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {secrets === null ? (
         <div className="flex flex-col gap-2">
