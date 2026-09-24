@@ -137,6 +137,18 @@ async def test_frames_from_a_detached_turn_are_replayed_on_return():
 
 
 @pytest.mark.asyncio
+async def test_answered_requests_are_not_replayed():
+    runner = _runner(FakeGraph([]))
+    await runner.emit({"type": "approval_request", "request_id": "a1"})
+    await runner.emit({"type": "question", "request_id": "q1"})
+    await runner.emit({"type": "approval_request", "request_id": "a2"})
+    runner.discard_request("a1")
+    runner.discard_request("q1")
+    assert [frame["request_id"] for frame in runner.buffer] == ["a2"]
+    await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_the_buffer_is_bounded():
     graph = FakeGraph([{"type": "text", "text": str(i)} for i in range(MAX_BUFFERED_FRAMES + 50)])
     runner = _runner(graph)

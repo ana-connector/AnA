@@ -69,7 +69,13 @@ def test_unknown_agent_normalizes():
 
     # Model-invented agent names must not select a subprocess that does not
     # exist.
-    assert plan.tasks[0].agent == "claude"
+    assert plan.tasks[0].agent == "auto"
+
+
+def test_worker_without_agent_uses_auto():
+    plan = parse_plan('{"mode": "delegate", "tasks": [{"title": "x", "prompt": "do it"}]}')
+    assert plan.tasks[0].agent == "auto"
+    assert '"agent"' not in build_planning_prompt("do it")
 
 
 def test_tasks_without_a_prompt_are_dropped():

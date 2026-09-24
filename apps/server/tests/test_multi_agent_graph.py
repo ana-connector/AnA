@@ -60,6 +60,14 @@ class FailingWorker(AgentAdapter):
         return None
 
 
+class LimitedWorker(AgentAdapter):
+    async def run_stream(self, prompt: str, session_id=None):
+        yield AdapterEvent(type="error", text="You've hit your session limit", is_error=True)
+
+    async def terminate(self) -> None:
+        return None
+
+
 def _config(db_pool, lead, worker_factory, thread_id):
     return {
         "configurable": {
@@ -114,6 +122,29 @@ async def test_plan_mode_fans_out_and_synthesizes(db_pool):
     assert "codex 결과" in synthesis_prompt
     assert "claude 결과" in synthesis_prompt
     assert values["response_text"] == "최종 종합 답변"
+
+
+@pytest.mark.asyncio
+async def test_auto_worker_falls_back_after_session_limit(db_pool):
+    lead = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"구현","prompt":"implement"}]}',
+        DONE_JSON, "완료",
+    ])
+    attempted = []
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        attempted.append((agent, model))
+        return LimitedWorker() if len(attempted) == 1 else ScriptedAdapter(["성공"], label=agent)
+
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, _config(db_pool, lead, worker_factory, "ma-limit"))
+    assert len(attempted) == 2
+    assert attempted[0][1] != attempted[1][1]
+    assert any(f["type"] == "failover" and f["task_id"] == "t1" for f in frames)
+    result = next(f["task"] for f in frames if f["type"] == "subagent" and f["task"]["status"] == "done")
+    assert result["agent"] == attempted[1][0]
+    assert result["model"] == attempted[1][1]
+    assert values["response_text"] == "완료"
 
 
 @pytest.mark.asyncio
