@@ -156,11 +156,13 @@ export function SessionSidebar({
                 mark and the name. The mark takes the square's foreground
                 colour, so it reads white on the sidebar's primary. */}
             <SidebarMenuButton size="lg" render={<Link href="/" />}>
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <Logo className="size-4" />
+              <div className="flex aspect-square size-10 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                {/* size-6! because the menu button sizes every descendant svg
+                    to 16px, and that descendant rule outranks a plain class. */}
+                <Logo className="size-6!" />
               </div>
               <div className="grid flex-1 text-left leading-tight">
-                <span className="truncate font-heading text-sm font-semibold">AnA</span>
+                <span className="truncate font-heading text-base font-semibold">AnA</span>
                 <span className="truncate text-xs text-muted-foreground">AnA is Not Agent</span>
               </div>
             </SidebarMenuButton>
