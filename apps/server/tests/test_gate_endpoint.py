@@ -97,6 +97,28 @@ def test_lead_can_read_the_clock_but_cannot_run_shell(client):
     assert blocked.json()["rule_id"] == "lead-no-tools"
 
 
+@pytest.mark.parametrize("tool_name", [
+    "request_user_input_async",
+    "functionsrequest_user_input_async",
+    "mcp__ask__ask_user",
+])
+@pytest.mark.parametrize("role", ["lead", "worker"])
+def test_every_agent_can_ask_the_user(client, role, tool_name):
+    session = _register(client, f"ask-{role}-{tool_name}", [])
+    session.current_agent = "codex"
+    response = client.post(
+        "/gate/tool-call",
+        headers={"x-ana-gate-token": session.token},
+        json={
+            "tool_name": tool_name,
+            "tool_input": {"questions": [{"title": "쉬는 날에는 무엇을 하세요?"}]},
+            "role": role,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["decision"] == "allow"
+
+
 def test_native_subagent_inherits_token_but_uses_worker_permissions(client):
     sent: list = []
     session = _register(client, "native-worker", sent)
