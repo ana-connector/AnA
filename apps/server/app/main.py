@@ -1,4 +1,6 @@
+import asyncio
 import contextlib
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -58,6 +60,38 @@ from packages.orchestrator.workspaces import (
 )
 from packages.observability.metrics import active_sessions, render
 from packages.observability.tracing import Tracer
+from packages.remote.discord_bridge import DiscordBridge, DiscordConfig
+from packages.remote.discord_client import DiscordAPI, DiscordGateway
+
+
+def start_discord_bridge(gate_registry):
+    """Wires the Discord bridge onto the gate, or returns None.
+
+    Returning None rather than raising is the point: a missing token means the
+    feature is off, and a bridge that fails to start must not stop ANA from
+    serving the browser that can already answer everything."""
+    config = DiscordConfig.from_env()
+    if config is None:
+        return None
+    try:
+        api = DiscordAPI(config.token)
+        bridge = DiscordBridge(config=config, api=api, registry=gate_registry)
+        gateway = DiscordGateway(config.token, bridge.handle_interaction)
+        gate_registry.notifier = bridge
+        return api, gateway, asyncio.create_task(gateway.run(), name="discord-gateway")
+    except Exception:  # noqa: BLE001 - never load-bearing
+        logging.getLogger(__name__).warning("discord bridge failed to start", exc_info=True)
+        return None
+
+
+async def stop_discord_bridge(started) -> None:
+    api, gateway, task = started
+    gateway.stop()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+    with contextlib.suppress(Exception):
+        await api.close()
 
 
 @asynccontextmanager
@@ -98,9 +132,15 @@ async def lifespan(app: FastAPI):
             # agent is told to state its assumption and carry on.
             question_timeout=float(os.environ.get("ANA_QUESTION_TIMEOUT_SECONDS", 900)),
         )
+        # A second door to the same pending requests, for answering from a
+        # phone (packages/remote). Unset ANA_DISCORD_BOT_TOKEN and none of this
+        # exists: the notifier stays null and the gate behaves as before.
+        discord = start_discord_bridge(app.state.gate_registry)
 
         yield
 
+        if discord is not None:
+            await stop_discord_bridge(discord)
         # Every runner, with its CLI subprocesses and gate tokens, belongs to
         # this process: shutting down without closing them leaves orphans.
         await app.state.runners.close_all()

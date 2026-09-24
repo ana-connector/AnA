@@ -261,6 +261,48 @@ and the answers come back as the tool's result.
   `tools/call`) is ~200 lines of stdlib, against `@shadcn/questionnaire` on the
   browser side.
 
+### Answering from a phone (Discord)
+
+An approval card and an `ask_user` questionnaire both park on one future
+(`packages/governance/session.py`). The Discord bridge is a second door to that
+same future: the request is posted to a Discord channel at the moment the
+browser card appears, either side can answer, and the first answer wins — the
+other side's card is withdrawn rather than left offering a decision that is
+already made.
+
+It is not a Discord front end. There is no way to start a turn, pick a
+workspace or change settings from Discord; the bot carries the two things that
+block an agent mid-work, plus a short note when a turn ends.
+
+- **Why a bot, not a webhook**: the Discord gateway is an outbound WebSocket.
+  ANA dials Discord and button clicks arrive back down the same socket, so
+  there is no public inbound, no tunnel and no auth system to design. The
+  allowlist is a set of Discord user ids.
+- **Who may answer**: only ids in `ANA_DISCORD_ALLOWED_USER_IDS`, and only in
+  `ANA_DISCORD_CHANNEL_ID`. Anyone else gets an ephemeral refusal and the
+  future is never touched. An empty allowlist means nobody, not everyone — a
+  button here approves commands the rule set already thought worth stopping.
+- **The log says who**: `decided_by` becomes `discord:<user id>`, next to the
+  existing `user` (the web UI), `rule` and `timeout`.
+- **Discord being down is not a denial**: a failed post is swallowed and
+  logged. The browser card and the gate's own timeout are unaffected.
+- No new dependency: `websockets` and `httpx` are already pinned, and the part
+  of the gateway that matters is identify, heartbeat, resume and one dispatch
+  event — the same trade `ask_user` makes for MCP.
+
+| Variable | Meaning |
+| --- | --- |
+| `ANA_DISCORD_BOT_TOKEN` | Bot token. Unset disables the bridge entirely — no client is started |
+| `ANA_DISCORD_CHANNEL_ID` | Channel that receives requests and turn summaries. Interactions from any other channel are ignored |
+| `ANA_DISCORD_ALLOWED_USER_IDS` | Comma-separated Discord user ids permitted to answer. Empty means nobody can. `ANA_DISCORD_ALLOWED_USER_ID` (singular) is read as well, for the one-person case |
+| `ANA_DISCORD_TURN_SUMMARIES` | `off` stops posting what the agent finally said at the end of a turn |
+
+Setup: create an application at <https://discord.com/developers/applications>,
+add a bot, copy its token into `ANA_DISCORD_BOT_TOKEN`, and invite it to the
+server with the `bot` scope and permission to send messages in the channel. No
+privileged intents are needed — interactions are delivered regardless of them.
+Your own user id comes from Discord's *Copy User ID* (Developer Mode on).
+
 ### Secrets
 
 `/secrets` in the web UI (also `GET`/`PUT`/`DELETE /secrets` on the API)

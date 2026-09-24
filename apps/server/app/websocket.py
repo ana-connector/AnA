@@ -580,20 +580,20 @@ async def chat_ws(websocket: WebSocket) -> None:
             if frame.kind == "approval":
                 # Answers a pending gate request; the gate endpoint is what is
                 # actually waiting on this, not the turn loop.
-                resolved = gate_registry.resolve_approval(
-                    runner.gate_session, frame.request_id, frame.decision
+                # "user" is what the audit row records for the browser; a
+                # phone answers the same request as "discord:<user id>".
+                gate_registry.resolve_approval(
+                    runner.gate_session, frame.request_id, frame.decision, by="user"
                 )
-                if resolved:
-                    runner.discard_request(frame.request_id)
+                # The buffered card is dropped by the runner's on_resolved hook,
+                # which runs for whichever side answered first.
                 continue
             if frame.kind == "answer":
                 # Same shape one level up: /gate/ask is parked on this, and the
                 # agent's own tool call is parked on /gate/ask.
-                resolved = gate_registry.resolve_answer(
-                    runner.gate_session, frame.request_id, frame.answers
+                gate_registry.resolve_answer(
+                    runner.gate_session, frame.request_id, frame.answers, by="user"
                 )
-                if resolved:
-                    runner.discard_request(frame.request_id)
                 continue
             if frame.kind == "cancel":
                 agent = runner.current_turn_agent

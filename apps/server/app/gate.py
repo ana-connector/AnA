@@ -223,7 +223,7 @@ async def gate_ask(
         raise HTTPException(status_code=422, detail="each question needs two choices or a labelled input")
 
     payload = [q.model_dump() for q in questions]
-    answers = await registry.request_answer(
+    result = await registry.request_answer(
         session,
         {
             "text": "",
@@ -235,7 +235,11 @@ async def gate_ask(
         },
     )
 
+    answers = result.value
     answered = answers is not None
+    # Who answered, for the transcript: "user" is the browser, "discord:<id>"
+    # is someone who answered from a phone.
+    answered_by = result.by or "user"
     if session.timeline is not None:
         # Recorded as a tool block, which is what the transcript and the turns
         # table already know how to carry — the alternative was a new block
@@ -249,7 +253,7 @@ async def gate_ask(
                     "answers": answers if answered else None,
                 },
                 "verdict": "allow" if answered else "timeout",
-                "decided_by": "user" if answered else "timeout",
+                "decided_by": answered_by if answered else "timeout",
                 "rule_id": None,
                 "category": "question",
                 "agent_id": None,
@@ -311,8 +315,10 @@ async def gate_tool_call(
 
     async def _audit(decision: str, decided_by: str, reason: str) -> None:
         # Counted next to the audit row so the metric and the log can never
-        # disagree about what happened.
-        record_gate_decision(decision, decided_by, verdict.rule_id)
+        # disagree about what happened. The metric gets only the channel --
+        # "discord", not "discord:<user id>" -- because a Prometheus label with
+        # one value per person is a cardinality leak.
+        record_gate_decision(decision, decided_by.split(":", 1)[0], verdict.rule_id)
         tool_event = {
             "tool_use_id": body.tool_use_id,
             "tool_name": body.tool_name,
@@ -530,18 +536,23 @@ async def gate_tool_call(
 
     gate_wait_seconds.observe(time.time() - asked_at)
 
-    if answer == ALLOW:
-        await _audit(ALLOW, "user", "approved in the web UI")
+    # Where the answer came from, recorded as `decided_by`: "user" is the
+    # browser, "discord:<user id>" is a phone (packages/remote).
+    answered_by = answer.by or "user"
+    where = "in Discord" if answered_by.startswith("discord:") else "in the web UI"
+
+    if answer.value == ALLOW:
+        await _audit(ALLOW, answered_by, f"approved {where}")
         return GateDecision(
             decision=ALLOW, reason="approved by the user", rule_id=verdict.rule_id,
             category=verdict.category,
         )
 
-    decided_by = "timeout" if answer == "timeout" else "user"
+    decided_by = "timeout" if answer.value == "timeout" else answered_by
     reason = (
         "no answer before the approval timeout"
-        if answer == "timeout"
-        else "denied in the web UI"
+        if answer.value == "timeout"
+        else f"denied {where}"
     )
     await _audit(DENY, decided_by, reason)
     return GateDecision(

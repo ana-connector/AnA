@@ -10,11 +10,16 @@ The registry is process-local by design: a token is only meaningful while the
 connection that created it is open, and it must not outlive it.
 """
 import asyncio
+import contextlib
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 from packages.orchestrator.timeline import TurnTimeline
+from packages.remote.notifier import NullNotifier, RemoteNotifier
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 # A question waits far longer than an approval: an approval interrupts someone
@@ -22,6 +27,18 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 # walked away. Long enough to be worth asking, bounded so a turn cannot hang
 # forever.
 DEFAULT_QUESTION_TIMEOUT_SECONDS = 900.0
+
+
+@dataclass(frozen=True)
+class Answer:
+    """What came back, and who sent it.
+
+    `by` is what the audit log records as `decided_by`: "user" for the browser,
+    "discord:<user id>" for a phone. It matters because a button that runs a
+    command the rule set stopped is worth attributing to a person."""
+
+    value: Any
+    by: str = ""
 
 
 @dataclass
@@ -84,6 +101,13 @@ class GateSession:
     pending: dict[str, "_Pending"] = field(default_factory=dict)
     timeline: Optional[TurnTimeline] = None
     native_agents: dict[str, dict] = field(default_factory=dict)
+    # Called when a request this session raised is over, whoever ended it.
+    # TurnRunner binds it to "drop the buffered card and tell the browser", so
+    # a question answered from a phone stops being offered in the tab.
+    on_resolved: Optional[Callable[[str, str], Awaitable[None]]] = None
+    # The workspace's display name, for a channel that carries every
+    # conversation and has to say which one this is.
+    workspace_name: str = ""
 
 
 class GateRegistry:
@@ -93,10 +117,17 @@ class GateRegistry:
         self,
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
         question_timeout: float = DEFAULT_QUESTION_TIMEOUT_SECONDS,
+        notifier: Optional[RemoteNotifier] = None,
     ):
         self._sessions: dict[str, GateSession] = {}
+        # request_id -> the session waiting on it. The browser answers through
+        # its own connection and never needs this; a Discord interaction only
+        # carries what was packed into the button, so this is how an answer
+        # from anywhere else finds the future it belongs to.
+        self._requests: dict[str, GateSession] = {}
         self.approval_timeout = approval_timeout
         self.question_timeout = question_timeout
+        self.notifier: RemoteNotifier = notifier or NullNotifier()
 
     def register(
         self,
@@ -118,30 +149,72 @@ class GateRegistry:
         # Anything still waiting on this connection can never be answered now;
         # failing those futures makes the gate deny rather than hang until the
         # hook's own timeout.
-        for pending in session.pending.values():
+        for request_id, pending in session.pending.items():
+            self._requests.pop(request_id, None)
             pending.fail(ConnectionError("gate session closed"))
 
     def get(self, token: str) -> Optional[GateSession]:
         return self._sessions.get(token)
 
-    async def request_approval(self, session: GateSession, request: dict) -> str:
-        """Asks the browser and waits. Returns "allow" or "deny"; a timeout,
-        a closed connection or a failed send all deny."""
+    async def _notify(self, what: str, *args) -> None:
+        """Best-effort call into the remote channel.
+
+        Swallowed on purpose: Discord being unreachable must not decide a
+        verdict, and the browser is still being asked either way."""
+        try:
+            await getattr(self.notifier, what)(*args)
+        except Exception:  # noqa: BLE001 - a remote channel is never load-bearing
+            logger.warning("remote notifier %s failed", what, exc_info=True)
+
+    async def notify_turn_ended(self, session: GateSession, text: str) -> None:
+        """What the agent finally said, for a channel that is not watching the
+        stream. Best-effort, like every other call into a remote channel."""
+        await self._notify("turn_ended", session, text)
+
+    async def _close_request(
+        self, session: GateSession, request_id: str, outcome: str, by: str
+    ) -> None:
+        """One place where a finished request is taken down everywhere.
+
+        Runs whatever ended it -- an answer from either side, a timeout, a
+        closed connection -- so a card is never left offering a decision that
+        has already been made."""
+        session.pending.pop(request_id, None)
+        self._requests.pop(request_id, None)
+        await self._notify("request_closed", request_id, session, outcome, by)
+        if session.on_resolved is not None:
+            with contextlib.suppress(Exception):
+                await session.on_resolved(request_id, by)
+
+    async def request_approval(self, session: GateSession, request: dict) -> Answer:
+        """Asks everyone who can answer, and waits for whoever gets there first.
+
+        The value is "allow" or "deny"; a timeout, a closed connection or a
+        failed send all deny."""
         request_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         session.pending[request_id] = _Pending(future=future, loop=loop)
+        self._requests[request_id] = session
+        answer = Answer(value="deny", by="")
         try:
             await session.send({**request, "type": "approval_request", "request_id": request_id})
-            return await asyncio.wait_for(future, timeout=self.approval_timeout)
+            await self._notify(
+                "approval_posted", request_id, session, {**request, "request_id": request_id}
+            )
+            answer = await asyncio.wait_for(future, timeout=self.approval_timeout)
+            return answer
         except asyncio.TimeoutError:
-            return "timeout"
+            answer = Answer(value="timeout", by="timeout")
+            return answer
         except Exception:  # noqa: BLE001 - send failed or connection closed
-            return "deny"
+            answer = Answer(value="deny", by="closed")
+            return answer
         finally:
-            session.pending.pop(request_id, None)
+            outcome = "closed" if answer.by == "closed" else str(answer.value)
+            await self._close_request(session, request_id, outcome, answer.by)
 
-    async def request_answer(self, session: GateSession, request: dict) -> Optional[list]:
+    async def request_answer(self, session: GateSession, request: dict) -> Answer:
         """Asks the browser a question and waits for the answer.
 
         The same machinery as request_approval — one pending future per
@@ -149,38 +222,75 @@ class GateRegistry:
         the same problem: something inside a CLI subprocess needs a human, and
         the only way to that human is the connection that started the turn.
 
-        Returns the answers, or None when nobody answered in time. None is a
-        result, not a failure: the caller tells the agent to state its
+        The value is the answers, or None when nobody answered in time. None is
+        a result, not a failure: the caller tells the agent to state its
         assumption and carry on rather than losing the turn."""
         request_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         session.pending[request_id] = _Pending(future=future, loop=loop)
+        self._requests[request_id] = session
+        answer = Answer(value=None, by="")
         try:
             await session.send({**request, "type": "question", "request_id": request_id})
-            answers = await asyncio.wait_for(future, timeout=self.question_timeout)
-            return answers if isinstance(answers, list) else None
+            await self._notify(
+                "question_posted", request_id, session, {**request, "request_id": request_id}
+            )
+            result = await asyncio.wait_for(future, timeout=self.question_timeout)
+            answer = result if isinstance(result.value, list) else Answer(value=None, by=result.by)
+            return answer
         except asyncio.TimeoutError:
-            return None
+            answer = Answer(value=None, by="timeout")
+            return answer
         except Exception:  # noqa: BLE001 - send failed or connection closed
-            return None
+            answer = Answer(value=None, by="closed")
+            return answer
         finally:
-            session.pending.pop(request_id, None)
+            outcome = (
+                "answered" if isinstance(answer.value, list)
+                else ("closed" if answer.by == "closed" else "timeout")
+            )
+            await self._close_request(session, request_id, outcome, answer.by)
 
-    def resolve_answer(self, session: GateSession, request_id: str, answers: list) -> bool:
+    def resolve_answer(
+        self, session: GateSession, request_id: str, answers: list, by: str = "user"
+    ) -> bool:
         """Called when the browser answers a question. False for an unknown or
         already-answered request, so a double submit is a no-op."""
         pending = session.pending.get(request_id)
         if pending is None or pending.future.done():
             return False
-        pending.resolve(answers)
+        pending.resolve(Answer(value=answers, by=by))
         return True
 
-    def resolve_approval(self, session: GateSession, request_id: str, decision: str) -> bool:
+    def resolve_approval(
+        self, session: GateSession, request_id: str, decision: str, by: str = "user"
+    ) -> bool:
         """Called when the browser answers. Returns False for an unknown or
         already-answered request, so a duplicate click is a no-op."""
         pending = session.pending.get(request_id)
         if pending is None or pending.future.done():
             return False
-        pending.resolve("allow" if decision == "allow" else "deny")
+        pending.resolve(Answer(value="allow" if decision == "allow" else "deny", by=by))
         return True
+
+    # --- answers that arrive from somewhere other than the browser ------------
+
+    def session_for_request(self, request_id: str) -> Optional[GateSession]:
+        """Which conversation a pending request belongs to, by its id alone."""
+        return self._requests.get(request_id)
+
+    def resolve_remote_approval(self, request_id: str, decision: str, by: str) -> bool:
+        """Answers an approval from a channel that has no gate token: a Discord
+        button carries the request id and nothing else."""
+        session = self._requests.get(request_id)
+        if session is None:
+            return False
+        return self.resolve_approval(session, request_id, decision, by=by)
+
+    def resolve_remote_answer(self, request_id: str, answers: list, by: str) -> bool:
+        """The same for a questionnaire."""
+        session = self._requests.get(request_id)
+        if session is None:
+            return False
+        return self.resolve_answer(session, request_id, answers, by=by)

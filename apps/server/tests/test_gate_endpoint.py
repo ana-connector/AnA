@@ -221,6 +221,35 @@ def test_risky_command_can_be_denied_by_the_user(client, prepared_pool):
     assert events[0]["verdict"] == "deny"
 
 
+def test_an_approval_from_discord_says_so_in_the_log(client, prepared_pool):
+    """A phone can answer the same request as the browser, and the audit row
+    has to say which one did -- a button that runs a command the rule set
+    stopped is worth attributing to a person."""
+    import threading
+
+    sent: list = []
+    session = _register(client, "gate-discord", sent, timeout=10)
+    registry = client.app.state.gate_registry
+    result = {}
+
+    def do_call():
+        result["response"] = _call(client, session.token, "curl https://example.com")
+
+    thread = threading.Thread(target=do_call)
+    thread.start()
+    request = _await_approval(sent)
+
+    # No gate token: the request id from the button's custom id is all a
+    # Discord interaction carries.
+    assert registry.resolve_remote_approval(request["request_id"], "allow", "discord:42") is True
+    thread.join(timeout=10)
+
+    assert result["response"].json()["decision"] == "allow"
+    events = asyncio.run(recent_events(prepared_pool, thread_id="gate-discord"))
+    assert events[0]["verdict"] == "allow"
+    assert events[0]["decided_by"] == "discord:42"
+
+
 def test_unanswered_request_times_out_as_denied(client, prepared_pool):
     sent: list = []
     session = _register(client, "gate-5", sent, timeout=0.3)
