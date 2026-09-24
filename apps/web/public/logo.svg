@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" width="300" height="300" role="img" aria-label="AnA">
-  <!-- A disc rather than the source file's square: the mark carries its own
-       background so one file serves the browser tab and the sidebar, on a
-       light page and on the dark sidebar alike. -->
-  <circle cx="150" cy="150" r="150" fill="#ffffff"/>
-  <!-- 0.88 about the centre: the glyph spans the full 300 box, whose corners
-       fall outside the inscribed circle. -->
-  <g transform="translate(150 150) scale(0.88) translate(-150 -150)">
-    <path d="M55 244H94.7895L123.301 160.897L151.158 244H204.211H244L170.579 55H128.421L55 244ZM145.947 94.8894H151.158L198.635 228.329H163.474L146.643 179.417L131.773 136.204L145.947 94.8894Z" fill="#121122"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="55 55 189 189" width="189" height="189" role="img" aria-label="AnA">
+  <!-- No canvas: the glyph alone, trimmed to its own bounds so it fills a
+       16px tab, on whatever the browser puts behind it. The fill follows the
+       viewer's colour scheme, which an SVG favicon is allowed to ask about -
+       a fixed ink would disappear into one of the two tab strips. -->
+  <style>
+    path { fill: #121122 }
+    @media (prefers-color-scheme: dark) { path { fill: #ffffff } }
+  </style>
+  <path d="M55 244H94.7895L123.301 160.897L151.158 244H204.211H244L170.579 55H128.421L55 244ZM145.947 94.8894H151.158L198.635 228.329H163.474L146.643 179.417L131.773 136.204L145.947 94.8894Z"/>
 </svg>
