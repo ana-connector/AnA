@@ -653,10 +653,18 @@ export function useChatSocket() {
     socketRef.current = null;
     messageCountRef.current = 0;
     agentMessageIndexRef.current = null;
+    // Held thinking belongs to the turn it arrived in: left behind, it used to
+    // be attached to the first reply of the conversation being opened.
+    pendingReasoningRef.current = "";
     setMessages([]);
     setApprovals([]);
     setPlan(null);
     planRef.current = null;
+    // The previous conversation's planning result and route would otherwise
+    // stay on screen: "대장이 직접 답했습니다" above an empty transcript, and a
+    // model badge for a turn this workspace never ran.
+    setPlanOutcome(null);
+    setRoute(null);
     setUsage({ totalCostUsd: 0, totalTokens: 0 });
     setWorkspace(null);
     setWorkspaceName(null);

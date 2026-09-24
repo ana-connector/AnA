@@ -214,3 +214,20 @@ async def ensure_running(spec: ContainerSpec) -> str:
     if code != 0:
         raise RuntimeError(f"could not start {spec.name}: {err}")
     return spec.name
+
+
+async def stop_workspace(workspace_id: str) -> bool:
+    """Removes the container belonging to one workspace, if there is one.
+
+    Called when a workspace is deleted: the container is named after the
+    workspace, so leaving it behind means a container (and its published
+    ports) outliving the thing that asked for it, and the next workspace that
+    happens to reuse the id inherits it. Returns whether a container was
+    found."""
+    if shutil.which("docker") is None:
+        return False
+    name = f"{CONTAINER_PREFIX}{workspace_id}"
+    if await inspect(name) is None:
+        return False
+    await stop(name)
+    return True

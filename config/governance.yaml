@@ -21,6 +21,24 @@ rules:
     patterns:
       - '^\s*git\s+(status|diff|log|show|branch)\b'
 
+  # --- ANA modifying ANA ---------------------------------------------------
+  # ANA can be pointed at its own repository (the "ana-self" workspace), which
+  # means an agent can edit the rules this gate reads and the hook that calls
+  # it — governance.yaml is re-read on mtime change, so a rewrite takes effect
+  # on the next tool call, with no restart and nobody asked. Every other rule
+  # here is downstream of these two files, so touching them is the one edit
+  # that has to come back through the user. Every tool, not just Bash: the
+  # CLIs write files with Edit/Write/apply_patch, and the path shows up in the
+  # serialized input either way.
+  - id: ana-governance-self-edit
+    category: self-modification
+    action: ask
+    tools: []
+    patterns:
+      - 'config/governance\.ya?ml'
+      - 'packages/governance/(rules|hook|secrets)\.py'
+      - 'ANA_GOVERNANCE_RULES'
+
   # --- filesystem destruction ---------------------------------------------
   - id: fs-recursive-force-delete
     category: filesystem-destruction

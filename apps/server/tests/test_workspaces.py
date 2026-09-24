@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 
 from apps.server.app.main import app
 from packages.orchestrator.workspaces import (
+    SELF_WORKSPACE_ID,
     WorkspacePathError,
     create_workspace,
+    ensure_self_workspace,
     ensure_workspace,
     forget_workspace,
     get_workspace,
@@ -285,3 +287,102 @@ async def test_forgetting_a_workspace_really_purges_its_conversation(workspace_p
             "SELECT count(*) FROM turns WHERE thread_id = %s", (workspace.id,)
         )
         assert (await cur.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_underscore_in_a_name_does_not_widen_the_id_search(
+    workspace_pool, tmp_path, monkeypatch
+):
+    """`_` is a LIKE wildcard, so "my_app" used to collect every "myXapp" as a
+    taken id. Uniqueness survived that, but the query was quietly wrong."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    await create_workspace(workspace_pool, name="myXapp")
+
+    second = await create_workspace(workspace_pool, name="my_app")
+
+    # Not "my_app-2": nothing with that id exists.
+    assert second.id == "my_app"
+
+
+@pytest.mark.asyncio
+async def test_self_workspace_points_at_anas_own_tree(workspace_pool, tmp_path, monkeypatch):
+    """ANA can be pointed at its own repository, so the agent that edits ANA is
+    reachable from the same list, under the same gate, as every other project."""
+    repo = tmp_path / "ana"
+    repo.mkdir()
+    monkeypatch.setenv("ANA_SELF_WORKSPACE", str(repo))
+    monkeypatch.setenv("ANA_WORKSPACE_GIT_INIT", "off")
+
+    registered = await ensure_self_workspace(workspace_pool)
+
+    assert registered is not None
+    assert registered.id == SELF_WORKSPACE_ID
+    assert registered.path == str(repo)
+    # Registering twice is what every server start does.
+    assert (await ensure_self_workspace(workspace_pool)).id == SELF_WORKSPACE_ID
+
+
+@pytest.mark.asyncio
+async def test_self_workspace_keeps_a_rename_but_follows_the_mount(
+    workspace_pool, tmp_path, monkeypatch
+):
+    first = tmp_path / "ana"
+    moved = tmp_path / "ana-moved"
+    first.mkdir()
+    moved.mkdir()
+    monkeypatch.setenv("ANA_WORKSPACE_GIT_INIT", "off")
+    monkeypatch.setenv("ANA_SELF_WORKSPACE", str(first))
+    await ensure_self_workspace(workspace_pool)
+    await rename_workspace(workspace_pool, SELF_WORKSPACE_ID, "내 ANA")
+
+    monkeypatch.setenv("ANA_SELF_WORKSPACE", str(moved))
+    again = await ensure_self_workspace(workspace_pool)
+
+    assert again.path == str(moved)
+    assert again.name == "내 ANA"
+
+
+@pytest.mark.asyncio
+async def test_no_self_workspace_without_the_mount(workspace_pool, tmp_path, monkeypatch):
+    """A pointer to a folder the server cannot see would only fail at the first
+    turn, so an unset or missing path registers nothing."""
+    monkeypatch.delenv("ANA_SELF_WORKSPACE", raising=False)
+    assert await ensure_self_workspace(workspace_pool) is None
+
+    monkeypatch.setenv("ANA_SELF_WORKSPACE", str(tmp_path / "not-there"))
+    assert await ensure_self_workspace(workspace_pool) is None
+
+
+@pytest.mark.asyncio
+async def test_the_self_workspace_id_is_reserved(workspace_pool, tmp_path, monkeypatch):
+    """A user workspace called "ANA self" must not take the id the server
+    registers on startup, or that insert becomes a unique violation."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+
+    created = await create_workspace(workspace_pool, name="ANA self")
+
+    assert created.id != SELF_WORKSPACE_ID
+
+
+def test_capabilities_report_the_self_workspace(client, tmp_path, monkeypatch):
+    payload = client.get("/workspaces/capabilities").json()
+    assert "containers" in payload
+    # Nothing is mounted in the test environment, so there is no recursive
+    # workspace to mark.
+    assert payload["self_workspace"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_minted_conversation_gets_a_readable_name(
+    workspace_pool, tmp_path, monkeypatch
+):
+    """A brand-new conversation's id is a uuid, and a sidebar row reading
+    "9f1c2b0e-4a1d-…" says nothing about which conversation it is."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+
+    minted = await ensure_workspace(workspace_pool, "9f1c2b0e-4a1d-4c77-9f31-0b8c5a12e340")
+    named = await ensure_workspace(workspace_pool, "legacy-thread")
+
+    assert minted.name == "새 대화 (9f1c2b)"
+    # An id a human chose is still its own name.
+    assert named.name == "legacy-thread"

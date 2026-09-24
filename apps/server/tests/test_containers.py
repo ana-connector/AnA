@@ -202,3 +202,22 @@ def test_module_default_image_is_the_server_image():
     # The server image already carries both CLIs, so it is the sane default for
     # a workspace that does not name its own.
     assert containers.DEFAULT_IMAGE == "ana-server:latest"
+
+
+@pytest.mark.asyncio
+async def test_stop_workspace_removes_the_workspaces_container(tmp_path, fake_docker):
+    """A deleted workspace must not leave its container running: it is named
+    after the workspace, holds that workspace's published ports, and would be
+    inherited by whatever next takes the id."""
+    fake_docker["state"].write_text(
+        json.dumps([{"State": {"Running": True}, "Config": {"Labels": {}}}]), encoding="utf-8"
+    )
+
+    assert await containers.stop_workspace("demo") is True
+    assert "rm -f ana-ws-demo" in fake_docker["log"].read_text()
+
+
+@pytest.mark.asyncio
+async def test_stop_workspace_is_a_noop_without_a_container(tmp_path, fake_docker):
+    assert await containers.stop_workspace("demo") is False
+    assert "rm -f" not in fake_docker["log"].read_text()

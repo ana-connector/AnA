@@ -125,7 +125,17 @@ export async function createWorkspace(name: string, path?: string) {
 export async function forgetWorkspace(id: string): Promise<void> {
   // Deletes the workspace *and* its conversation (turns, checkpoints). The
   // folder and the audit log stay.
-  await fetch(`${apiBase()}/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const response = await fetch(`${apiBase()}/workspaces/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  // The response used to be ignored, so a delete that failed (a 404 for a row
+  // someone else already removed, a server that is down) closed the dialog and
+  // looked exactly like a delete that worked — until the list came back with
+  // the workspace still in it.
+  if (!response.ok) {
+    const detail = await response.json().then((body) => body?.detail).catch(() => null);
+    throw new Error(detail ?? `workspace delete failed: ${response.status}`);
+  }
 }
 
 export async function updateWorkspace(
@@ -145,16 +155,28 @@ export async function updateWorkspace(
   if (!response.ok) throw new Error(`workspace update failed: ${response.status}`);
 }
 
-/** Whether per-workspace containers can run here at all: ANA needs the Docker
- *  socket, so the UI disables the switch instead of letting someone turn on
- *  something that would only fail at the first turn. */
-export async function fetchWorkspaceCapabilities(): Promise<{ containers: boolean }> {
+export type WorkspaceCapabilities = {
+  /** Whether per-workspace containers can run here at all: ANA needs the
+   *  Docker socket, so the UI disables the switch instead of letting someone
+   *  turn on something that would only fail at the first turn. */
+  containers: boolean;
+  /** The workspace whose folder is ANA's own source tree, or null when the
+   *  repository is not mounted. Work done there changes ANA itself, so the
+   *  list marks that row instead of letting it look like any other project. */
+  self_workspace: string | null;
+};
+
+export async function fetchWorkspaceCapabilities(): Promise<WorkspaceCapabilities> {
   try {
     const response = await fetch(`${apiBase()}/workspaces/capabilities`);
-    if (!response.ok) return { containers: false };
-    return (await response.json()) as { containers: boolean };
+    if (!response.ok) return { containers: false, self_workspace: null };
+    const payload = (await response.json()) as Partial<WorkspaceCapabilities>;
+    return {
+      containers: Boolean(payload.containers),
+      self_workspace: payload.self_workspace ?? null,
+    };
   } catch {
-    return { containers: false };
+    return { containers: false, self_workspace: null };
   }
 }
 
