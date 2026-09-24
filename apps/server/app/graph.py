@@ -338,12 +338,21 @@ async def _plan_with_failover(configurable, agent, model, effort, writer, tracer
                               prompt, *, results=None, existing_ids=(), round_index=0,
                               start_rung=None):
     """Run planning on the lead ladder, carrying the chosen model into work."""
+    try:
+        per_model_timeout = max(1.0, float(os.environ.get("ANA_PLANNER_TIMEOUT_SECONDS", "60")))
+        total_timeout = max(1.0, float(os.environ.get("ANA_PLANNER_TOTAL_TIMEOUT_SECONDS", "180")))
+    except ValueError:
+        per_model_timeout, total_timeout = 60.0, 180.0
+    deadline = time.monotonic() + total_timeout
     chain = build_chain(agent, configurable.get("claude_auth_mode"))
     start_index = next(
         (i for i, rung in enumerate(chain) if rung.label == start_rung), 0
     )
     last_error = ""
     for index in range(start_index, len(chain)):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         rung = chain[index]
         if rung.agent == agent:
             rung_model, rung_effort = model, effort
@@ -354,13 +363,19 @@ async def _plan_with_failover(configurable, agent, model, effort, writer, tracer
                 configurable, rung.agent, rung.auth_mode,
                 model=rung_model, effort=planning_effort(rung.agent),
             )
-            if results is None:
-                plan = await _plan_turn(adapter, prompt, tracer=tracer, trace=trace)
-            else:
-                plan = await _replan_turn(
-                    adapter, prompt, results, existing_ids,
-                    tracer=tracer, trace=trace, round_index=round_index,
-                )
+            try:
+                async with asyncio.timeout(min(per_model_timeout, remaining)):
+                    if results is None:
+                        plan = await _plan_turn(adapter, prompt, tracer=tracer, trace=trace)
+                    else:
+                        plan = await _replan_turn(
+                            adapter, prompt, results, existing_ids,
+                            tracer=tracer, trace=trace, round_index=round_index,
+                        )
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    await adapter.terminate()
+                raise _PlanningLimit(f"planning exceeded {min(per_model_timeout, remaining):.0f}s")
             return plan, rung.agent, rung_model, rung_effort, index > 0, last_error, rung.label
         except _PlanningLimit as exc:
             last_error = str(exc)

@@ -335,11 +335,11 @@ export function useChatSocket() {
       // History is loaded *before* the socket opens, not in parallel: both
       // paths append to the same message list through messageCountRef, and a
       // streamed turn arriving mid-fetch would be indexed against a list that
-      // is about to be replaced. Skipped on a reconnect, since the transcript
-      // on screen is already current.
+      // is about to be replaced. Fetch again on reconnect: a turn may have
+      // finished while this socket was away, after its replay buffer cleared.
       const openingThreadId = activeThreadRef.current;
 
-      if (openingThreadId && messageCountRef.current === 0) {
+      if (openingThreadId) {
         try {
           const { turns, totals } = await fetchThreadHistory(openingThreadId);
           if (disposed) return;
@@ -405,7 +405,20 @@ export function useChatSocket() {
             });
           }
           messageCountRef.current = restored.length;
+          agentMessageIndexRef.current = null;
+          turnStartRef.current = null;
+          pendingReasoningRef.current = "";
+          const lastAgent = turns.at(-1)?.agent;
+          if (lastAgent && isAgentName(lastAgent)) pendingAgentRef.current = lastAgent;
           setMessages(restored);
+          setApprovals([]);
+          setQuestions([]);
+          planRef.current = null;
+          setPlan(null);
+          setPlanOutcome(null);
+          setStatus(null);
+          setRoute(null);
+          setStreaming(false);
         } catch {
           // A failed history fetch is not worth blocking the chat over: the
           // conversation itself lives server-side either way.
@@ -429,6 +442,7 @@ export function useChatSocket() {
       socket.onclose = () => {
         setConnected(false);
         setStreaming(false);
+        setStatus(null);
         // A server restart (or any dropped connection) used to leave the page
         // reading "disconnected" until someone refreshed it.
         scheduleReconnect();
@@ -488,6 +502,9 @@ export function useChatSocket() {
               count: 0,
               since: Date.now(),
             });
+          } else {
+            setStreaming(false);
+            setStatus(null);
           }
           return;
         }
@@ -791,6 +808,13 @@ export function useChatSocket() {
 
   const sendMessage = useCallback(
     (text: string, agent: Agent | "auto") => {
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      try {
+        socket.send(JSON.stringify({ prompt: text, agent }));
+      } catch {
+        return false;
+      }
       turnStartRef.current = messageCountRef.current;
       messageCountRef.current += 1;
       // "auto" is resolved server-side; until the route frame arrives, label
@@ -815,11 +839,7 @@ export function useChatSocket() {
       planRef.current = null;
       setPlanOutcome(null);
       setRoute(null);
-      // JSON protocol: {prompt, agent}. The server also still
-      // accepts a bare text frame — see _parse_client_frame.
-      socketRef.current?.send(
-        JSON.stringify({ prompt: text, agent })
-      );
+      return true;
     },
     []
   );

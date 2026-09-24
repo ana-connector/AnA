@@ -68,6 +68,18 @@ class LimitedWorker(AgentAdapter):
         return None
 
 
+class HangingPlanner(AgentAdapter):
+    def __init__(self):
+        self.terminated = 0
+
+    async def run_stream(self, prompt: str, session_id=None):
+        await asyncio.Event().wait()
+        yield AdapterEvent(type="text", text="unreachable")
+
+    async def terminate(self) -> None:
+        self.terminated += 1
+
+
 def _config(db_pool, lead, worker_factory, thread_id):
     return {
         "configurable": {
@@ -171,6 +183,31 @@ async def test_planning_limit_switches_lead_before_creating_workers(db_pool):
     assert any(f["type"] == "failover" and f["to_rung"] == "codex" for f in frames)
     assert values["response_text"] == "작업 완료"
     assert values["failover_rung"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_stalled_planner_times_out_and_switches_lead(db_pool, monkeypatch):
+    monkeypatch.setenv("ANA_PLANNER_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("ANA_PLANNER_TOTAL_TIMEOUT_SECONDS", "5")
+    hanging = HangingPlanner()
+    codex = ScriptedAdapter(['{"mode":"direct"}', "바로 답변"], label="codex")
+
+    def adapter_factory(agent, auth_mode=None, model=None, effort=None):
+        if agent == "codex":
+            return codex
+        return hanging if auth_mode == "pro" else LimitedWorker()
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        raise AssertionError("direct plan must not create a worker")
+
+    config = _config(db_pool, hanging, worker_factory, "ma-plan-timeout")
+    config["configurable"]["adapter_factory"] = adapter_factory
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, config)
+
+    assert hanging.terminated == 1
+    assert any(f["type"] == "failover" and "planning exceeded" in f["text"] for f in frames)
+    assert values["response_text"] == "바로 답변"
 
 
 @pytest.mark.asyncio
