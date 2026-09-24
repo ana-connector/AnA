@@ -235,6 +235,25 @@ def _task_frame(task) -> dict:
     }
 
 
+def _status(writer, phase: str, agent: str, count: int = 0) -> None:
+    """Tells the browser which phase this turn is in.
+
+    Only a key and a count: the wording belongs to the UI, which is where every
+    other Korean string lives. Phases are "planning", "delegating",
+    "replanning", "synthesizing" and "answering" — the browser turns the last
+    frame it saw into "…하고 있습니다" and drops it when the answer starts."""
+    writer(
+        {
+            "type": "status",
+            "text": phase,
+            "session_id": None,
+            "is_error": False,
+            "agent": agent,
+            "count": count,
+        }
+    )
+
+
 async def _plan_turn(adapter, prompt: str, *, tracer, trace):
     """Asks the lead for a plan. A planning call that fails costs latency, not
     the turn: parse_plan() falls back to a direct answer."""
@@ -556,6 +575,11 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     subagent_cost = 0.0
     subagent_tokens = 0
     if state.get("plan_mode", True) and worker_factory is not None:
+        # What the browser shows while nothing else is happening. A turn can
+        # spend a minute planning and another few running workers before a
+        # single character of the answer exists, and an interface that says
+        # nothing during that is indistinguishable from one that is broken.
+        _status(writer, "planning", agent)
         # The planning call is a short JSON judgement, not the work, so it runs
         # at the cheapest effort the chosen CLI has unless configured
         # otherwise. The answer call that follows gets the rung's own effort
@@ -581,6 +605,8 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         )
 
         if plan.delegating:
+            _status(writer, "delegating", agent, count=len(plan.tasks))
+
             async def announce(result) -> None:
                 writer(
                     {
@@ -724,6 +750,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 if round_index + 1 >= rounds:
                     break
 
+                _status(writer, "replanning", agent)
                 follow_up = await _replan_turn(
                     _resolve_adapter(
                         configurable, agent, model=lead_model,
@@ -740,6 +767,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 if not round_tasks:
                     break
                 planned_ids.update(task.id for task in round_tasks)
+                _status(writer, "delegating", agent, count=len(round_tasks))
                 all_tasks.extend(round_tasks)
                 writer(
                     {
@@ -791,6 +819,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 record_subagent(result.task.agent, result.status)
             # The lead answers from what the workers produced; this is the
             # prompt the normal (failover-protected) turn loop below runs.
+            _status(writer, "synthesizing", agent)
             augmented_prompt = build_synthesis_prompt(state["prompt"], subagent_results)
 
     if agent in session_ids:
@@ -845,6 +874,10 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         if breaker.active(breaker_config.cooldown_seconds)
         else (budget_reason or "")
     )
+
+    # The last phase: from here the lead is writing, and the first text frame is
+    # what replaces this on screen.
+    _status(writer, "answering", agent)
 
     try:
         for rung in chain[start_index:]:

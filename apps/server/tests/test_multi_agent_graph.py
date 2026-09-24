@@ -340,3 +340,39 @@ async def test_one_round_keeps_the_old_shape(db_pool, monkeypatch):
 
     assert len(lead.prompts) == 2  # the plan and the synthesis, nothing between
     assert values["response_text"] == "최종 답변"
+
+
+@pytest.mark.asyncio
+async def test_the_turn_reports_the_phase_it_is_in(db_pool):
+    """A turn can spend a minute planning and another few running workers before
+    any of the answer exists. The browser has nothing to show during that unless
+    the server says which phase it is in."""
+    lead = ScriptedAdapter([PLAN_JSON, DONE_JSON, "최종 답변"])
+
+    def worker_factory(agent: str, model=None, effort=None, scope=None, worker_workspace=None):
+        return ScriptedAdapter([f"{agent} 결과"], label=agent)
+
+    graph = build_graph(InMemorySaver())
+    frames, _ = await _run(graph, _config(db_pool, lead, worker_factory, "ma-status"))
+
+    phases = [f["text"] for f in frames if f["type"] == "status"]
+
+    # Planning, then the fan-out, then writing the answer — in that order.
+    assert phases[0] == "planning"
+    assert "delegating" in phases
+    assert phases.index("delegating") < phases.index("synthesizing")
+    assert phases[-1] == "answering"
+
+
+@pytest.mark.asyncio
+async def test_a_direct_turn_still_says_it_is_answering(db_pool):
+    lead = ScriptedAdapter(['{"mode": "direct"}', "바로 답변"])
+
+    def worker_factory(agent: str, model=None, effort=None, scope=None, worker_workspace=None):
+        raise AssertionError("no delegation expected")
+
+    graph = build_graph(InMemorySaver())
+    frames, _ = await _run(graph, _config(db_pool, lead, worker_factory, "ma-status-direct"))
+
+    phases = [f["text"] for f in frames if f["type"] == "status"]
+    assert phases == ["planning", "answering"]

@@ -308,6 +308,11 @@ Built from shadcn/ui components (`base-nova` style, Base UI primitives):
   than hand-written scroll math.
 - **Marker** rows mark the two things that are the system talking rather than
   an agent: a handoff between CLIs and a failover switch.
+- **A status line** says what is happening while nothing is arriving: which
+  model, which phase (planning, the fan-out, re-planning, writing the answer)
+  and how long it has been going. A turn can spend minutes before the first
+  character of the answer exists, and silence in that window reads exactly like
+  a broken connection.
 - **Questionnaire** cards carry the agent's own questions inline in the
   transcript, above the approvals: radio or checkboxes when the lead offered
   choices, always with a free-text box, because the answer it did not think of
@@ -321,13 +326,22 @@ Built from shadcn/ui components (`base-nova` style, Base UI primitives):
 
 ## Skills
 
-A skill is a named, parameterized instruction — the wording an agent should
-follow for a recurring job, its declared inputs, and the shape of the answer.
-They live as YAML in `packages/skills/library/` (validated by Pydantic; a
-broken file is reported, not fatal) and reach the agent the way Claude Code's
-own skills do: a terse catalog in the system prompt, with one skill's full body
-pulled in only when it is used. `$ANA_STATE_DIR/skills/` overrides a shipped
-file of the same name.
+A skill is a named instruction — the wording an agent should follow for a
+recurring job, optionally with declared inputs and an output shape. They live in
+`packages/skills/library/` in either of two forms, both validated by Pydantic (a
+broken file is reported, not fatal):
+
+- `*.yaml` — ANA's own form, where the procedure is a field and inputs are
+  declared and substituted.
+- `*.md` — the Agent Skills form: YAML frontmatter, then the procedure as the
+  body. A published `SKILL.md` drops in as it was written, which is the point:
+  summarizing someone's skill into a YAML string is how a vendored skill quietly
+  becomes a paraphrase of itself.
+
+Either way they reach the agent the way Claude Code's own skills do: a terse
+catalog in the system prompt, with one skill's full body pulled in only when a
+task names it. `$ANA_STATE_DIR/skills/` overrides a shipped file of the same
+name.
 
 | Skill | What it is for |
 |---|---|
@@ -341,8 +355,12 @@ file of the same name.
 
 The last three are working-style skills: they change how a worker builds or
 writes, not which tools it may call, so they carry no MCP requirement and apply
-to any task. `packages/skills/library` is mounted read-only into the server, so
-adding a file is live on the next turn — no rebuild.
+to any task. They are vendored as their upstream `SKILL.md`, body verbatim —
+only the frontmatter is ANA's (a Korean `title` for the settings page, a
+one-line `description` for the catalog, and `roles`), and `kill-ai-slop` carries
+a marked ANA addendum because its upstream scanner and reference files are not
+part of a one-file library. `packages/skills/library` is mounted read-only into
+the server, so adding a file is live on the next turn — no rebuild.
 
 ## Planner-Worker (sub-agents)
 

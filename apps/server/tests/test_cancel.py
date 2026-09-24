@@ -81,6 +81,19 @@ def slow_client(db_pool, postgres_dsn, monkeypatch, tmp_path):
             yield client, slow
 
 
+# Frames the server sends around the content: which phase the turn is in, which
+# CLI was routed to, which model answered. Positional reads skip them, so a new
+# one does not break tests that are about the content.
+NOISE_FRAMES = {"status", "route", "model", "plan"}
+
+
+def next_content(ws, skip=NOISE_FRAMES):
+    frame = ws.receive_json()
+    while frame["type"] in skip:
+        frame = ws.receive_json()
+    return frame
+
+
 def test_cancel_stops_turn_and_terminates_cli(slow_client):
     client, slow = slow_client
     with client.websocket_connect("/ws/chat?thread_id=cancel-1") as ws:
@@ -88,9 +101,9 @@ def test_cancel_stops_turn_and_terminates_cli(slow_client):
         # plan_mode off: cancellation is about the turn, and planning would
         # add a CLI call this fake adapter would answer with its stall.
         ws.send_json({"prompt": "long job", "agent": "claude", "plan_mode": False})
-        assert ws.receive_json()["type"] == "text"  # turn is under way
+        assert next_content(ws)["type"] == "text"  # turn is under way
         ws.send_json({"type": "cancel"})
-        event = ws.receive_json()
+        event = next_content(ws)
 
     assert event["type"] == "cancelled"
     assert slow.terminated is True, "the CLI subprocess must be killed, not just awaited"
@@ -103,13 +116,13 @@ def test_connection_survives_cancel_and_accepts_next_turn(slow_client):
         # plan_mode off: cancellation is about the turn, and planning would
         # add a CLI call this fake adapter would answer with its stall.
         ws.send_json({"prompt": "long job", "agent": "claude", "plan_mode": False})
-        ws.receive_json()  # text
+        next_content(ws)  # text
         ws.send_json({"type": "cancel"})
-        assert ws.receive_json()["type"] == "cancelled"
+        assert next_content(ws)["type"] == "cancelled"
 
         # Same socket, next turn — a cancel must not tear the connection down.
         ws.send_json({"prompt": "after cancel", "agent": "codex", "plan_mode": False})
-        follow_up = ws.receive_json()
+        follow_up = next_content(ws)
 
     assert follow_up["type"] == "text"
     assert follow_up["text"].startswith("ok:")
@@ -137,9 +150,9 @@ def test_cancelled_turn_is_still_recorded(slow_client, db_pool, postgres_dsn):
         # plan_mode off: cancellation is about the turn, and planning would
         # add a CLI call this fake adapter would answer with its stall.
         ws.send_json({"prompt": "long job", "agent": "claude", "plan_mode": False})
-        ws.receive_json()
+        next_content(ws)
         ws.send_json({"type": "cancel"})
-        ws.receive_json()
+        next_content(ws)
 
     with psycopg.connect(postgres_dsn) as conn:
         rows = conn.execute(
