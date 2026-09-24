@@ -113,8 +113,9 @@ export type ApprovalRequest = {
  *  and block the turn until they are answered. */
 export type AgentQuestion = {
   question: string;
-  /** Choices to pick from. Empty means a free-text answer. */
-  options: string[];
+  options: (string | { value: string; label: string; description?: string })[];
+  input?: { label: string; placeholder?: string } | null;
+  required?: boolean;
   /** Whether several options may be picked at once. */
   multi: boolean;
   /** Why it is being asked, or what the options imply. */
@@ -852,10 +853,15 @@ export function useChatSocket() {
    *  rather than on an ack, for the same reason an approval is: the reply goes
    *  to the waiting tool call, not back to the browser. */
   const answerQuestion = useCallback((requestId: string, answers: (string | string[])[]) => {
-    socketRef.current?.send(
-      JSON.stringify({ type: "answer", request_id: requestId, answers })
-    );
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(JSON.stringify({ type: "answer", request_id: requestId, answers }));
+    } catch {
+      return false;
+    }
     setQuestions((prev) => prev.filter((item) => item.request_id !== requestId));
+    return true;
   }, []);
 
   const answerApproval = useCallback((requestId: string, decision: "allow" | "deny") => {
