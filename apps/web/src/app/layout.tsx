@@ -4,6 +4,7 @@ import localFont from "next/font/local";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/toast";
 
 const pretendard = localFont({
   src: "../fonts/PretendardVariable.woff2",
@@ -33,7 +34,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col">
         <ThemeProvider>
-          <TooltipProvider>{children}</TooltipProvider>
+          <TooltipProvider>
+            {children}
+            {/* One place for "it saved" / "it failed" across every page: the
+                console used to answer a save with a line of text that
+                appeared somewhere near the form, or with nothing at all. */}
+            <Toaster />
+          </TooltipProvider>
         </ThemeProvider>
       </body>
     </html>

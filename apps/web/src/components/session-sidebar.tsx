@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { usePathname } from "next/navigation";
 import {
   FolderIcon,
   KeyRoundIcon,
@@ -57,6 +58,9 @@ export function SessionSidebar({
   /** Changes when a turn finishes, so activity shows up without a refresh. */
   reloadKey: number;
 }) {
+  // Which utility page is open, so the footer nav can mark it: a link that
+  // never looks selected leaves the user guessing where they are.
+  const pathname = usePathname();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<WorkspaceSummary | null>(null);
@@ -129,7 +133,7 @@ export function SessionSidebar({
                   placeholder="/home/hello/projects/foo"
                 />
                 <FieldDescription>
-                  비우면 워크스페이스 루트 아래에 새로 만듦. 기존 폴더를 적으면 그대로 사용함.
+                  비우면 워크스페이스 루트 아래에 새로 만듭니다. 기존 폴더를 적으면 그대로 사용합니다.
                 </FieldDescription>
               </Field>
               {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
@@ -149,7 +153,7 @@ export function SessionSidebar({
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>현재 워크스페이스</SidebarGroupLabel>
+          <SidebarGroupLabel>지금 작업 중</SidebarGroupLabel>
           <SidebarGroupContent className="px-2">
             <div className="flex items-start gap-2 rounded-md border border-border px-2 py-1.5">
               <FolderIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
@@ -168,7 +172,7 @@ export function SessionSidebar({
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel>워크스페이스</SidebarGroupLabel>
+          <SidebarGroupLabel>모든 워크스페이스</SidebarGroupLabel>
           <SidebarGroupAction title="목록 새로고침" onClick={() => void refresh()}>
             <RefreshCwIcon />
           </SidebarGroupAction>
@@ -182,7 +186,7 @@ export function SessionSidebar({
               <Empty className="py-6">
                 <EmptyHeader>
                   <EmptyTitle>워크스페이스 없음</EmptyTitle>
-                  <EmptyDescription>폴더를 하나 등록하면 대장 에이전트가 거기서 일함</EmptyDescription>
+                  <EmptyDescription>폴더를 하나 등록하면 대장 에이전트가 거기서 일합니다.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : (
@@ -220,21 +224,21 @@ export function SessionSidebar({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton render={<a href="/settings" />}>
+            <SidebarMenuButton isActive={pathname === "/settings"} render={<a href="/settings" />}>
               <SlidersHorizontalIcon />
               설정
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton render={<a href="/tools" />}>
+            <SidebarMenuButton isActive={pathname === "/tools"} render={<a href="/tools" />}>
               <TerminalIcon />
               도구 로그
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton render={<a href="/secrets" />}>
+            <SidebarMenuButton isActive={pathname === "/secrets"} render={<a href="/secrets" />}>
               <KeyRoundIcon />
-              Secrets
+              시크릿
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

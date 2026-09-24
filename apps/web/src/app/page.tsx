@@ -19,6 +19,9 @@ import { PlanGraph } from "@/components/plan-graph";
 import { Reasoning } from "@/components/reasoning";
 import { SessionSidebar } from "@/components/session-sidebar";
 import { Badge } from "@/components/ui/badge";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Composer } from "@/components/composer";
@@ -166,36 +169,73 @@ export default function ChatPage() {
       />
 
       <SidebarInset className="flex h-full min-h-0 flex-col overflow-hidden">
+        {/* One line at every width: the workspace you are in, whether the
+            socket is up, which transcript you are reading, and the two
+            controls that change the next turn. The status used to be an
+            always-on English badge and the route a bare arrow of text; both
+            shouted at the same volume as the things you can act on. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
           <SidebarTrigger />
-          <Badge variant={connected ? "secondary" : "destructive"}>
-            {connected ? "connected" : "disconnected"}
-          </Badge>
-          <Select value={selectedView} onValueChange={(value) => setSelectedView(value ?? "lead")}>
-            <SelectTrigger size="sm" aria-label="표시할 에이전트" className="max-w-52">
-              <SelectValue placeholder="대장 Agent" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="lead">대장 Agent</SelectItem>
-                {taskChoices.map((choice) => (
-                  <SelectItem key={choice.value} value={choice.value}>
-                    하위 Agent · {choice.title}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          {/* Cost comes only from Claude turns (the Codex CLI reports tokens,
-              not dollars), so both numbers are shown rather than one total. */}
-          {route && (
-            // Auto-routing is invisible otherwise: the user should be able to
-            // see which CLI the rules picked, and why.
-            <span className="text-xs text-muted-foreground">
-              → {models[route.agent] ?? AGENT_LABELS[route.agent as Agent] ?? route.agent} ({route.reason})
-            </span>
+          <Separator orientation="vertical" className="h-4" />
+          <span className="truncate text-sm font-medium">
+            {workspaceName ?? "새 대화"}
+          </span>
+
+          {connected ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="연결됨"
+                    className="size-1.5 shrink-0 rounded-full bg-primary"
+                  />
+                }
+              />
+              <TooltipContent>서버에 연결됨</TooltipContent>
+            </Tooltip>
+          ) : (
+            <Badge variant="destructive">연결 끊김</Badge>
           )}
-          <div className="ml-auto flex items-center gap-2">
+
+          {taskChoices.length > 0 && (
+            <Select
+              value={selectedView}
+              onValueChange={(value) => setSelectedView(value ?? "lead")}
+            >
+              <SelectTrigger size="sm" aria-label="표시할 에이전트" className="ml-1 max-w-48">
+                <SelectValue placeholder="대장 Agent" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="lead">대장 Agent</SelectItem>
+                  {taskChoices.map((choice) => (
+                    <SelectItem key={choice.value} value={choice.value}>
+                      하위 · {choice.title}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          )}
+
+          {route && (
+            // Which CLI the ladder picked, and why. Hidden below md: at that
+            // width the controls matter more than the explanation.
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Badge variant="outline" className="ml-1 hidden max-w-56 md:inline-flex">
+                    <span className="truncate">
+                      {models[route.agent] ?? AGENT_LABELS[route.agent as Agent] ?? route.agent}
+                    </span>
+                  </Badge>
+                }
+              />
+              <TooltipContent>자동 선택: {route.reason}</TooltipContent>
+            </Tooltip>
+          )}
+
+          <div className="ml-auto flex items-center gap-1">
             <AgentToggle value={agent} onChange={handleAgentChange} />
             <ThemeToggle />
           </div>
@@ -205,6 +245,30 @@ export default function ChatPage() {
           <MessageScroller className="min-h-0 flex-1">
             <MessageScrollerViewport>
               <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 p-4">
+                {/* A fresh conversation used to be a blank rectangle above
+                    the composer, which says nothing about what this thing
+                    does or what it may do on your behalf. */}
+                {!selectedTask && messages.length === 0 && (
+                  <MessageScrollerItem messageId="empty">
+                    <Empty className="py-16">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <NetworkIcon />
+                        </EmptyMedia>
+                        <EmptyTitle>
+                          {workspaceName ? `${workspaceName}에서 시작` : "무엇을 해볼까요"}
+                        </EmptyTitle>
+                        <EmptyDescription>
+                          요청을 적으면 대장 에이전트가 판단합니다. 아는 것으로 답할 수 있으면
+                          바로 답하고, 기계를 건드려야 하면 작업으로 나눠 하위 에이전트에게
+                          맡깁니다. 파일을 바꾸는 작업은 각자 격리된 git 워크트리에서 돌고,
+                          위험한 명령은 실행 전에 승인을 받습니다.
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </MessageScrollerItem>
+                )}
+
                 {/* No "handoff" divider: which CLI answered is already on the
                     reply's header, and the extra line said nothing more. */}
                 {selectedTask ? (
@@ -302,7 +366,7 @@ export default function ChatPage() {
                   <MessageScrollerItem messageId="plan-outcome">
                     <Marker variant="separator">
                       <MarkerContent>
-                        계획: 단독 처리{planOutcome.note ? ` (${planOutcome.note})` : ""}
+                        대장이 직접 답했습니다 · 하위 에이전트 없음{planOutcome.note ? ` (${planOutcome.note})` : ""}
                       </MarkerContent>
                     </Marker>
                   </MessageScrollerItem>
@@ -345,8 +409,8 @@ export default function ChatPage() {
           connected={connected}
           placeholder={
             agent === "auto"
-              ? "메시지… (규칙이 CLI를 고름, Enter로 전송)"
-              : `${AGENT_LABELS[agent]}에게 메시지…`
+              ? "무엇을 해야 하는지 적으세요. Enter로 전송"
+              : `${AGENT_LABELS[agent]}에게 보낼 요청`
           }
         />
 
