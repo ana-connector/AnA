@@ -148,6 +148,110 @@ async def test_auto_worker_falls_back_after_session_limit(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_planning_limit_switches_lead_before_creating_workers(db_pool):
+    codex = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"수정","prompt":"edit files"}]}',
+        DONE_JSON, "작업 완료",
+    ], label="codex")
+    workers = []
+
+    def adapter_factory(agent, auth_mode=None, model=None, effort=None):
+        return codex if agent == "codex" else LimitedWorker()
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        workers.append(agent)
+        return ScriptedAdapter(["수정됨"], label=agent)
+
+    config = _config(db_pool, codex, worker_factory, "ma-plan-limit")
+    config["configurable"]["adapter_factory"] = adapter_factory
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, config)
+
+    assert workers
+    assert any(f["type"] == "failover" and f["to_rung"] == "codex" for f in frames)
+    assert values["response_text"] == "작업 완료"
+    assert values["failover_rung"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_synthesis_failover_keeps_worker_results(db_pool):
+    claude = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"수정","prompt":"edit files"}]}',
+        DONE_JSON, "You've hit your session limit · resets 8:10am (UTC)",
+    ])
+    codex = ScriptedAdapter(["작업 결과를 확인했습니다"], label="codex")
+
+    def adapter_factory(agent, auth_mode=None, model=None, effort=None):
+        if agent == "codex":
+            return codex
+        return claude if auth_mode == "pro" else LimitedWorker()
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        return ScriptedAdapter(["파일 수정 완료"], label=agent)
+
+    config = _config(db_pool, claude, worker_factory, "ma-synthesis-limit")
+    config["configurable"]["adapter_factory"] = adapter_factory
+    graph = build_graph(InMemorySaver())
+    _, values = await _run(graph, config)
+
+    assert "파일 수정 완료" in codex.prompts[0]
+    assert "Sub-agent results:" in codex.prompts[0]
+    assert values["response_text"] == "작업 결과를 확인했습니다"
+
+
+@pytest.mark.asyncio
+async def test_replanning_limit_can_assign_another_worker(db_pool):
+    claude = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"id":"t1","title":"검토","prompt":"review"}]}',
+        "You've hit your session limit · resets 8:10am (UTC)",
+    ])
+    codex = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"id":"t2","title":"수정","needs":["t1"],"prompt":"edit"}]}',
+        "두 작업 완료",
+    ], label="codex")
+    worker_prompts = []
+
+    def adapter_factory(agent, auth_mode=None, model=None, effort=None):
+        return codex if agent == "codex" else claude if auth_mode == "pro" else LimitedWorker()
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        worker = ScriptedAdapter(["검토 완료" if not worker_prompts else "수정 완료"], label=agent)
+        worker_prompts.append(worker)
+        return worker
+
+    config = _config(db_pool, claude, worker_factory, "ma-replan-limit")
+    config["configurable"]["adapter_factory"] = adapter_factory
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, config)
+
+    done = [f["task"] for f in frames if f["type"] == "subagent" and f["task"]["status"] == "done"]
+    assert [task["id"] for task in done] == ["t1", "t2"]
+    assert "검토 완료" in worker_prompts[1].prompts[0]
+    assert values["response_text"] == "두 작업 완료"
+
+
+@pytest.mark.asyncio
+async def test_worker_tokens_are_attributed_to_the_worker_model(db_pool):
+    lead = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"검토","agent":"kimi","prompt":"review"}]}',
+        DONE_JSON, "완료",
+    ])
+    tracker = Mock()
+    tracker.snapshot.return_value = None
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        return ScriptedAdapter(["검토 완료"], label=agent)
+
+    config = _config(db_pool, lead, worker_factory, "ma-kimi-usage")
+    config["configurable"]["usage_tracker"] = tracker
+    graph = build_graph(InMemorySaver())
+    await _run(graph, config)
+
+    tracker.record_tokens.assert_any_call("kimi", 15)
+    tracker.record_tokens.assert_any_call("claude", 15)
+
+
+@pytest.mark.asyncio
 async def test_subagent_frames_track_each_task(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, DONE_JSON, "done"])
 

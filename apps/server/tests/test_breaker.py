@@ -85,6 +85,12 @@ def test_chain_from_pro_mode():
     ]
 
 
+def test_unspecified_claude_mode_does_not_repeat_pro():
+    assert [r.label for r in build_chain("claude", None)] == [
+        "claude/pro", "claude/api", "codex", "kimi",
+    ]
+
+
 def test_chain_from_codex_falls_back_to_claude():
     # Nothing to re-auth on the Codex side.
     assert [r.label for r in build_chain("codex", "pro")] == ["codex", "claude/pro", "kimi"]

@@ -135,7 +135,7 @@ async def test_usage_comes_from_the_session_log(tmp_path, monkeypatch):
     events = await _collect(adapter.run_stream("안녕"))
 
     usage = events[-1].usage
-    assert usage["input_tokens"] == 1058
+    assert usage["input_tokens"] == 20002
     assert usage["output_tokens"] == 69
     # Cache counts are a breakdown of the input; counting them would double.
     assert usage["cache_read_input_tokens"] == 18944

@@ -107,6 +107,7 @@ export default function ChatPage() {
     connected,
     streaming,
     usage,
+    hasUnpricedUsage,
     workspace,
     workspaceName,
     threadId,
@@ -466,6 +467,7 @@ export default function ChatPage() {
           refreshKey={completedTurns}
           totalCostUsd={usage.totalCostUsd}
           totalTokens={usage.totalTokens}
+          hasUnpricedUsage={hasUnpricedUsage}
         />
       </main>
 

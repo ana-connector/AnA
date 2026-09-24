@@ -122,9 +122,10 @@ def build_chain(preferred_agent: str, preferred_mode: Optional[str]) -> list[Run
         # Same shape: one account, one bucket, so the way out of a Kimi limit
         # is another CLI entirely.
         return [Rung(KIMI), Rung(CLAUDE, preferred_mode or "pro"), Rung(CODEX)]
-    other_mode = "api" if preferred_mode == "pro" else "pro"
+    current_mode = preferred_mode or "pro"
+    other_mode = "api" if current_mode == "pro" else "pro"
     return [
-        Rung(CLAUDE, preferred_mode or "pro"),
+        Rung(CLAUDE, current_mode),
         Rung(CLAUDE, other_mode),
         Rung(CODEX),
         Rung(KIMI),

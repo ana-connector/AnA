@@ -12,9 +12,9 @@ in the session's own wire log:
 way Codex's real rate limits are read out of its rollout log, so a Kimi turn
 still counts against the thread's token budget instead of looking free.
 
-`inputCacheRead`/`inputCacheCreation` are left out for the same reason the
-other adapters drop their cache fields: they are a breakdown of the input, and
-adding them double-counts.
+Kimi's input fields are disjoint: `inputOther`, `inputCacheRead`, and
+`inputCacheCreation` must all be included to count the full input. Unlike
+Claude's usage payload, cached input is not already inside `inputOther`.
 """
 import json
 import os
@@ -70,13 +70,20 @@ def read_session_tokens(
         return None
     input_tokens = usage.get("inputOther")
     output_tokens = usage.get("output")
-    if not isinstance(input_tokens, int) and not isinstance(output_tokens, int):
+    cache_read = usage.get("inputCacheRead")
+    cache_creation = usage.get("inputCacheCreation")
+    if not any(isinstance(value, int) for value in (
+        input_tokens, output_tokens, cache_read, cache_creation
+    )):
         return None
     return {
-        "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
+        "input_tokens": sum(
+            value for value in (input_tokens, cache_read, cache_creation)
+            if isinstance(value, int)
+        ),
         "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
-        # Kept under their own names so nothing downstream counts them as
-        # input; they are here because the status bar may want them later.
+        # Breakdown kept for diagnostics; graph only adds input_tokens and
+        # output_tokens, so these are not added a second time.
         "cache_read_input_tokens": usage.get("inputCacheRead"),
         "cache_creation_input_tokens": usage.get("inputCacheCreation"),
     }
