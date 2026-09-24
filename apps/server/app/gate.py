@@ -36,7 +36,14 @@ router = APIRouter()
 # What the lead may call without being granted file, shell, network or search
 # access. Hook tool names omit punctuation, so a tool can arrive in either
 # spelling and both are listed.
-LEAD_CONTROL_TOOLS = {"clockcurr_time", "askask_user", "mcp__ask__ask_user"}
+LEAD_CONTROL_TOOLS = {
+    "clockcurr_time", "askask_user", "mcp__ask__ask_user",
+    # Codex's built-in question tools are reported directly by its hook,
+    # rather than as calls to ANA's ask MCP server.
+    "request_user_input", "request_user_input_async",
+    "functionsrequest_user_input", "functionsrequest_user_input_async",
+    "functions.request_user_input", "functions.request_user_input_async",
+}
 
 # MCP servers whose tools the lead may call, whatever the spelling the CLI
 # reports. `ask` is how the lead reaches the user (see ASK_SERVER below):
@@ -162,8 +169,7 @@ class Question(BaseModel):
 
 class AskRequest(BaseModel):
     questions: list[Question] = []
-    # Which agent is asking, for the card's header. The lead is the only role
-    # scoped for this server, so this is normally "lead".
+    # Which agent is asking, for the card's header.
     role: str | None = None
 
 

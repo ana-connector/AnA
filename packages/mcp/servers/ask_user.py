@@ -91,7 +91,7 @@ def _gate_url() -> str:
 def _ask(questions: list) -> dict:
     """Puts the questions to ANA and returns its answer payload."""
     body = json.dumps(
-        {"questions": questions, "role": os.environ.get("ANA_AGENT_ROLE") or "lead"}
+        {"questions": questions, "role": os.environ.get("ANA_GATE_ROLE") or "lead"}
     ).encode("utf-8")
     request = urllib.request.Request(
         _gate_url(),

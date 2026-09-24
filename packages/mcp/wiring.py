@@ -49,9 +49,8 @@ def process_role(role: str):
     what exists; the gate decides who may use it.
 
     So a lead process gets both sets: the worker servers its native sub-agents
-    need, and the servers scoped to the lead itself — `ask`, which is the lead's
-    own way of reaching the user. Returning only WORKER here meant a
-    lead-scoped server was configured for nobody and never spawned at all."""
+    need, and the servers scoped to the lead itself. Returning only WORKER
+    here meant a lead-scoped server could be configured for nobody."""
     return (WORKER, LEAD) if role == LEAD else (role,)
 
 

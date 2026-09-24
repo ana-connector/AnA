@@ -124,18 +124,41 @@ def test_a_gate_that_cannot_be_reached_is_a_readable_failure(monkeypatch):
     assert "connection refused" in responses[0]["result"]["content"][0]["text"]
 
 
+def test_worker_question_identifies_its_role(monkeypatch):
+    sent = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'{"answered": false}'
+
+    def urlopen(request, timeout):
+        sent.update(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setenv("ANA_GATE_ROLE", "worker")
+    monkeypatch.setenv("ANA_GATE_TOKEN", "test-token")
+    monkeypatch.setattr(ask_user.urllib.request, "urlopen", urlopen)
+    ask_user._ask([{"question": "어느 쪽이 좋나요?"}])
+
+    assert sent["role"] == "worker"
+
+
 # --- the registry side ------------------------------------------------------
 
 
-def test_the_ask_server_is_scoped_to_the_lead_alone():
+def test_the_ask_server_is_available_to_lead_and_worker():
     registry = load_registry()
 
     assert "ask" in registry.names_for(LEAD)
-    assert "ask" not in registry.names_for(WORKER)
-    # A worker that needs a decision reports back to the lead; several workers
-    # asking at once would race for one human.
+    assert "ask" in registry.names_for(WORKER)
     assert scope_denial("mcp__ask__ask_user", WORKER, registry.names_for(WORKER),
-                        registry.names()) is not None
+                        registry.names()) is None
     assert scope_denial("mcp__ask__ask_user", LEAD, registry.names_for(LEAD),
                         registry.names()) is None
 
@@ -152,7 +175,7 @@ def test_a_lead_process_is_started_with_the_lead_and_worker_servers():
     assert "ask" in names  # the lead's own
     assert "git" in names  # its native sub-agents'
     worker_only, _ = registry.resolve(process_role(WORKER), check_command=False)
-    assert "ask" not in {server.name for server in worker_only}
+    assert "ask" in {server.name for server in worker_only}
 
 
 def test_the_lead_may_ask_but_still_may_not_work():
@@ -160,6 +183,8 @@ def test_the_lead_may_ask_but_still_may_not_work():
     exceptions, and hook payloads spell MCP tool names both ways."""
     assert lead_may_call("mcp__ask__ask_user") is True
     assert lead_may_call("askask_user") is True
+    assert lead_may_call("request_user_input_async") is True
+    assert lead_may_call("functions.request_user_input_async") is True
     assert lead_may_call("Bash") is False
     assert lead_may_call("mcp__git__git_log") is False
     assert server_for_tool("mcp__ask__ask_user", load_registry().names()) == "ask"

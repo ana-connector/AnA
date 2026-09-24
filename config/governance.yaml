@@ -32,7 +32,7 @@ rules:
     description: "에이전트가 사용자에게 질문을 보내는 호출"
     category: allowlist
     action: allow
-    tools: [mcp__ask__ask_user, ask__ask_user, askask_user]
+    tools: [mcp__ask__ask_user, ask__ask_user, askask_user, request_user_input, request_user_input_async, functionsrequest_user_input, functionsrequest_user_input_async, functions.request_user_input, functions.request_user_input_async]
     patterns:
       - '[\s\S]*'
 

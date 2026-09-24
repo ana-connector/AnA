@@ -73,7 +73,7 @@ servers:
     roles: [worker]
     enabled: true
 
-  # ④ Ask — ANA's own server, and the only one scoped to the lead.
+  # ④ Ask — ANA's own server, available to every agent role.
   #
   # One tool, `ask_user`: it puts a question to the browser and waits for the
   # answer (packages/mcp/servers/ask_user.py). Everything else here flows one
@@ -81,9 +81,7 @@ servers:
   # guess whenever the requirements forked, and a wrong guess only surfaces at
   # the end.
   #
-  # roles: [lead] deliberately. A worker that needs a decision should report
-  # back to the lead: several workers asking at once would race for one human,
-  # and the gate denies a worker's call here as out of scope.
+  # A worker may also ask the user directly when its task needs an answer.
   #
   # `python -m` with PYTHONPATH rather than a path: the same image runs the
   # server and every workspace container, and /app is where ANA lives in both.
@@ -94,5 +92,5 @@ servers:
     env:
       PYTHONPATH: "/app"
       PYTHONUNBUFFERED: "1"
-    roles: [lead]
+    roles: [lead, worker]
     enabled: true
