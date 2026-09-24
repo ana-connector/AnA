@@ -15,6 +15,7 @@ default_action: allow
 rules:
   # --- explicit allowances (must precede the blocks below) -----------------
   - id: git-status-and-read
+    description: "저장소 상태를 읽기만 하는 git 명령"
     category: allowlist
     action: allow
     tools: [Bash]
@@ -28,6 +29,7 @@ rules:
   # git-history-rewrite rule and hold the question behind an approval for the
   # question.
   - id: ask-user
+    description: "에이전트가 사용자에게 질문을 보내는 호출"
     category: allowlist
     action: allow
     tools: [mcp__ask__ask_user, ask__ask_user, askask_user]
@@ -44,6 +46,7 @@ rules:
   # CLIs write files with Edit/Write/apply_patch, and the path shows up in the
   # serialized input either way.
   - id: ana-governance-self-edit
+    description: "ANA 자신의 게이트 규칙·훅 코드를 고치려 한다. 허용하면 이후 도구 호출을 검사하는 기준이 바뀐다"
     category: self-modification
     action: ask
     tools: []
@@ -54,6 +57,7 @@ rules:
 
   # --- filesystem destruction ---------------------------------------------
   - id: fs-recursive-force-delete
+    description: "재귀·강제 삭제다. 지운 파일은 되돌릴 수 없다"
     category: filesystem-destruction
     action: deny
     tools: [Bash]
@@ -61,12 +65,14 @@ rules:
       - '\brm\b[^|;&]*\s-[a-z]*r[a-z]*f|\brm\b[^|;&]*\s-[a-z]*f[a-z]*r'
       - '\brm\b[^|;&]*--recursive[^|;&]*--force'
   - id: fs-delete-outside-workspace
+    description: "워크스페이스 밖 시스템 경로를 지우거나 비우려 한다"
     category: filesystem-destruction
     action: ask
     tools: [Bash]
     patterns:
       - '\b(rm|shred|truncate)\b[^|;&]*\s/(etc|usr|var|boot|home|root|bin|sbin|lib)\b'
   - id: fs-disk-format
+    description: "디스크 장치에 직접 쓴다. 파티션·파일시스템이 사라진다"
     category: filesystem-destruction
     action: deny
     tools: [Bash]
@@ -75,6 +81,7 @@ rules:
 
   # --- database destruction -----------------------------------------------
   - id: db-drop
+    description: "테이블·데이터베이스를 삭제하거나 비운다"
     category: database-destruction
     action: deny
     tools: [Bash]
@@ -82,6 +89,7 @@ rules:
       - '\bdrop\s+(table|database|schema)\b'
       - '\btruncate\s+table\b'
   - id: db-unscoped-write
+    description: "WHERE 없는 DELETE/UPDATE다. 테이블 전체 행이 바뀐다"
     category: database-destruction
     action: deny
     tools: [Bash]
@@ -92,6 +100,7 @@ rules:
 
   # --- git history destruction --------------------------------------------
   - id: git-history-rewrite
+    description: "커밋 이력을 다시 쓰거나 강제로 밀어넣는다. 남의 클론과 어긋날 수 있다"
     category: git-history-destruction
     action: ask
     tools: [Bash]
@@ -103,12 +112,14 @@ rules:
 
   # --- system control ------------------------------------------------------
   - id: system-power-control
+    description: "기계나 서비스를 끄려 한다"
     category: system-control
     action: deny
     tools: [Bash]
     patterns:
       - '\b(shutdown|reboot|halt|poweroff|systemctl\s+(stop|disable|mask))\b'
   - id: kill-everything
+    description: "사용자 소유 프로세스를 모두 종료하려 한다"
     category: system-control
     action: deny
     tools: [Bash]
@@ -117,6 +128,7 @@ rules:
       # that from an agent.
       - '\bkill\s+(-\w+\s+)?-1\b'
   - id: process-cleanup
+    description: "프로세스를 강제 종료한다. 방금 띄운 개발 서버 정리일 수도, 중요한 프로세스일 수도 있다"
     category: system-control
     # `pkill -f "http.server 8421"` is how you clean up the dev server you
     # started a minute ago, so this asks instead of refusing: the pattern
@@ -128,12 +140,14 @@ rules:
       - '\b(pkill|killall)\b'
       - '\bkill\s+-9\b'
   - id: container-control
+    description: "컨테이너를 지우거나 멈춘다. 다른 워크스페이스의 컨테이너일 수도 있다"
     category: system-control
     action: ask
     tools: [Bash]
     patterns:
       - '\bdocker\s+(rm|kill|stop|system\s+prune)\b'
   - id: privilege-escalation
+    description: "sudo로 권한을 올리려 한다"
     category: system-control
     action: deny
     tools: [Bash]
@@ -142,6 +156,7 @@ rules:
 
   # --- credential exfiltration --------------------------------------------
   - id: secret-file-egress
+    description: "자격증명 파일을 읽어 외부로 보내는 형태다"
     category: credential-exfiltration
     action: deny
     tools: [Bash]
@@ -152,6 +167,7 @@ rules:
 
   # --- covering up failures (Replit incident) ------------------------------
   - id: log-or-test-tampering
+    description: "테스트·로그 결과를 감추거나 지우는 형태다. 실패가 성공처럼 보일 수 있다"
     category: result-tampering
     action: ask
     tools: [Bash]
@@ -165,6 +181,7 @@ rules:
   # rather than `deny` because normal work (installing a package, calling an
   # API) legitimately needs it.
   - id: network-egress
+    description: "외부 네트워크에 접근한다(설치, API 호출, git 원격 작업)"
     category: network-egress
     action: ask
     tools: [Bash]

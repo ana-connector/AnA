@@ -478,6 +478,10 @@ async def gate_tool_call(
             rule_id="workspace-escape",
             category="session-isolation",
             reason=f"touches paths outside the session workspace: {', '.join(escaping[:3])}",
+            description=(
+                "이 대화의 워크스페이스 밖 경로를 건드린다: "
+                + ", ".join(escaping[:3])
+            ),
         )
 
     # ASK: record that approval was sought *before* waiting on a human, so an
@@ -491,6 +495,11 @@ async def gate_tool_call(
             "tool_input": safe_input,
             "rule_id": verdict.rule_id,
             "category": verdict.category,
+            # Why this is being asked, in the words of whoever wrote the rule
+            # (config/governance.yaml). The id and the category are for querying
+            # the audit log afterwards; they do not tell the person answering
+            # what the machine is worried about.
+            "description": verdict.description,
             "agent": session.current_agent,
             "cwd": body.cwd,
             "workspace": session.workspace,

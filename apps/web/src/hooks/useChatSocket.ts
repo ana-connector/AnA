@@ -89,6 +89,8 @@ export type ApprovalRequest = {
   workspace?: string | null;
   tool_name: string;
   tool_input: Record<string, unknown>;
+  /** What the matched rule says this is about, for the person answering. */
+  description?: string;
   rule_id: string | null;
   category: string | null;
   agent: Agent | null;

@@ -29,6 +29,10 @@ class Rule:
     action: str
     tools: tuple[str, ...]
     patterns: tuple[re.Pattern, ...]
+    # One line a human reads on the approval card: what this rule is about, in
+    # the words of the person who has to answer. The rule id and category are
+    # for querying the audit log; they do not explain why the machine stopped.
+    description: str = ""
 
     def matches(self, tool_name: str, haystack: str) -> bool:
         # An empty `tools` list means the rule applies to every tool.
@@ -43,6 +47,8 @@ class Verdict:
     rule_id: Optional[str] = None
     category: Optional[str] = None
     reason: str = ""
+    # The matched rule's own description, passed through to the approval card.
+    description: str = ""
 
 
 class RuleSet:
@@ -73,6 +79,7 @@ class RuleSet:
                         re.compile(p, re.IGNORECASE)
                         for p in entry.get("patterns", [])
                     ),
+                    description=str(entry.get("description", "")),
                 )
             )
         return cls(rules, default_action=raw.get("default_action", ALLOW))
@@ -86,6 +93,7 @@ class RuleSet:
                     rule_id=rule.id,
                     category=rule.category,
                     reason=f"{rule.id} ({rule.category})",
+                    description=rule.description,
                 )
         return Verdict(action=self.default_action, reason="no rule matched")
 
