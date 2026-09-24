@@ -72,3 +72,27 @@ servers:
     requires_env: [GITHUB_PERSONAL_ACCESS_TOKEN]
     roles: [worker]
     enabled: true
+
+  # ④ Ask — ANA's own server, and the only one scoped to the lead.
+  #
+  # One tool, `ask_user`: it puts a question to the browser and waits for the
+  # answer (packages/mcp/servers/ask_user.py). Everything else here flows one
+  # way — the user asks, the agents work — so without this the lead had to
+  # guess whenever the requirements forked, and a wrong guess only surfaces at
+  # the end.
+  #
+  # roles: [lead] deliberately. A worker that needs a decision should report
+  # back to the lead: several workers asking at once would race for one human,
+  # and the gate denies a worker's call here as out of scope.
+  #
+  # `python -m` with PYTHONPATH rather than a path: the same image runs the
+  # server and every workspace container, and /app is where ANA lives in both.
+  - name: ask
+    description: "사용자에게 직접 질문하고 답을 기다린다 (ANA 자체 서버)"
+    command: python
+    args: ["-m", "packages.mcp.servers.ask_user"]
+    env:
+      PYTHONPATH: "/app"
+      PYTHONUNBUFFERED: "1"
+    roles: [lead]
+    enabled: true

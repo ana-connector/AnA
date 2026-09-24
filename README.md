@@ -140,6 +140,7 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_GOVERNANCE` | `off` restores the old bypass behavior; anything else (including unset) keeps the gate on |
 | `ANA_GOVERNANCE_RULES` | Path to the rule set (default `config/governance.yaml`) |
 | `ANA_APPROVAL_TIMEOUT_SECONDS` | How long an approval card waits before the call is denied (default 300) |
+| `ANA_QUESTION_TIMEOUT_SECONDS` | How long the agent's own question waits for an answer (default 900). A timeout is a result, not a failure: the agent states its assumption and carries on |
 | `CODEX_SANDBOX` | Codex's own sandbox mode. Leave unset under Docker: codex sandboxes through bubblewrap, which cannot start in a container ("bwrap: No permissions to create a new namespace"). The hook still runs and still denies, so the gate plus the container stays the enforcement boundary |
 | `ANA_WORKSPACE_ROOT` | Root new workspaces are created under (default `$ANA_WORKSPACE_DIR/sessions`) |
 | `ANA_SELF_WORKSPACE` | Absolute host path of ANA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
@@ -229,6 +230,34 @@ the switch as unavailable otherwise rather than failing at turn time.
 | `ANA_CONTAINER_GATE_URL` | Gate URL as seen from inside a workspace container |
 | `DOCKER_GID` | Group id of the host's docker socket (the server runs as uid 1000) |
 
+### The agent asking you
+
+Everything else here flows one way — you ask, the agents work, the gate
+interrupts when a tool call needs a decision. So a lead facing a real fork in
+the requirements had to guess, and a wrong guess surfaces at the end.
+
+`ask_user` is ANA's own MCP server (`packages/mcp/servers/ask_user.py`), scoped
+to the lead alone. The lead calls it with up to four questions, each with
+optional choices; the question appears in the chat as a card, the turn waits,
+and the answers come back as the tool's result.
+
+- **Why MCP**: the gate is driven by the CLIs' `PreToolUse` hook, which only
+  fires because the agent already did something. A question the agent starts
+  needs a tool the agent can call.
+- **Why the lead alone**: several workers asking at once would race for one
+  human. A worker that needs a decision reports back to the lead, and the gate
+  denies its call here as out of scope.
+- **Why it waits rather than fails**: an unanswered question returns "nobody
+  answered" after `ANA_QUESTION_TIMEOUT_SECONDS`, and the lead is told to state
+  its assumption and continue. A turn is never lost because someone stepped away.
+- The call is still gated and audited like any other, with an explicit `allow`
+  rule (`ask-user`) so the question itself never waits behind an approval — and
+  the question and its answer are appended to the turn's transcript, so
+  reopening the conversation shows what was asked.
+- No new dependency: the stdio protocol (`initialize`, `tools/list`,
+  `tools/call`) is ~200 lines of stdlib, against `@shadcn/questionnaire` on the
+  browser side.
+
 ### Secrets
 
 `/secrets` in the web UI (also `GET`/`PUT`/`DELETE /secrets` on the API)
@@ -278,6 +307,10 @@ Built from shadcn/ui components (`base-nova` style, Base UI primitives):
   than hand-written scroll math.
 - **Marker** rows mark the two things that are the system talking rather than
   an agent: a handoff between CLIs and a failover switch.
+- **Questionnaire** cards carry the agent's own questions inline in the
+  transcript, above the approvals: radio or checkboxes when the lead offered
+  choices, always with a free-text box, because the answer it did not think of
+  is the one worth having.
 - **Alert** cards carry gate approvals inline in the transcript, and an
   **AlertDialog** guards workspace deletion (the one action here that destroys
   something).

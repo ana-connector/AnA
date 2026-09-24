@@ -155,6 +155,10 @@ async def _run_worker(adapter, prompt: str) -> WorkerRun:
     run = WorkerRun(adapter=adapter)
     try:
         async for event in adapter.run_stream(prompt, session_id=None):
+            # Reported once, usually on the first frame; kept so the task can
+            # say which model did the work rather than only which CLI.
+            if getattr(event, "model", None):
+                run.model = event.model
             if event.type == "text":
                 run.output += event.text
             elif event.type == "result":
@@ -638,6 +642,11 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                         "branch": merged.branch,
                         "reason": merged.reason,
                     }
+                if run is not None and not run.model:
+                    # The CLI said nothing about its model (a pinned default,
+                    # or a run that failed before reporting), so the task shows
+                    # what the ladder asked for instead of nothing.
+                    run.model = worker_route.model
                 return run
 
 

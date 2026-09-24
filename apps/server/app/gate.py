@@ -19,7 +19,7 @@ from packages.governance.rules import ALLOW, ASK, DENY, Verdict, load_ruleset
 from packages.governance.subagent_scope import Scope, violation as scope_violation
 from packages.governance.workspace import escaping_paths
 from packages.mcp.registry import load_registry
-from packages.mcp.scope import scope_denial
+from packages.mcp.scope import scope_denial, server_for_tool
 from packages.governance.secrets import (
     GLOBAL_SCOPE,
     delete_secret,
@@ -34,8 +34,19 @@ from packages.governance.secrets import (
 router = APIRouter()
 
 # What the lead may call without being granted file, shell, network or search
-# access. Hook tool names omit punctuation.
-LEAD_CONTROL_TOOLS = {"clockcurr_time"}
+# access. Hook tool names omit punctuation, so a tool can arrive in either
+# spelling and both are listed.
+LEAD_CONTROL_TOOLS = {"clockcurr_time", "askask_user", "mcp__ask__ask_user"}
+
+# MCP servers whose tools the lead may call, whatever the spelling the CLI
+# reports. `ask` is how the lead reaches the user (see ASK_SERVER below):
+# withholding it would leave the lead guessing at a decision that is the
+# user's, which is the thing it is supposed to stop doing.
+LEAD_CONTROL_SERVERS = {"ask"}
+
+# ANA's own MCP server: one tool, `ask_user`, which puts a question to the
+# browser and waits (packages/mcp/servers/ask_user.py).
+ASK_SERVER = "ask"
 
 # The CLIs' own sub-agent tooling. ANA refuses it by default and delegates
 # through its planner instead, because a natively-spawned sub-agent skips
@@ -67,6 +78,19 @@ def lead_control_tools() -> set[str]:
     if native_subagents_allowed():
         return LEAD_CONTROL_TOOLS | NATIVE_DELEGATION_TOOLS
     return LEAD_CONTROL_TOOLS
+
+
+def lead_may_call(tool_name: str) -> bool:
+    """Whether the lead itself may make this call.
+
+    The lead does no work of its own — everything that touches the machine goes
+    through a sub-agent — with two exceptions: reading the clock, and asking the
+    user. Both spellings of an MCP tool name are recognized, and the server is
+    matched as well as the literal name, so a renamed tool inside the `ask`
+    server does not silently become a denial."""
+    if tool_name.lower() in lead_control_tools():
+        return True
+    return server_for_tool(tool_name, load_registry().names()) in LEAD_CONTROL_SERVERS
 
 
 class ToolCallRequest(BaseModel):
@@ -121,6 +145,100 @@ async def gate_subagent_event(
         "is_error": False, "agent": task["agent"], "task": dict(task),
     })
     return {"ok": True}
+
+
+class Question(BaseModel):
+    """One question as `ask_user` states it."""
+
+    question: str
+    # Choices to pick from. Empty means a free-text answer.
+    options: list[str] = []
+    # Whether several options may be picked at once.
+    multi: bool = False
+    # Shown under the question: why it is being asked, or what each option
+    # implies.
+    note: str = ""
+
+
+class AskRequest(BaseModel):
+    questions: list[Question] = []
+    # Which agent is asking, for the card's header. The lead is the only role
+    # scoped for this server, so this is normally "lead".
+    role: str | None = None
+
+
+# A question the user never answered. Returned as a result rather than an
+# error: an agent that loses its turn because someone stepped away is worse
+# than one that states its assumption and carries on.
+UNANSWERED = (
+    "사용자가 답하지 않았다(시간 초과). 되돌릴 수 없는 일은 하지 말고, "
+    "세운 가정을 답에 분명히 적고 진행해라."
+)
+
+
+@router.post("/gate/ask")
+async def gate_ask(
+    request: Request,
+    body: AskRequest,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    """Puts the agent's own question to the user and waits for the answer.
+
+    The counterpart of /gate/tool-call: that one is the machine asking
+    permission, this one is the agent asking a question. Both reach the same
+    browser through the same registered session, because the connection that
+    started the turn is the only route to the person who wants the work done.
+
+    Unlike an approval this is *not* a verdict on a tool call — the call to
+    `ask_user` itself already passed the gate — so nothing here is audited a
+    second time. The question and its answer are appended to the turn's
+    transcript instead, so reopening the conversation still shows what was
+    asked."""
+    registry = request.app.state.gate_registry
+    session = registry.get(x_ana_gate_token)
+    if session is None:
+        raise HTTPException(status_code=403, detail="unknown gate token")
+    questions = [q for q in body.questions if q.question.strip()]
+    if not questions:
+        raise HTTPException(status_code=422, detail="at least one question is required")
+
+    payload = [q.model_dump() for q in questions]
+    answers = await registry.request_answer(
+        session,
+        {
+            "text": "",
+            "session_id": None,
+            "is_error": False,
+            "agent": session.current_agent,
+            "role": body.role or "lead",
+            "questions": payload,
+        },
+    )
+
+    answered = answers is not None
+    if session.timeline is not None:
+        # Recorded as a tool block, which is what the transcript and the turns
+        # table already know how to carry — the alternative was a new block
+        # kind and a migration for one row shape.
+        session.timeline.append_tool(
+            {
+                "tool_use_id": None,
+                "tool_name": "ask_user",
+                "input": {
+                    "questions": payload,
+                    "answers": answers if answered else None,
+                },
+                "verdict": "allow" if answered else "timeout",
+                "decided_by": "user" if answered else "timeout",
+                "rule_id": None,
+                "category": "question",
+                "agent_id": None,
+            }
+        )
+
+    if not answered:
+        return {"answered": False, "answers": [], "note": UNANSWERED}
+    return {"answered": True, "answers": answers}
 
 
 class GateDecision(BaseModel):
@@ -257,7 +375,7 @@ async def gate_tool_call(
             category="delegation",
         )
 
-    if body.role == "lead" and not body.agent_id and body.tool_name.lower() not in lead_control_tools():
+    if body.role == "lead" and not body.agent_id and not lead_may_call(body.tool_name):
         # The lead agent plans and writes the answer; everything that touches
         # the machine goes through a sub-agent. Enforced here rather than by
         # CLI flags so it holds for both CLIs and cannot be argued out of.

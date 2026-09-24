@@ -39,6 +39,11 @@ class TaskResult:
     error: str = ""
     cost_usd: float = 0.0
     tokens: int = 0
+    # Which model actually answered this task, as the worker's CLI reported it
+    # (falling back to the model the ladder asked for). The product name —
+    # "claude", "codex" — says less than which model did the work, and a plan
+    # routes its tasks to different ones on purpose.
+    model: Optional[str] = None
     # What ANA checked after the worker said it was done, and what happened to
     # its branch. Both are None when the task asked for neither.
     verification: Optional[dict] = None
@@ -58,6 +63,7 @@ class TaskResult:
             "error": self.error,
             "cost_usd": self.cost_usd,
             "tokens": self.tokens,
+            "model": self.model,
             "verification": self.verification,
             "merge": self.merge,
         }
@@ -71,6 +77,8 @@ class WorkerRun:
     error: str = ""
     cost_usd: float = 0.0
     tokens: int = 0
+    # What the CLI said it was running, when it said anything.
+    model: Optional[str] = None
     adapter: object = None
     # Set when the worker itself reported a failure rather than raising.
     failed: bool = False
@@ -137,6 +145,7 @@ async def run_tasks(
                 result.output = run.output
                 result.cost_usd = run.cost_usd
                 result.tokens = run.tokens
+                result.model = run.model or result.model
                 result.verification = run.extras.get("verification")
                 result.merge = run.extras.get("merge")
                 if run.failed or run.error:

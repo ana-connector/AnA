@@ -332,6 +332,9 @@ class ClientFrame:
     # Set on kind == "approval": the gate request being answered.
     request_id: str = ""
     decision: str = "deny"
+    # Set on kind == "answer": what the user replied to the agent's question,
+    # one entry per question asked.
+    answers: list = field(default_factory=list)
 
 
 def _parse_client_frame(data: str) -> ClientFrame:
@@ -361,6 +364,13 @@ def _parse_client_frame(data: str) -> ClientFrame:
             kind="approval",
             request_id=str(payload.get("request_id") or ""),
             decision="allow" if payload.get("decision") == "allow" else "deny",
+        )
+    if payload.get("type") == "answer":
+        answers = payload.get("answers")
+        return ClientFrame(
+            kind="answer",
+            request_id=str(payload.get("request_id") or ""),
+            answers=answers if isinstance(answers, list) else [],
         )
     prompt = payload.get("prompt")
     if not isinstance(prompt, str):
@@ -817,6 +827,13 @@ async def chat_ws(websocket: WebSocket) -> None:
                     # actually waiting on this, not the turn loop.
                     gate_registry.resolve_approval(
                         gate_session, frame.request_id, frame.decision
+                    )
+                    continue
+                if frame.kind == "answer":
+                    # Same shape one level up: /gate/ask is parked on this, and
+                    # the agent's own tool call is parked on /gate/ask.
+                    gate_registry.resolve_answer(
+                        gate_session, frame.request_id, frame.answers
                     )
                     continue
                 if frame.kind == "cancel":

@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { NetworkIcon } from "lucide-react";
-import { useChatSocket, type SubagentTask } from "@/hooks/useChatSocket";
+import {
+  useChatSocket,
+  type MessageBlock,
+  type SubagentTask,
+  type ToolEvent,
+} from "@/hooks/useChatSocket";
 import {
   AGENT_CHOICES,
   AGENT_LABELS,
@@ -11,6 +16,7 @@ import {
   type AgentChoice,
 } from "@/components/ui/agent-toggle";
 import { ApprovalCard } from "@/components/ui/approval-card";
+import { QuestionCard } from "@/components/ui/question-card";
 import { Markdown } from "@/components/markdown";
 import { ThemeToggle } from "@/components/theme";
 import { ToolCalls } from "@/components/tool-calls";
@@ -70,6 +76,30 @@ const STARTERS = [
   "최근 커밋 5개를 읽고 지금 작업 중인 흐름을 설명해줘",
 ];
 
+/** A reply's blocks with runs of consecutive tool calls merged into one group.
+ *
+ *  The socket records one block per call, in the order things happened, which is
+ *  what keeps a command sitting between the two things the agent said around it.
+ *  Rendering that list one-block-at-a-time gave a separate card per call, each
+ *  headed "도구 1회" — a turn that ran eight commands looked like eight
+ *  one-command turns. Grouping only merges neighbours, so the ordering that
+ *  matters is untouched. */
+function groupBlocks(
+  blocks: MessageBlock[]
+): ({ kind: "text"; text: string } | { kind: "tools"; tools: ToolEvent[] })[] {
+  const grouped: ({ kind: "text"; text: string } | { kind: "tools"; tools: ToolEvent[] })[] = [];
+  for (const block of blocks) {
+    if (block.kind === "text") {
+      grouped.push(block);
+      continue;
+    }
+    const last = grouped[grouped.length - 1];
+    if (last?.kind === "tools") last.tools.push(block.tool);
+    else grouped.push({ kind: "tools", tools: [block.tool] });
+  }
+  return grouped;
+}
+
 function isAgentChoice(value: string | null): value is AgentChoice {
   return value !== null && (AGENT_CHOICES as readonly string[]).includes(value);
 }
@@ -84,6 +114,7 @@ export default function ChatPage() {
     workspaceName,
     threadId,
     approvals,
+    questions,
     plan,
     planOutcome,
     models,
@@ -91,6 +122,7 @@ export default function ChatPage() {
     sendMessage,
     cancel,
     answerApproval,
+    answerQuestion,
     openThread,
   } = useChatSocket();
   const [draft, setDraft] = useState("");
@@ -127,6 +159,16 @@ export default function ChatPage() {
     const live = plan?.tasks.find((task) => task.id === openTask.id);
     return live ?? openTask;
   }, [openTask, plan]);
+
+  // Whether the lead has started writing its answer for the turn in flight.
+  // Once it has, the plan card folds itself: its canvas and task list sit below
+  // the reply, so an open card pushes the sentence you are waiting for out of
+  // the viewport.
+  const leadAnswering = useMemo(() => {
+    if (!streaming) return false;
+    const last = messages[messages.length - 1];
+    return last?.role === "agent" && last.text.trim().length > 0;
+  }, [messages, streaming]);
 
   const handleAgentChange = (next: AgentChoice) => {
     setAgent(next);
@@ -298,8 +340,9 @@ export default function ChatPage() {
                           ) : (
                             // Text and tool calls in the order they happened,
                             // so a command sits between the two things the
-                            // agent said around it.
-                            (
+                            // agent said around it — with neighbouring calls in
+                            // one card rather than one card each.
+                            groupBlocks(
                               message.blocks ?? [{ kind: "text" as const, text: message.text }]
                             ).map((block, blockIndex) =>
                               block.kind === "text" ? (
@@ -311,12 +354,26 @@ export default function ChatPage() {
                                   </Bubble>
                                 )
                               ) : (
-                                <ToolCalls key={blockIndex} tools={[block.tool]} />
+                                <ToolCalls
+                                  key={blockIndex}
+                                  tools={block.tools}
+                                  // The turn in flight keeps its card open, so
+                                  // you can watch what the agent is doing.
+                                  defaultOpen={
+                                    streaming && index === messages.length - 1
+                                      ? true
+                                      : undefined
+                                  }
+                                />
                               )
                             )
                           )}
                           {message.plan && (
-                            <PlanGraph plan={message.plan} onSelectTask={setOpenTask} />
+                            <PlanGraph
+                              plan={message.plan}
+                              onSelectTask={setOpenTask}
+                              defaultOpen={false}
+                            />
                           )}
                         </MessageContent>
                       </Message>
@@ -340,12 +397,28 @@ export default function ChatPage() {
 
                 {plan && (
                   <MessageScrollerItem messageId="plan">
-                    <PlanGraph plan={plan} onSelectTask={setOpenTask} />
+                    <PlanGraph
+                      plan={plan}
+                      onSelectTask={setOpenTask}
+                      autoCollapse={leadAnswering}
+                    />
                   </MessageScrollerItem>
                 )}
 
-                {/* Gate requests render after the transcript: they are what the
-                    conversation is currently blocked on. */}
+                {/* The agent's own questions and the gate's approval requests
+                    render after the transcript: both are what the conversation
+                    is currently blocked on. Questions first — an approval is
+                    about one command, a question is about what to build. */}
+                {questions.map((request) => (
+                  <MessageScrollerItem
+                    key={request.request_id}
+                    messageId={request.request_id}
+                    className="min-w-0"
+                  >
+                    <QuestionCard request={request} onAnswer={answerQuestion} />
+                  </MessageScrollerItem>
+                ))}
+
                 {approvals.map((request) => (
                   <MessageScrollerItem
                     key={request.request_id}
@@ -398,6 +471,11 @@ export default function ChatPage() {
             <SheetTitle className="pr-8">{shownTask?.title}</SheetTitle>
             <div className="flex flex-wrap items-center gap-1.5">
               {shownTask && <Badge variant="outline">{shownTask.agent}</Badge>}
+              {shownTask?.model && shownTask.model !== shownTask.agent && (
+                <Badge variant="outline" className="font-mono">
+                  {shownTask.model}
+                </Badge>
+              )}
               {shownTask && (
                 <Badge variant={shownTask.status === "error" || shownTask.status === "timeout" ? "destructive" : "secondary"}>
                   {TASK_STATUS_LABEL[shownTask.status]}

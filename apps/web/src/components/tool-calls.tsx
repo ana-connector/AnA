@@ -4,11 +4,6 @@ import { useState } from "react";
 import { ChevronDownIcon, TerminalIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -19,9 +14,9 @@ import { cn } from "@/lib/utils";
 import type { ToolEvent } from "@/hooks/useChatSocket";
 import { toolDisplay } from "@/lib/tool-display";
 
-/** Beyond this many calls the list stops being readable inline and starts
- *  burying the reply it belongs to. */
-const INLINE_LIMIT = 4;
+/** Up to this many calls the run is short enough to read inline; beyond it the
+ *  card starts closed so a long run cannot bury the reply it belongs to. */
+const OPEN_BY_DEFAULT_UP_TO = 4;
 
 const VERDICT_LABEL: Record<string, string> = {
   allow: "허용",
@@ -33,98 +28,99 @@ function commandOf(tool: ToolEvent): string {
   return toolDisplay(tool.tool_name, tool.input);
 }
 
-/** What the agent actually ran, inline under its reply.
+/** What the agent actually ran, as one card under its reply.
  *
  *  Every entry comes from the governance gate, so this is the same record the
- *  audit log keeps — not a separate, prettier story. Three things changed from
- *  the flat list this replaced: a denied call no longer looks like an allowed
- *  one, a long run collapses instead of burying the answer, and a row can be
- *  opened to see the arguments the truncation hid. */
-export function ToolCalls({ tools }: { tools: ToolEvent[] }) {
+ *  audit log keeps — not a separate, prettier story.
+ *
+ *  One card per run of calls, not one per call: the transcript used to render a
+ *  card per tool block, so a turn that ran eight commands showed eight cards
+ *  each headed "도구 1회". The header is the summary and the fold, and the rows
+ *  are for when you stop to look. */
+export function ToolCalls({
+  tools,
+  defaultOpen,
+}: {
+  tools: ToolEvent[];
+  /** Overrides the length heuristic — the in-flight turn keeps its card open so
+   *  you can watch what the agent is doing. */
+  defaultOpen?: boolean;
+}) {
   const [selected, setSelected] = useState<ToolEvent | null>(null);
+  const [open, setOpen] = useState(defaultOpen ?? tools.length <= OPEN_BY_DEFAULT_UP_TO);
 
   if (tools.length === 0) return null;
 
   const denied = tools.filter((tool) => tool.verdict === "deny").length;
-  const head = tools.slice(0, INLINE_LIMIT);
-  const rest = tools.slice(INLINE_LIMIT);
-
-  const row = (tool: ToolEvent, index: number) => {
-    const isDeny = tool.verdict === "deny";
-    return (
-      <button
-        key={index}
-        type="button"
-        onClick={() => setSelected(tool)}
-        className={cn(
-          "flex w-full items-start gap-2 rounded-sm px-1 py-0.5 text-left text-xs",
-          "hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-        )}
-      >
-        <TerminalIcon
-          className={cn(
-            "mt-0.5 size-3.5 shrink-0",
-            isDeny ? "text-destructive" : "text-muted-foreground"
-          )}
-        />
-        <code
-          className={cn(
-            "min-w-0 flex-1 truncate font-mono",
-            isDeny && "text-destructive line-through decoration-destructive/40"
-          )}
-        >
-          {commandOf(tool)}
-        </code>
-        {tool.verdict !== "allow" ? (
-          <Badge
-            variant={isDeny ? "destructive" : "outline"}
-            className="shrink-0"
-          >
-            {VERDICT_LABEL[tool.verdict] ?? tool.verdict}
-          </Badge>
-        ) : null}
-      </button>
-    );
-  };
+  const pending = tools.filter((tool) => tool.verdict === "pending").length;
+  const last = tools[tools.length - 1];
 
   return (
     <>
-      <div className="flex flex-col gap-0.5 rounded-md border border-border bg-background/60 p-2">
-        {/* The count is the summary a reader skimming the transcript wants;
-            the rows are for when they stop to look. */}
-        <div className="flex items-center gap-2 px-1 pb-1 text-[11px] text-muted-foreground">
-          <span>도구 {tools.length}회</span>
-          {denied > 0 ? (
-            <span className="text-destructive">거부 {denied}회</span>
-          ) : null}
-        </div>
+      <div className="flex min-w-0 flex-col gap-0.5 rounded-md border border-border bg-background/60 p-2">
+        <button
+          type="button"
+          onClick={() => setOpen((previous) => !previous)}
+          aria-expanded={open}
+          className="flex min-w-0 items-center gap-1.5 rounded-sm px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted"
+        >
+          <ChevronDownIcon
+            className={cn("size-3 shrink-0 transition-transform", !open && "-rotate-90")}
+          />
+          <span className="shrink-0">도구 {tools.length}회</span>
+          {denied > 0 && <span className="shrink-0 text-destructive">거부 {denied}</span>}
+          {pending > 0 && <span className="shrink-0">승인 대기 {pending}</span>}
+          {/* Closed, the card still says what the last thing it ran was: a bare
+              count tells you nothing about whether to open it. */}
+          {!open && (
+            <code className="min-w-0 truncate font-mono opacity-80">{commandOf(last)}</code>
+          )}
+        </button>
 
-        {head.map(row)}
-
-        {rest.length > 0 ? (
-          <Collapsible>
-            <CollapsibleTrigger
-              render={
+        {open && (
+          <div className="flex max-h-64 min-w-0 flex-col gap-0.5 overflow-y-auto">
+            {tools.map((tool, index) => {
+              const isDeny = tool.verdict === "deny";
+              return (
                 <button
+                  key={tool.tool_use_id ?? index}
                   type="button"
-                  className="group flex w-full items-center gap-1 rounded-sm px-1 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted"
-                />
-              }
-            >
-              <ChevronDownIcon className="size-3 transition-transform group-data-[panel-open]:rotate-180" />
-              {rest.length}개 더 보기
-            </CollapsibleTrigger>
-            <CollapsibleContent className="flex flex-col gap-0.5">
-              {rest.map((tool, index) => row(tool, INLINE_LIMIT + index))}
-            </CollapsibleContent>
-          </Collapsible>
-        ) : null}
+                  onClick={() => setSelected(tool)}
+                  className={cn(
+                    "flex w-full items-start gap-2 rounded-sm px-1 py-0.5 text-left text-xs",
+                    "hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                  )}
+                >
+                  <TerminalIcon
+                    className={cn(
+                      "mt-0.5 size-3.5 shrink-0",
+                      isDeny ? "text-destructive" : "text-muted-foreground"
+                    )}
+                  />
+                  <code
+                    className={cn(
+                      "min-w-0 flex-1 truncate font-mono",
+                      isDeny && "text-destructive line-through decoration-destructive/40"
+                    )}
+                  >
+                    {commandOf(tool)}
+                  </code>
+                  {tool.verdict !== "allow" ? (
+                    <Badge variant={isDeny ? "destructive" : "outline"} className="shrink-0">
+                      {VERDICT_LABEL[tool.verdict] ?? tool.verdict}
+                    </Badge>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* The row is a one-line summary of a call that may carry a page of
           arguments; the title attribute it used to rely on could not show
           them. */}
-      <Dialog open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
+      <Dialog open={selected !== null} onOpenChange={(isOpen) => !isOpen && setSelected(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">{selected?.tool_name}</DialogTitle>

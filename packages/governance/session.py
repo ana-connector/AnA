@@ -17,6 +17,11 @@ from typing import Awaitable, Callable, Optional
 from packages.orchestrator.timeline import TurnTimeline
 
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
+# A question waits far longer than an approval: an approval interrupts someone
+# who is watching the agent work, while a question can arrive when they have
+# walked away. Long enough to be worth asking, bounded so a turn cannot hang
+# forever.
+DEFAULT_QUESTION_TIMEOUT_SECONDS = 900.0
 
 
 @dataclass
@@ -24,7 +29,7 @@ class _Pending:
     future: asyncio.Future
     loop: asyncio.AbstractEventLoop
 
-    def resolve(self, value: str) -> None:
+    def resolve(self, value: object) -> None:
         if self.future.done():
             return
         try:
@@ -36,7 +41,7 @@ class _Pending:
         else:
             self.loop.call_soon_threadsafe(self._set, value)
 
-    def _set(self, value: str) -> None:
+    def _set(self, value: object) -> None:
         if not self.future.done():
             self.future.set_result(value)
 
@@ -84,9 +89,14 @@ class GateSession:
 class GateRegistry:
     """Tokens → open connections. One instance lives on app.state."""
 
-    def __init__(self, approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        question_timeout: float = DEFAULT_QUESTION_TIMEOUT_SECONDS,
+    ):
         self._sessions: dict[str, GateSession] = {}
         self.approval_timeout = approval_timeout
+        self.question_timeout = question_timeout
 
     def register(
         self,
@@ -130,6 +140,41 @@ class GateRegistry:
             return "deny"
         finally:
             session.pending.pop(request_id, None)
+
+    async def request_answer(self, session: GateSession, request: dict) -> Optional[list]:
+        """Asks the browser a question and waits for the answer.
+
+        The same machinery as request_approval — one pending future per
+        request, resolved by the client frame that answers it — because it is
+        the same problem: something inside a CLI subprocess needs a human, and
+        the only way to that human is the connection that started the turn.
+
+        Returns the answers, or None when nobody answered in time. None is a
+        result, not a failure: the caller tells the agent to state its
+        assumption and carry on rather than losing the turn."""
+        request_id = str(uuid.uuid4())
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        session.pending[request_id] = _Pending(future=future, loop=loop)
+        try:
+            await session.send({**request, "type": "question", "request_id": request_id})
+            answers = await asyncio.wait_for(future, timeout=self.question_timeout)
+            return answers if isinstance(answers, list) else None
+        except asyncio.TimeoutError:
+            return None
+        except Exception:  # noqa: BLE001 - send failed or connection closed
+            return None
+        finally:
+            session.pending.pop(request_id, None)
+
+    def resolve_answer(self, session: GateSession, request_id: str, answers: list) -> bool:
+        """Called when the browser answers a question. False for an unknown or
+        already-answered request, so a double submit is a no-op."""
+        pending = session.pending.get(request_id)
+        if pending is None or pending.future.done():
+            return False
+        pending.resolve(answers)
+        return True
 
     def resolve_approval(self, session: GateSession, request_id: str, decision: str) -> bool:
         """Called when the browser answers. Returns False for an unknown or

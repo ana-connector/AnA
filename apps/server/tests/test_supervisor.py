@@ -149,3 +149,26 @@ async def test_empty_task_list_is_a_no_op():
         raise AssertionError("no tasks to run")
 
     assert await run_tasks([], run_worker) == []
+
+
+@pytest.mark.asyncio
+async def test_a_task_reports_the_model_that_answered_it():
+    """Which CLI ran a task says less than which model did: a plan routes its
+    tasks to different models on purpose, and the UI shows it per task."""
+    async def run_worker(task, upstream=()):
+        return WorkerRun(output="ok", model="gpt-6-astra")
+
+    results = await run_tasks(_tasks(1), run_worker)
+
+    assert results[0].model == "gpt-6-astra"
+    assert results[0].as_dict()["model"] == "gpt-6-astra"
+
+
+@pytest.mark.asyncio
+async def test_a_task_whose_worker_never_said_carries_no_model():
+    async def run_worker(task, upstream=()):
+        return WorkerRun(output="ok")
+
+    results = await run_tasks(_tasks(1), run_worker)
+
+    assert results[0].as_dict()["model"] is None

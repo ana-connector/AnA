@@ -123,7 +123,7 @@ class Registry:
 
     def resolve(
         self,
-        role: str,
+        role,
         *,
         workspace_dir: str = "",
         database_url: str = "",
@@ -133,8 +133,15 @@ class Registry:
     ) -> tuple[list[ResolvedServer], list[SkippedServer]]:
         """The servers this role actually gets, and why the others were left out.
 
+        `role` may be several roles, because one CLI process can stand for more
+        than one: a lead process is also the process its native sub-agents run
+        in, so it is started with the worker servers *and* the lead's own (see
+        packages/mcp/wiring.py).
+
         Skips rather than raises throughout: an MCP server that cannot start is
         a missing capability, never a reason for the turn to fail."""
+        roles = {role} if isinstance(role, str) else set(role)
+        role_label = "/".join(sorted(roles))
         secrets = secrets or {}
         resolved: list[ResolvedServer] = []
         skipped: list[SkippedServer] = []
@@ -142,8 +149,8 @@ class Registry:
             if not server.enabled:
                 skipped.append(SkippedServer(server.name, "설정에서 비활성화됨"))
                 continue
-            if role not in server.roles:
-                skipped.append(SkippedServer(server.name, f"{role} 역할 범위 밖"))
+            if not roles & set(server.roles):
+                skipped.append(SkippedServer(server.name, f"{role_label} 역할 범위 밖"))
                 continue
             missing = [name for name in server.requires_env if not secrets.get(name)]
             if missing:
