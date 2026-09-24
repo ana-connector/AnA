@@ -77,3 +77,21 @@ def isolated_state_dir(tmp_path_factory, monkeypatch):
     that need a specific directory still set the variable themselves; this
     only keeps the default from being the real one."""
     monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path_factory.mktemp("ana-state")))
+
+
+@pytest.fixture(autouse=True)
+def isolated_workspace_root(tmp_path_factory, monkeypatch):
+    """Every test's conversations get their directories under tmp.
+
+    A conversation's directory is created for it on first use, under
+    `workspace_root()` — which falls back to ANA_WORKSPACE_DIR and then to the
+    real /home/hello/workspace. So a suite that opened a socket for thread
+    "gate-ws-1" left a `gate-ws-1` folder in the developer's actual workspace,
+    and one run of the whole suite left hundreds: every thread id the tests
+    invent, and a UUID for every one they do not. Tests that need a particular
+    root still set the variable themselves; this only keeps the default from
+    being the real one."""
+    root = tmp_path_factory.mktemp("ana-workspace")
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(root))
+    monkeypatch.setenv("ANA_WORKSPACE_DIR", str(root))
+    return root
