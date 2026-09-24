@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BoxIcon,
@@ -148,59 +149,29 @@ export function SessionSidebar({
     <>
     <Sidebar>
       <SidebarHeader>
-        <div className="flex items-center justify-between gap-2 px-2 py-1">
-          <span className="flex items-center gap-2">
-            {/* The mark carries its own white disc, so it stays legible on the
-                dark sidebar without a wrapper of its own. */}
-            <img src="/logo.svg" alt="" width={24} height={24} className="size-6 rounded-full" />
-            <span className="font-heading text-sm font-semibold">AnA</span>
-          </span>
-          <Button size="xs" variant="outline" onClick={() => setAdding((open) => !open)}>
-            <PlusIcon data-icon="inline-start" />
-            워크스페이스
-          </Button>
-        </div>
-
-        <Dialog open={adding} onOpenChange={setAdding}>
-          <DialogContent>
-            <DialogHeader><DialogTitle>워크스페이스 추가</DialogTitle></DialogHeader>
-          <form onSubmit={submit}>
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="ws-name">이름</FieldLabel>
-                <Input
-                  id="ws-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="내 프로젝트"
-                  autoFocus
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="ws-path">폴더 (선택)</FieldLabel>
-                <Input
-                  id="ws-path"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                  placeholder="/home/hello/projects/foo"
-                />
-                <FieldDescription>
-                  비우면 워크스페이스 루트 아래에 새로 만듭니다. 기존 폴더를 적으면 그대로 사용합니다.
-                </FieldDescription>
-              </Field>
-              {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
-              <Field orientation="horizontal">
-                <Button type="submit" size="sm">
-                  만들기
-                </Button>
-                <Button type="button" size="sm" variant="ghost" onClick={() => setAdding(false)}>
-                  취소
-                </Button>
-              </Field>
-            </FieldGroup>
-          </form>
-          </DialogContent>
-        </Dialog>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            {/* The shadcn header pattern: one large menu row carrying the
+                mark and the name. The mark brings its own white disc, so it
+                needs no coloured square behind it. */}
+            <SidebarMenuButton size="lg" render={<Link href="/" />}>
+              {/* A plain <img>: next/image refuses to optimise an SVG unless
+                  dangerouslyAllowSVG is set, and a 1 KB mark has nothing to
+                  gain from the optimiser anyway. */}
+              <img
+                src="/logo.svg"
+                alt=""
+                width={32}
+                height={32}
+                className="size-8 shrink-0 rounded-full"
+              />
+              <div className="grid flex-1 text-left leading-tight">
+                <span className="truncate font-heading text-sm font-semibold">AnA</span>
+                <span className="truncate text-xs text-muted-foreground">AnA is Not Agent</span>
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
 
       <SidebarContent>
@@ -316,6 +287,15 @@ export function SessionSidebar({
                 ))}
               </SidebarMenu>
             )}
+
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={() => setAdding(true)}>
+                  <PlusIcon />
+                  워크스페이스 추가
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
@@ -343,6 +323,47 @@ export function SessionSidebar({
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+
+    <Dialog open={adding} onOpenChange={setAdding}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>워크스페이스 추가</DialogTitle></DialogHeader>
+        <form onSubmit={submit}>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="ws-name">이름</FieldLabel>
+              <Input
+                id="ws-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="내 프로젝트"
+                autoFocus
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="ws-path">폴더 (선택)</FieldLabel>
+              <Input
+                id="ws-path"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="/home/hello/projects/foo"
+              />
+              <FieldDescription>
+                비우면 워크스페이스 루트 아래에 새로 만듭니다. 기존 폴더를 적으면 그대로 사용합니다.
+              </FieldDescription>
+            </Field>
+            {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
+            <Field orientation="horizontal">
+              <Button type="submit" size="sm">
+                만들기
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setAdding(false)}>
+                취소
+              </Button>
+            </Field>
+          </FieldGroup>
+        </form>
+      </DialogContent>
+    </Dialog>
 
     <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
