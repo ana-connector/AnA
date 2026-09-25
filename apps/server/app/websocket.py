@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -399,38 +400,30 @@ def _parse_client_frame(data: str) -> ClientFrame:
     )
 
 
-@router.websocket("/ws/chat")
-async def chat_ws(websocket: WebSocket) -> None:
-    await websocket.accept()
+@dataclass
+class ConversationSetup:
+    """Everything a conversation needs before a runner can be built for it."""
 
-    # C1: browsers do not apply same-origin policy to WebSocket handshakes,
-    # so any page the user has open in another tab could otherwise drive the
-    # lead agent (which runs with --dangerously-skip-permissions). The
-    # Origin header is browser-enforced, so its *absence* just means a
-    # non-browser client (curl, test scripts) and is not itself suspicious —
-    # only a *present but disallowed* Origin is rejected.
-    origin = websocket.headers.get("origin")
-    if origin is not None and origin not in allowed_origins():
-        await websocket.close(code=1008)
-        return
+    thread_id: str
+    workspace_dir: str
+    workspace_name: str
+    secret_env: dict
+    registered_secrets: list
+    container_prefix: Optional[list] = None
+    container_spec: object = None
+    container_error: str = ""
 
-    # A workspace owns exactly one conversation, so its id *is* the thread id.
-    # `thread_id` stays accepted as the older spelling of the same parameter.
-    requested_id = (
-        websocket.query_params.get("workspace")
-        or websocket.query_params.get("thread_id")
-        or str(uuid.uuid4())
-    )
 
-    # Loaded before the first frame goes out, deliberately. Everything after
-    # the thread_id frame must reach the receive loop without awaiting, or a
-    # client that disconnects the instant it gets that frame leaves this
-    # coroutine parked mid-setup with a subprocess and a gate token that only
-    # get cleaned up whenever the task is finally torn down.
+async def prepare_conversation(app, requested_id: str) -> ConversationSetup:
+    """Resolves the workspace, its secrets and its container.
+
+    Factored out of the WebSocket handler because a conversation is no longer
+    opened only by a browser: the scheduler starts turns on one nobody is
+    watching (packages/orchestrator/schedules.py)."""
     registered_secrets: list = []
     try:
         registered_secrets = await load_secrets(
-            websocket.app.state.pool, websocket.app.state.secret_cipher
+            app.state.pool, app.state.secret_cipher
         )
         secret_env = {secret.name: secret.value for secret in registered_secrets}
     except Exception:  # noqa: BLE001 - a secret store problem must not take
@@ -444,7 +437,7 @@ async def chat_ws(websocket: WebSocket) -> None:
     container_spec = None
     container_error = ""
     try:
-        workspace = await ensure_workspace(websocket.app.state.pool, requested_id)
+        workspace = await ensure_workspace(app.state.pool, requested_id)
         thread_id = workspace.id
         workspace_dir = workspace.path
         workspace_name = workspace.name
@@ -490,6 +483,86 @@ async def chat_ws(websocket: WebSocket) -> None:
         except OSError:
             workspace_dir = WORKSPACE_DIR
 
+
+    return ConversationSetup(
+        thread_id=thread_id,
+        workspace_dir=workspace_dir,
+        workspace_name=workspace_name,
+        secret_env=secret_env,
+        registered_secrets=registered_secrets,
+        container_prefix=container_prefix,
+        container_spec=container_spec,
+        container_error=container_error,
+    )
+
+
+async def ensure_runner(app, requested_id: str) -> TurnRunner:
+    """The runner for this conversation, built if nobody has one open.
+
+    The registry is the same one the browser uses, so a scheduled turn and a
+    typed one share the conversation, its CLI sessions and its gate token."""
+    registry: RunnerRegistry = app.state.runners
+    registry.start_sweeper()
+    existing = registry.get(requested_id)
+    if existing is not None:
+        return existing
+    setup = await prepare_conversation(app, requested_id)
+    existing = registry.get(setup.thread_id)
+    if existing is not None:
+        return existing
+    runner = await _build_runner(
+        app,
+        thread_id=setup.thread_id,
+        workspace_dir=setup.workspace_dir,
+        workspace_name=setup.workspace_name,
+        secret_env=setup.secret_env,
+        registered_secrets=setup.registered_secrets,
+        container_prefix=setup.container_prefix,
+        container_spec=setup.container_spec,
+        container_error=setup.container_error,
+    )
+    registry.put(runner)
+    return runner
+
+
+@router.websocket("/ws/chat")
+async def chat_ws(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    # C1: browsers do not apply same-origin policy to WebSocket handshakes,
+    # so any page the user has open in another tab could otherwise drive the
+    # lead agent (which runs with --dangerously-skip-permissions). The
+    # Origin header is browser-enforced, so its *absence* just means a
+    # non-browser client (curl, test scripts) and is not itself suspicious —
+    # only a *present but disallowed* Origin is rejected.
+    origin = websocket.headers.get("origin")
+    if origin is not None and origin not in allowed_origins():
+        await websocket.close(code=1008)
+        return
+
+    # A workspace owns exactly one conversation, so its id *is* the thread id.
+    # `thread_id` stays accepted as the older spelling of the same parameter.
+    requested_id = (
+        websocket.query_params.get("workspace")
+        or websocket.query_params.get("thread_id")
+        or str(uuid.uuid4())
+    )
+
+    # Loaded before the first frame goes out, deliberately. Everything after
+    # the thread_id frame must reach the receive loop without awaiting, or a
+    # client that disconnects the instant it gets that frame leaves this
+    # coroutine parked mid-setup with a subprocess and a gate token that only
+    # get cleaned up whenever the task is finally torn down.
+    setup = await prepare_conversation(websocket.app, requested_id)
+    thread_id = setup.thread_id
+    workspace_dir = setup.workspace_dir
+    workspace_name = setup.workspace_name
+    secret_env = setup.secret_env
+    registered_secrets = setup.registered_secrets
+    container_prefix = setup.container_prefix
+    container_spec = setup.container_spec
+    container_error = setup.container_error
+
     app = websocket.app
     registry: RunnerRegistry = app.state.runners
     registry.start_sweeper()
@@ -518,6 +591,11 @@ async def chat_ws(websocket: WebSocket) -> None:
             # left and came back has to know before it renders anything, or it
             # shows an idle composer over a turn that is still running.
             "running": runner is not None and runner.busy,
+            # The server's clock, so the browser can read every timestamp the
+            # server sends without trusting the two to agree. Sent fresh on
+            # every connection, which is what makes a replayed status frame
+            # resolve to the right elapsed time.
+            "server_now": time.time(),
         }
     )
 

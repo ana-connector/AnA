@@ -94,6 +94,78 @@ export async function fetchThreads(): Promise<ThreadSummary[]> {
 
 export type PortMapping = { host: number; container: number };
 
+export type ScheduleRow = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  cron: string;
+  /** The expression in words, so the list does not require knowing cron. */
+  cron_text: string;
+  prompt: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_status: string;
+  last_detail: string;
+};
+
+export async function fetchSchedules(workspaceId?: string): Promise<ScheduleRow[]> {
+  const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+  const response = await fetch(`${apiBase()}/schedules${query}`);
+  if (!response.ok) throw new Error(`schedule list failed: ${response.status}`);
+  return ((await response.json()) as { schedules: ScheduleRow[] }).schedules;
+}
+
+export async function createSchedule(body: {
+  workspace_id: string;
+  name: string;
+  cron: string;
+  prompt: string;
+}): Promise<ScheduleRow> {
+  const response = await fetch(`${apiBase()}/schedules`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(((await response.json()) as { detail?: string }).detail ?? response.statusText);
+  }
+  return (await response.json()) as ScheduleRow;
+}
+
+export async function patchSchedule(
+  id: string,
+  body: { name?: string; cron?: string; prompt?: string; enabled?: boolean }
+): Promise<ScheduleRow> {
+  const response = await fetch(`${apiBase()}/schedules/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(((await response.json()) as { detail?: string }).detail ?? response.statusText);
+  }
+  return (await response.json()) as ScheduleRow;
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  const response = await fetch(`${apiBase()}/schedules/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error(`schedule delete failed: ${response.status}`);
+}
+
+export async function runScheduleNow(id: string): Promise<void> {
+  const response = await fetch(`${apiBase()}/schedules/${encodeURIComponent(id)}/run`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(((await response.json()) as { detail?: string }).detail ?? response.statusText);
+  }
+}
+
 export type WorkspaceSummary = {
   id: string;
   name: string;

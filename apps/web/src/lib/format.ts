@@ -34,3 +34,22 @@ export function timeExact(value: string | number | Date): string {
   const at = new Date(value);
   return Number.isNaN(at.getTime()) ? "" : at.toLocaleString("ko-KR");
 }
+
+/** "14:32" — the clock only, for a timestamp sitting next to the thing it
+ *  belongs to. The date is in the tooltip; a conversation you are reading now
+ *  does not need it repeated on every line. */
+export function clockTime(value: string | number | Date): string {
+  const at = new Date(value);
+  return Number.isNaN(at.getTime())
+    ? ""
+    : at.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/** "1분 20초", "14초" — how long something took, said the way a person would. */
+export function duration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}분 ${rest}초` : `${minutes}분`;
+}

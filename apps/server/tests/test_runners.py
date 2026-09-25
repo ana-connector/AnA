@@ -118,7 +118,12 @@ async def test_frames_from_a_detached_turn_are_replayed_on_return():
 
     # The prompt comes back too: a client that never saw it would show the
     # streaming reply with nothing above it.
-    assert missed[0] == {"type": "prompt", "text": "long job", "agent": "claude"}
+    # started_at rides along so a client that reconnects shows when the prompt
+    # was sent rather than when it arrived.
+    assert {k: v for k, v in missed[0].items() if k != "started_at"} == {
+        "type": "prompt", "text": "long job", "agent": "claude",
+    }
+    assert isinstance(missed[0]["started_at"], float)
     assert any(frame.get("type") == "text" for frame in missed)
     assert runner.busy is True
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from apps.server.app.capabilities import router as capabilities_router
+from apps.server.app import scheduler
 from apps.server.app.runners import RunnerRegistry
 from apps.server.app.gate import router as gate_router
 from apps.server.app.graph import build_graph
@@ -37,6 +38,16 @@ from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports, stop_workspace
 from packages.orchestrator.handoff import AGENTS
 from packages.orchestrator.routing import EFFORTS, load_routing_table
+from packages.orchestrator.schedules import (
+    CronError,
+    create_schedule,
+    delete_schedule,
+    describe,
+    get_schedule,
+    list_schedules,
+    run_schedules_migrations,
+    update_schedule,
+)
 from packages.orchestrator.settings import (
     AUTH_MODES,
     read_auth_mode,
@@ -106,6 +117,7 @@ async def lifespan(app: FastAPI):
     await run_audit_migrations(pool)
     await run_secret_migrations(pool)
     await run_workspace_migrations(pool)
+    await run_schedules_migrations(pool)
     # ANA's own repository as a workspace, when it is mounted: the agent that
     # edits this file is reachable from the same list, and under the same gate,
     # as every other project. A no-op when ANA_SELF_WORKSPACE is unset.
@@ -139,9 +151,13 @@ async def lifespan(app: FastAPI):
         # phone (packages/remote). Unset ANA_DISCORD_BOT_TOKEN and none of this
         # exists: the notifier stays null and the gate behaves as before.
         discord = start_discord_bridge(app.state.gate_registry)
+        # Turns that start without anybody typing
+        # (packages/orchestrator/schedules.py).
+        scheduler_task = scheduler.start(app)
 
         yield
 
+        await scheduler.stop(scheduler_task)
         if discord is not None:
             await stop_discord_bridge(discord)
         # Every runner, with its CLI subprocesses and gate tokens, belongs to
@@ -341,6 +357,105 @@ class RoutingRung(BaseModel):
 class RoutingUpdate(BaseModel):
     lead: list[RoutingRung]
     workers: dict[str, list[RoutingRung]] = {}
+
+
+class ScheduleCreate(BaseModel):
+    workspace_id: str
+    name: str
+    cron: str
+    prompt: str
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    name: str | None = None
+    cron: str | None = None
+    prompt: str | None = None
+    enabled: bool | None = None
+
+
+def _schedule_json(schedule) -> dict:
+    return {
+        "id": schedule.id,
+        "workspace_id": schedule.workspace_id,
+        "name": schedule.name,
+        "cron": schedule.cron,
+        # What the expression says, in words: this list should not require
+        # knowing cron to read.
+        "cron_text": describe(schedule.cron),
+        "prompt": schedule.prompt,
+        "enabled": schedule.enabled,
+        "created_by": schedule.created_by,
+        "created_at": schedule.created_at.isoformat(),
+        "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+        "last_run_at": schedule.last_run_at.isoformat() if schedule.last_run_at else None,
+        "last_status": schedule.last_status,
+        "last_detail": schedule.last_detail,
+    }
+
+
+@app.get("/schedules")
+async def get_schedules(request: Request, workspace_id: str | None = None) -> dict:
+    rows = await list_schedules(request.app.state.pool, workspace_id=workspace_id)
+    return {"schedules": [_schedule_json(row) for row in rows]}
+
+
+@app.post("/schedules")
+async def post_schedule(request: Request, body: ScheduleCreate) -> dict:
+    try:
+        created = await create_schedule(
+            request.app.state.pool,
+            workspace_id=body.workspace_id,
+            name=body.name,
+            cron=body.cron,
+            prompt=body.prompt,
+            enabled=body.enabled,
+            created_by="user",
+        )
+    except CronError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _schedule_json(created)
+
+
+@app.patch("/schedules/{schedule_id}")
+async def patch_schedule(request: Request, schedule_id: str, body: ScheduleUpdate) -> dict:
+    try:
+        updated = await update_schedule(
+            request.app.state.pool,
+            schedule_id,
+            name=body.name,
+            cron=body.cron,
+            prompt=body.prompt,
+            enabled=body.enabled,
+        )
+    except CronError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="no such schedule")
+    return _schedule_json(updated)
+
+
+@app.delete("/schedules/{schedule_id}")
+async def remove_schedule(request: Request, schedule_id: str) -> dict:
+    if not await delete_schedule(request.app.state.pool, schedule_id):
+        raise HTTPException(status_code=404, detail="no such schedule")
+    return {"status": "deleted", "id": schedule_id}
+
+
+@app.post("/schedules/{schedule_id}/run")
+async def run_schedule_now(request: Request, schedule_id: str) -> dict:
+    """Runs it this second, without touching when it runs next. The point is
+    to see what a job actually does before trusting it to a clock."""
+    schedule = await get_schedule(request.app.state.pool, schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="no such schedule")
+    from apps.server.app.websocket import ensure_runner
+
+    runner = await ensure_runner(request.app, schedule.workspace_id)
+    if runner.busy:
+        raise HTTPException(status_code=409, detail="그 대화는 지금 다른 턴을 돌리고 있다")
+    await runner.submit(schedule.prompt, "auto", True)
+    return {"status": "started", "id": schedule_id}
 
 
 @app.get("/routing")
