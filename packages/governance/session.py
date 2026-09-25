@@ -16,6 +16,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
+from packages.governance.subagent_scope import Scope
 from packages.orchestrator.timeline import TurnTimeline
 from packages.remote.notifier import NullNotifier, RemoteNotifier
 
@@ -85,6 +86,8 @@ class GateSession:
     thread_id: str
     # Sends one approval request to the browser; awaited by request_approval.
     send: Callable[[dict], Awaitable[None]]
+    # Set by the planner only while the lead executes a tool-using turn.
+    lead_scope: Optional[Scope] = None
     # Which agent is running right now, so the audit row names the right CLI.
     # Updated per turn by the websocket handler.
     current_agent: Optional[str] = None

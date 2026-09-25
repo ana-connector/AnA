@@ -10,7 +10,7 @@
 #   command/args  the stdio server to spawn
 #   env           environment for that server only, never for the agent
 #   roles         which agent roles get the server ("lead", "worker").
-#                 The lead plans and delegates, so it gets nothing here.
+#                 The gate limits lead calls to the scope selected per turn.
 #   enabled       false keeps the entry as documentation without running it
 #   requires_env  secret names that must be registered (Settings → Secrets)
 #                 before the server is used; missing ones disable it quietly
@@ -34,7 +34,7 @@ servers:
     description: "로컬 git 저장소 조회/커밋 (mcp-server-git)"
     command: uvx
     args: ["mcp-server-git"]
-    roles: [worker]
+    roles: [lead, worker]
     enabled: true
 
   # ② Postgres — the memory/state DB from stage 2, read-only.
@@ -52,7 +52,7 @@ servers:
     args: ["--with", "mcp<2", "postgres-mcp", "--access-mode=restricted"]
     env:
       DATABASE_URI: "{database_url}"
-    roles: [worker]
+    roles: [lead, worker]
     enabled: true
 
   # ③ GitHub — enabled only once a token is registered as a secret, since

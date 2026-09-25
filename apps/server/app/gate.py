@@ -495,16 +495,15 @@ async def gate_tool_call(
             category="delegation",
         )
 
-    if body.role == "lead" and not body.agent_id and not lead_may_call(body.tool_name):
-        # The lead agent plans and writes the answer; everything that touches
-        # the machine goes through a sub-agent. Enforced here rather than by
-        # CLI flags so it holds for both CLIs and cannot be argued out of.
+    if body.role == "lead" and not body.agent_id and not lead_may_call(body.tool_name) and session.lead_scope is None:
+        # Only the planner can grant a scope for this turn. A tool request
+        # cannot grant permission to itself through its hook payload.
         await _audit(DENY, "role", "lead sessions do not use tools")
         return GateDecision(
             decision=DENY,
             reason=(
-                "The lead session does not use tools. Delegate this to a sub-agent "
-                "(answer with a plan that splits the work)."
+                "The lead has no tool scope for this call. Choose execute mode "
+                "during planning or delegate the work."
             ),
             rule_id="lead-no-tools",
             category="delegation",
@@ -513,7 +512,11 @@ async def gate_tool_call(
     # The scope its lead gave this sub-agent (roadmap stage 3's 권한 스코프,
     # stage 5's Elevation-of-Privilege row). Checked before the rule set
     # because it only ever narrows: a scope cannot grant what the rules deny.
-    scope = Scope.from_payload(body.scope_mode, body.scope_paths)
+    scope = (
+        session.lead_scope
+        if body.role == "lead" and not body.agent_id and session.lead_scope is not None
+        else Scope.from_payload(body.scope_mode, body.scope_paths)
+    )
     scope_reason = scope_violation(
         body.tool_name, body.tool_input, scope, session.workspace, body.cwd
     )

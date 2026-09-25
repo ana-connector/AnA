@@ -188,8 +188,8 @@ def violation(
     if scope.mode == READ:
         if _is_mutating(tool_name):
             return (
-                f"a read-only sub-agent cannot use '{tool_name}'. "
-                "Report what needs changing to the lead instead."
+                f"a read-only scope cannot use '{tool_name}'. "
+                "Report what needs changing instead."
             )
         if _normalize_name(tool_name) in SHELL_TOOLS:
             command = tool_input.get("command")
@@ -199,14 +199,14 @@ def violation(
                 return (
                     f"a read-only scope allows read commands only: '{offending}' may "
                     "change something. Use a reading command (ls, cat, grep, git log, "
-                    "…) or report the change the lead has to make."
+                    "…) or report the needed change."
                 )
     if scope.paths and workspace:
         outside = _outside_paths(tool_input, scope.paths, workspace, cwd)
         if outside:
             allowed = ", ".join(scope.paths)
             return (
-                f"this sub-agent may only work in {allowed}; outside it: "
+                f"this scope only allows work in {allowed}; outside it: "
                 f"{', '.join(outside[:3])}"
             )
     return None
