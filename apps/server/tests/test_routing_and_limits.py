@@ -185,8 +185,14 @@ def test_usage_endpoint_lists_every_agent_before_any_turn(client, tmp_path, monk
     agents = client.get("/usage").json()["agents"]
 
     assert set(agents) == {"claude", "codex", "kimi", "tapie"}
+    # The second window is the plan's, not one shape for everyone: Kimi and
+    # TAPIE are billed by the month, and TAPIE in dollars.
+    assert [w["key"] for w in agents["claude"]["windows"]] == ["five_hour", "seven_day"]
+    assert [w["key"] for w in agents["kimi"]["windows"]] == ["five_hour", "monthly"]
+    assert [w["key"] for w in agents["tapie"]["windows"]] == ["five_hour", "monthly"]
+    assert [w["unit"] for w in agents["tapie"]["windows"]] == ["usd", "usd"]
+    assert [w["budget"] for w in agents["tapie"]["windows"]] == [50.0, 1500.0]
     for windows in agents.values():
-        assert [w["key"] for w in windows["windows"]] == ["five_hour", "seven_day"]
         # Nothing spent and nothing reported: the bar says "estimated 0%",
         # not "unknown".
         assert all(w["source"] == "estimated" for w in windows["windows"])
@@ -499,7 +505,11 @@ def test_routing_reads_as_rungs_not_yaml(client, tmp_path, monkeypatch):
     assert set(first) == {"agent", "model", "effort", "window", "utilization"}
     assert "tapie" in body["agents"]
     assert set(body["efforts"]) >= {"claude", "codex", "kimi", "tapie"}
-    assert [w["key"] for w in body["windows"]] == ["five_hour", "seven_day"]
+    assert [w["key"] for w in body["windows"]] == ["five_hour", "seven_day", "monthly"]
+    # And which of them each CLI actually has, so a rung cannot point at a
+    # window its plan does not run on.
+    assert body["windows_by_agent"]["claude"] == ["five_hour", "seven_day"]
+    assert body["windows_by_agent"]["tapie"] == ["five_hour", "monthly"]
 
 
 def test_routing_round_trips_through_the_form(client, tmp_path, monkeypatch):
@@ -563,3 +573,50 @@ def test_routing_carries_the_models_each_cli_takes(client, tmp_path, monkeypatch
     assert models["tapie"] == models["claude"]
     assert models["codex"][0] == "gpt-6-experimental-unheard-of"
     assert "kimi" in models
+
+
+def test_a_dollar_capped_window_measures_dollars():
+    """TAPIE is a key against an endpoint with a spend cap: $50 rolling over
+    five hours and $1500 a month. Counting its tokens against a token budget
+    would show a number that means nothing."""
+    from packages.observability.limits import UsageTracker
+
+    tracker = UsageTracker()
+    tracker.record_tokens("tapie", 40_000, usd=12.50)
+
+    windows = {w["key"]: w for w in tracker.snapshot()["tapie"]["windows"]}
+
+    assert windows["five_hour"]["utilization"] == 12.50 / 50.0
+    assert windows["monthly"]["utilization"] == 12.50 / 1500.0
+    assert windows["five_hour"]["usd"] == 12.5
+
+
+def test_a_monthly_window_resets_on_the_first():
+    """A monthly cap rolls over on the 1st, not a month after the last turn —
+    and it says so without anybody having reported anything."""
+    from datetime import datetime, timezone
+
+    from packages.observability.limits import UsageTracker
+
+    tracker = UsageTracker()
+    now = datetime(2026, 9, 25, 9, 0, tzinfo=timezone.utc).timestamp()
+
+    windows = {w["key"]: w for w in tracker.snapshot(now=now)["kimi"]["windows"]}
+    resets = datetime.fromtimestamp(windows["monthly"]["resets_at"], tz=timezone.utc)
+
+    assert (resets.year, resets.month, resets.day) == (2026, 10, 1)
+
+
+def test_last_months_spending_is_not_in_this_months_window():
+    from datetime import datetime, timezone
+
+    from packages.observability.limits import UsageTracker
+
+    tracker = UsageTracker()
+    september = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc).timestamp()
+    october = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc).timestamp()
+    tracker.record_tokens("tapie", 0, usd=900.0, now=september)
+
+    windows = {w["key"]: w for w in tracker.snapshot(now=october)["tapie"]["windows"]}
+
+    assert windows["monthly"]["usd"] == 0.0

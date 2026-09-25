@@ -37,6 +37,8 @@ type Vocabulary = {
   /** What each CLI will accept, discovered where the CLI can be asked. */
   models: Record<string, string[]>;
   windows: { key: string; label: string }[];
+  /** Which of those windows each CLI actually has. */
+  windowsByAgent: Record<string, string[]>;
 };
 
 type Ladders = { lead: Rung[]; workers: Record<string, Rung[]> };
@@ -95,6 +97,7 @@ export function RoutingEditor() {
         efforts: body.efforts,
         models: body.models ?? {},
         windows: body.windows,
+        windowsByAgent: body.windows_by_agent ?? {},
       });
     } catch (e) {
       setError(String(e));
@@ -456,11 +459,17 @@ function Ladder({
                         <SelectContent>
                           <SelectGroup>
                             <SelectItem value={NONE}>한도 없음</SelectItem>
-                            {vocabulary.windows.map((window) => (
-                              <SelectItem key={window.key} value={window.key}>
-                                {window.label}
-                              </SelectItem>
-                            ))}
+                            {vocabulary.windows
+                              .filter((window) =>
+                                (vocabulary.windowsByAgent[rung.agent] ?? [window.key]).includes(
+                                  window.key
+                                )
+                              )
+                              .map((window) => (
+                                <SelectItem key={window.key} value={window.key}>
+                                  {window.label}
+                                </SelectItem>
+                              ))}
                           </SelectGroup>
                         </SelectContent>
                       </Select>

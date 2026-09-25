@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clockTime, duration, timeExact } from "@/lib/format";
 import {
@@ -99,6 +100,7 @@ export default function ChatPage() {
     usage,
     failingAgents,
     turnsFinished,
+    loadingHistory,
     workspace,
     workspaceName,
     threadId,
@@ -233,7 +235,35 @@ export default function ChatPage() {
                 {/* A fresh conversation used to be a blank rectangle above
                     the composer, which says nothing about what this thing
                     does or what it may do on your behalf. */}
-                {messages.length === 0 && (
+                {/* A transcript being fetched, not a conversation that is
+                    empty: the empty state used to flash on every switch, which
+                    says the wrong thing about a workspace with a hundred
+                    turns in it. */}
+                {loadingHistory && messages.length === 0 && (
+                  <MessageScrollerItem messageId="loading">
+                    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 py-6">
+                      <div className="flex flex-col items-end gap-2">
+                        <Skeleton className="h-9 w-2/5 rounded-xl" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Skeleton className="h-3 w-24" />
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-11/12" />
+                        <Skeleton className="h-4 w-3/4" />
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        <Skeleton className="h-9 w-1/3 rounded-xl" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Skeleton className="h-3 w-20" />
+                        <Skeleton className="h-4 w-10/12" />
+                        <Skeleton className="h-4 w-2/3" />
+                      </div>
+                    </div>
+                  </MessageScrollerItem>
+                )}
+
+                {!loadingHistory && messages.length === 0 && (
                   <MessageScrollerItem messageId="empty">
                     <Empty className="py-16">
                       <EmptyHeader>
