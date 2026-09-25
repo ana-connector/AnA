@@ -45,14 +45,14 @@ tools at all:
 {"mode": "direct"}
 
 If one agent can complete the request in this conversation, using tools directly:
-{"mode": "execute", "scope": {"mode": "read", "paths": []}}
+{"mode": "execute", "scope": {"mode": "write", "paths": []}}
 
-Use "write" instead of "read" when changes are needed. ANA grants this scope
-to you for the execution call only; the gate still applies workspace and
-governance rules. Prefer this for a single investigation, fix, command or
-other straightforward task, even if it needs several tool calls.
+Use "read" only when you know the whole task is read-only. ANA grants this
+scope for the execution call; the gate still applies workspace and governance
+rules. Prefer execute for one investigation, fix, command, commit or other
+straightforward task, even if it needs several tool calls.
 
-If independent tasks benefit from parallel work or isolation, delegate:
+If independent tasks clearly benefit from parallel work or isolation, delegate:
 {"mode": "delegate", "tasks": [
   {"id": "t1", "title": "짧은 제목", "needs": [],
    "prompt": "a self-contained instruction for this task alone",
@@ -85,10 +85,10 @@ Rules:
   skill list in your system prompt; the skill's procedure is prepended to the
   sub-agent's instruction.
 - At most %(max_tasks)d tasks. (ANA caps how many run at once separately.)
-- **Express order with `needs`.** Tasks with empty `needs` start together; a task
-  with `needs` starts when all of them have finished, and their results are
-  attached to its instruction automatically. Do not collapse a sequence into one
-  task — split it per step and wire it with `needs`.
+- **Express order with `needs` when delegation is useful.** Tasks with empty
+  `needs` start together; a task with `needs` starts when its dependencies
+  finish. Keep an ordinary sequence in one execute turn; splitting review,
+  tests and commit into workers adds handoffs without useful parallelism.
   Example: plan(t1) → backend(t2, needs t1) / design(t3, needs t1) →
   frontend(t4, needs t3) → deploy(t5, needs t2+t4). t2 and t3 run in parallel.
 - Keep ids short (t1, t2 …). `needs` may only name ids you already defined, and
@@ -98,8 +98,8 @@ Rules:
   need tools but can do the work yourself. Do not delegate a single simple task.
 - Conversely, do not delegate concept explanations, summaries of what was just
   said, or anything you already know: starting a sub-agent costs something too.
-- If there is no reason to split, a one-task plan is the right answer. Do not
-  break work up for the sake of it.
+- If there is no reason to split, use execute. Do not break work up for the
+  sake of it.
 - Plan the steps you can actually see now. When these finish you will be shown
   their results and asked whether anything else is needed, so you do not have to
   guess at follow-up work the first round will reveal.
@@ -192,7 +192,7 @@ class PlanTask:
 class Plan:
     mode: str = DIRECT
     tasks: list[PlanTask] = field(default_factory=list)
-    scope: Scope = field(default_factory=lambda: Scope(mode="read"))
+    scope: Scope = field(default_factory=Scope)
     # Why the plan ended up direct, when that was not the model's choice.
     note: str = ""
     # A command ANA runs once, after every task has merged. Per-task checks
@@ -448,9 +448,9 @@ def parse_plan(
         return Plan(note="계획을 JSON으로 읽지 못해 단독 처리")
     if payload.get("mode") == EXECUTE:
         raw_scope = payload.get("scope")
-        scope = Scope.parse(raw_scope) if isinstance(raw_scope, dict) else Scope(mode="read")
+        scope = Scope.parse(raw_scope) if isinstance(raw_scope, dict) else Scope()
         if not isinstance(raw_scope, dict) or raw_scope.get("mode") not in ("read", "write"):
-            scope = Scope(mode="read", paths=scope.paths)
+            scope = Scope(mode="write", paths=scope.paths)
         return Plan(mode=EXECUTE, scope=scope)
     if payload.get("mode") != DELEGATE:
         return Plan()

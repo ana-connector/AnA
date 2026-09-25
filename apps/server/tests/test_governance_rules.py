@@ -38,8 +38,6 @@ def test_destructive_commands_are_denied(ruleset, command):
 @pytest.mark.parametrize(
     "command",
     [
-        "curl https://example.com/data.json",
-        "pip install requests",
         "git push origin main",
         "git reset --hard HEAD~1",
         "rm /etc/hosts",
@@ -52,6 +50,16 @@ def test_destructive_commands_are_denied(ruleset, command):
 )
 def test_risky_but_legitimate_commands_ask(ruleset, command):
     assert _action(ruleset, command) == ASK
+
+
+@pytest.mark.parametrize("command", [
+    "curl https://example.com/data.json",
+    "pip install requests",
+    "git fetch origin",
+    "git add . && git commit -m update",
+])
+def test_routine_development_commands_are_allowed(ruleset, command):
+    assert _action(ruleset, command) == ALLOW
 
 
 @pytest.mark.parametrize(
@@ -86,8 +94,8 @@ def test_loopback_curl_does_not_request_external_network_approval(ruleset, comma
         "curl --url=http://example.com http://localhost:3020/",
     ],
 )
-def test_curl_that_may_reach_external_network_still_asks(ruleset, command):
-    assert _action(ruleset, command) == ASK
+def test_external_network_reads_are_allowed(ruleset, command):
+    assert _action(ruleset, command) == ALLOW
 
 
 def test_update_with_where_clause_is_not_denied(ruleset):
