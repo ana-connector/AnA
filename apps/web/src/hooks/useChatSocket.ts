@@ -266,6 +266,11 @@ export function useChatSocket() {
   // new numbers in them, and the status bar was previously keyed on the count
   // of prompts *sent*, which is the wrong end of the turn.
   const [turnsFinished, setTurnsFinished] = useState(0);
+  // True from the moment a conversation starts opening until its history is on
+  // screen. Without it the empty-state ("무엇을 해볼까요") rendered for the
+  // fraction of a second between clearing one transcript and loading the next,
+  // which reads as "this workspace is empty" for every switch.
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   // Questions the agent is waiting on. Plural because one call can ask several,
   // and a second call can arrive while the first is unanswered.
@@ -363,6 +368,7 @@ export function useChatSocket() {
       const openingThreadId = activeThreadRef.current;
 
       if (openingThreadId) {
+        setLoadingHistory(true);
         try {
           const { turns, totals } = await fetchThreadHistory(openingThreadId);
           if (disposed) return;
@@ -451,7 +457,11 @@ export function useChatSocket() {
         } catch {
           // A failed history fetch is not worth blocking the chat over: the
           // conversation itself lives server-side either way.
+        } finally {
+          if (!disposed) setLoadingHistory(false);
         }
+      } else {
+        setLoadingHistory(false);
       }
 
       if (disposed) return;
@@ -974,6 +984,7 @@ export function useChatSocket() {
     // be attached to the first reply of the conversation being opened.
     pendingReasoningRef.current = "";
     turnStartRef.current = null;
+    setLoadingHistory(true);
     setMessages([]);
     setApprovals([]);
     setQuestions([]);
@@ -1009,6 +1020,7 @@ export function useChatSocket() {
     hasUnpricedUsage,
     failingAgents,
     turnsFinished,
+    loadingHistory,
     workspace,
     workspaceName,
     threadId,

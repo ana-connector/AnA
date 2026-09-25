@@ -37,6 +37,7 @@ from packages.observability.codex_usage import read_rate_limits as read_codex_ra
 from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports, stop_workspace
 from packages.orchestrator.handoff import AGENTS
+from packages.observability.limits import windows_for
 from packages.orchestrator.models import model_catalog
 from packages.orchestrator.routing import EFFORTS, load_routing_table
 from packages.orchestrator.schedules import (
@@ -479,10 +480,17 @@ async def routing_rules() -> dict:
         "agents": list(AGENTS),
         "efforts": {agent: list(levels) for agent, levels in EFFORTS.items()},
         "models": model_catalog(used),
+        # Every window name a rung may use, and which agent actually has
+        # which: a rung pointing at a window its CLI does not have would never
+        # be left, so the editor offers only the real ones.
         "windows": [
             {"key": "five_hour", "label": "5시간"},
             {"key": "seven_day", "label": "7일"},
+            {"key": "monthly", "label": "이번 달"},
         ],
+        "windows_by_agent": {
+            agent: [spec.key for spec in windows_for(agent)] for agent in AGENTS
+        },
     }
 
 

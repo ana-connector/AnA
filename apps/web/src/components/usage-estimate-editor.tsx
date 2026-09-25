@@ -7,15 +7,18 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
+// Each plan's own windows: Claude and Codex run on a week, Kimi and TAPIE on
+// the calendar month. Offering "7일" for an agent that has no such window
+// stored a figure nothing would ever read.
 const rows = [
   { agent: "claude", window: "five_hour", label: "Claude · 5시간" },
   { agent: "claude", window: "seven_day", label: "Claude · 7일" },
   { agent: "codex", window: "five_hour", label: "Codex · 5시간" },
   { agent: "codex", window: "seven_day", label: "Codex · 7일" },
   { agent: "kimi", window: "five_hour", label: "Kimi · 5시간" },
-  { agent: "kimi", window: "seven_day", label: "Kimi · 7일" },
-  { agent: "tapie", window: "five_hour", label: "TAPIE · 5시간" },
-  { agent: "tapie", window: "seven_day", label: "TAPIE · 7일" },
+  { agent: "kimi", window: "monthly", label: "Kimi · 이번 달" },
+  { agent: "tapie", window: "five_hour", label: "TAPIE · 5시간 ($50)" },
+  { agent: "tapie", window: "monthly", label: "TAPIE · 이번 달 ($1500)" },
 ] as const;
 
 type Estimate = { utilization: number; resets_at: number | null };

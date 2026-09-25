@@ -12,6 +12,9 @@ type Window = {
   key: string;
   tokens: number;
   budget: number;
+  /** "tokens" or "usd": what this plan is capped in. */
+  unit: string;
+  usd: number;
   utilization: number | null;
   resets_at: number | null;
   source: "reported" | "estimated" | "manual";
@@ -48,6 +51,14 @@ function compactTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
   return String(tokens);
+}
+
+/** "$12.50 / $50" for a plan capped in dollars, "" for one capped in tokens:
+ *  a dollar figure is the thing you actually watch on a metered key, and a
+ *  token count against a guessed budget is not worth the room. */
+function spentLabel(window: Window): string {
+  if (window.unit !== "usd" || !window.budget) return "";
+  return `$${window.usd.toFixed(2)} / $${Math.round(window.budget)}`;
 }
 
 function percent(value: number | null): string {
@@ -134,8 +145,12 @@ export function UsageBar({
         <span>아직 집계된 사용량이 없습니다</span>
       ) : (
         agents.map(([agent, data]) => {
+          // The short window first, then whatever the plan's long one is:
+          // a week for Claude and Codex, the calendar month for Kimi and
+          // TAPIE. Reading the second one by name assumed every plan had the
+          // same shape.
           const fiveHour = data.windows.find((w) => w.key === "five_hour") ?? data.windows[0];
-          const sevenDay = data.windows.find((w) => w.key === "seven_day");
+          const longer = data.windows.find((w) => w.key !== fiveHour?.key);
           if (!fiveHour) return null;
           const Icon = AGENT_ICON[agent] ?? CircleDotIcon;
           const failure = failingAgents[agent];
@@ -170,14 +185,19 @@ export function UsageBar({
                 {failure ? (
                   <span className="max-w-64 text-destructive">직전 호출 실패: {failure}</span>
                 ) : null}
-                {resetLabel(fiveHour.resets_at) ? (
-                  <span>5시간 초기화 {resetLabel(fiveHour.resets_at)}</span>
-                ) : null}
-                {sevenDay ? (
+                <span>
+                  {fiveHour.label} {percent(fiveHour.utilization)}
+                  {spentLabel(fiveHour) ? ` (${spentLabel(fiveHour)})` : ""}
+                  {resetLabel(fiveHour.resets_at)
+                    ? ` · 초기화 ${resetLabel(fiveHour.resets_at)}`
+                    : ""}
+                </span>
+                {longer ? (
                   <span>
-                    7일 {percent(sevenDay.utilization)}
-                    {resetLabel(sevenDay.resets_at)
-                      ? ` · 초기화 ${resetLabel(sevenDay.resets_at)}`
+                    {longer.label} {percent(longer.utilization)}
+                    {spentLabel(longer) ? ` (${spentLabel(longer)})` : ""}
+                    {resetLabel(longer.resets_at)
+                      ? ` · 초기화 ${resetLabel(longer.resets_at)}`
                       : ""}
                   </span>
                 ) : null}

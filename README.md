@@ -145,7 +145,8 @@ matched in order, so explicit allowances go above broader blocks.
 | `ANA_WORKSPACE_ROOT` | Root new workspaces are created under (default `$ANA_WORKSPACE_DIR/sessions`) |
 | `ANA_SELF_WORKSPACE` | Absolute host path of AnA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
 | `ANA_ROUTING_RULES` | Path to the routing rules (default `config/routing.yaml`) |
-| `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own |
+| `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` / `ANA_MONTHLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own. Per agent: `ANA_<AGENT>_FIVE_HOUR_TOKEN_BUDGET`, `_WEEKLY_`, `_MONTHLY_` |
+| `ANA_TAPIE_FIVE_HOUR_USD_BUDGET` / `ANA_TAPIE_MONTHLY_USD_BUDGET` | TAPIE is capped in dollars, not tokens: $50 rolling over five hours and $1500 a month by default |
 | `ANA_BACKGROUND_TURNS` | `off` ties a turn's life to the connection that asked for it (the old behavior); anything else keeps it running when the browser leaves |
 | `ANA_RUNNER_IDLE_SECONDS` | How long a conversation's runner — queue, gate token, CLI subprocesses — is kept after the last browser detaches and nothing is running (default 900) |
 | `ANA_PLANNER_TIMEOUT_SECONDS` | How long a planning call may produce *nothing* before ANA moves to the next rung (default 60). It is a silence budget, not a wall clock: a lead still streaming its plan is left alone |
@@ -309,6 +310,12 @@ bill against different ones.
 - **It fails more often than a subscription does**, being a key against someone
   else's endpoint, so the status bar turns its mark red when its last attempt
   errored and clears it when it answers again.
+- **It is capped in dollars**: $50 rolling over five hours, $1500 a calendar
+  month. Its bars are the cost the CLI reported against those caps, not tokens
+  against a guessed budget — and the tooltip says the spend, because that is
+  the number you actually watch on a metered key. Kimi's second window is the
+  calendar month too. Windows are per agent now (`packages/observability/
+  limits.py`), and a ladder rung can only point at a window its CLI has.
 - `claude` itself stays on the subscription. The auth-mode switch that used to
   live in the settings page is gone: the choice is now a rung in the ladder.
 

@@ -1222,9 +1222,17 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         if usage_tracker is not None:
             # Estimated side of the status bar: what ANA has actually spent in
             # the rolling windows, per agent.
-            usage_tracker.record_tokens(used_rung.agent, turn_tokens)
+            # Cost travels with the tokens: a dollar-capped plan (TAPIE) can
+            # only be measured against what the CLI said the turn cost.
+            usage_tracker.record_tokens(
+                used_rung.agent, turn_tokens, usd=float(cost_usd or 0.0)
+            )
             for result in results:
-                usage_tracker.record_tokens(result.agent or result.task.agent, result.tokens)
+                usage_tracker.record_tokens(
+                    result.agent or result.task.agent,
+                    result.tokens,
+                    usd=float(getattr(result, "cost_usd", 0.0) or 0.0),
+                )
         record_turn(
             used_rung.agent,
             outcome=outcome_label,

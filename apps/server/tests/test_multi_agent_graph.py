@@ -284,8 +284,9 @@ async def test_worker_tokens_are_attributed_to_the_worker_model(db_pool):
     graph = build_graph(InMemorySaver())
     await _run(graph, config)
 
-    tracker.record_tokens.assert_any_call("kimi", 15)
-    tracker.record_tokens.assert_any_call("claude", 15)
+    # Cost rides along with the tokens now, for the dollar-capped plans.
+    tracker.record_tokens.assert_any_call("kimi", 15, usd=0.01)
+    tracker.record_tokens.assert_any_call("claude", 15, usd=0.01)
 
 
 @pytest.mark.asyncio
