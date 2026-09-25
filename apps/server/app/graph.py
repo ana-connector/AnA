@@ -48,6 +48,8 @@ from packages.orchestrator.planner import (
     parse_plan,
     plan_rounds,
 )
+from packages.orchestrator.settings import apply_workspace_prompt
+from packages.orchestrator.workspaces import get_workspace
 from packages.orchestrator.supervisor import (
     WorkerRun,
     run_tasks,
@@ -445,11 +447,14 @@ def _resolve_adapter(
     single-agent callers and tests wire it up)."""
     factory = configurable.get("adapter_factory")
     if factory is not None:
-        return factory(agent, auth_mode, model, effort)
+        adapter = factory(agent, auth_mode, model, effort)
+        apply_workspace_prompt(adapter, configurable.get("workspace_prompt") or "")
+        return adapter
     adapters = configurable.get("adapters")
     adapter = adapters.get(agent) if adapters else configurable.get("adapter")
     if adapter is None:
         raise KeyError(f"no adapter configured for agent {agent!r}")
+    apply_workspace_prompt(adapter, configurable.get("workspace_prompt") or "")
     # Set unconditionally, None included. Turns are serialized per connection,
     # so writing to the shared adapter is safe — but skipping the write when
     # the caller passes None left the *previous* call's value in place: the
@@ -638,9 +643,13 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     if gate_session is not None:
         gate_session.lead_scope = None
     pool = configurable["pool"]
+    thread_id = configurable["thread_id"]
+    workspace = await get_workspace(pool, thread_id) if configurable.get("workspace_dir") else None
+    configurable["workspace_prompt"] = workspace.system_prompt if workspace else ""
+    if gate_session is not None:
+        gate_session.workspace_prompt = configurable["workspace_prompt"]
     embedding_model = configurable["embedding_model"]
     transcript = configurable["transcript"]
-    thread_id = configurable["thread_id"]
 
     writer = get_stream_writer()
     started_at = time.time()

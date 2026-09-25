@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { RepeatIcon, SaveIcon, TriangleAlertIcon } from "lucide-react";
 import { forgetWorkspace, updateWorkspace, type WorkspaceSummary } from "@/lib/api";
 import {
@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { WorkspaceSettings } from "@/components/workspace-settings";
 
 function shortPath(path: string): string {
@@ -46,14 +47,10 @@ export function WorkspaceEditor({
   onDeleted: () => void | Promise<void>;
 }) {
   const [name, setName] = useState(workspace.name);
+  const [systemPrompt, setSystemPrompt] = useState(workspace.system_prompt ?? "");
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    setName(workspace.name);
-    setError(null);
-  }, [workspace]);
 
   const rename = async () => {
     try {
@@ -78,6 +75,16 @@ export function WorkspaceEditor({
       setConfirming(false);
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const savePrompt = async () => {
+    try {
+      await updateWorkspace(workspace.id, { system_prompt: systemPrompt });
+      setError(null);
+      await onSaved();
+    } catch (e) {
+      setError(String(e));
     }
   };
 
@@ -114,6 +121,30 @@ export function WorkspaceEditor({
           </Button>
         </Field>
         {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
+      </FieldGroup>
+
+      <FieldGroup>
+        <Field>
+          <FieldLabel htmlFor={`ws-prompt-${workspace.id}`}>워크스페이스 시스템 프롬프트</FieldLabel>
+          <Textarea
+            id={`ws-prompt-${workspace.id}`}
+            value={systemPrompt}
+            onChange={(event) => setSystemPrompt(event.target.value)}
+            placeholder="이 워크스페이스에서 에이전트가 따를 지침을 입력하세요."
+            className="min-h-32"
+          />
+          <FieldDescription>전역 시스템 프롬프트 뒤에 붙으며 다음 턴부터 적용됩니다.</FieldDescription>
+        </Field>
+        <Field orientation="horizontal">
+          <Button
+            size="sm"
+            disabled={systemPrompt === (workspace.system_prompt ?? "")}
+            onClick={() => void savePrompt()}
+          >
+            <SaveIcon data-icon="inline-start" />
+            프롬프트 저장
+          </Button>
+        </Field>
       </FieldGroup>
 
       <WorkspaceSettings

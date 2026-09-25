@@ -55,7 +55,7 @@ from packages.orchestrator.workspaces import ensure_workspace
 from packages.observability.metrics import active_sessions
 from packages.orchestrator.handoff import AGENTS
 from packages.orchestrator.routing import AUTO
-from packages.orchestrator.settings import read_auth_mode, system_prompt_for
+from packages.orchestrator.settings import apply_workspace_prompt, read_auth_mode, system_prompt_for
 from packages.orchestrator.timeline import TurnTimeline
 
 router = APIRouter()
@@ -909,6 +909,7 @@ async def _build_runner(
                 scope=scope,
             )
         )
+        apply_workspace_prompt(built, gate_session.workspace_prompt)
         _drop_finished_workers(adapters)
         adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built
         return built

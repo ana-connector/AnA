@@ -71,10 +71,11 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
       }
     >
       <WorkspaceEditor
+        key={workspace.id}
         workspace={workspace}
         isSelf={workspace.id === selfWorkspaceId}
         onSaved={async () => {
-          notify.success("워크스페이스 저장됨", "컨테이너 설정은 다음 턴부터 적용됩니다.");
+          notify.success("워크스페이스 저장됨", "변경 사항은 다음 턴부터 적용됩니다.");
           await load();
         }}
         onDeleted={() => {

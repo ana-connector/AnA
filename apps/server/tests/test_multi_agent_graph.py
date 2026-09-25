@@ -11,6 +11,7 @@ from apps.server.app.graph import build_graph
 from packages.adapters.base import AdapterEvent, AgentAdapter
 from packages.memory.embeddings import EmbeddingModel
 from packages.observability import metrics
+from packages.orchestrator.workspaces import create_workspace, run_workspace_migrations, set_workspace_system_prompt
 
 PLAN_JSON = (
     '{"mode": "delegate", "tasks": ['
@@ -420,6 +421,26 @@ async def test_execute_plan_uses_lead_without_worker_and_revokes_scope(db_pool):
     assert values["response_text"] == "확인했습니다"
     assert "[EXECUTION SCOPE]" in lead.prompts[1]
     assert gate_session.lead_scope is None
+
+
+@pytest.mark.asyncio
+async def test_workspace_prompt_reaches_lead_on_each_turn(db_pool, tmp_path):
+    await run_workspace_migrations(db_pool)
+    workspace = await create_workspace(db_pool, name="Prompt Graph", path=str(tmp_path))
+    await set_workspace_system_prompt(db_pool, workspace.id, "Workspace rule")
+
+    class PromptLead(ScriptedAdapter):
+        system_prompt = "Global rule"
+
+        async def run_stream(self, prompt, session_id=None):
+            assert self.system_prompt.endswith("[WORKSPACE INSTRUCTIONS]\nWorkspace rule")
+            async for event in super().run_stream(prompt, session_id):
+                yield event
+
+    lead = PromptLead(['{"mode":"direct"}', "답변"])
+    config = _config(db_pool, lead, None, workspace.id)
+    config["configurable"]["workspace_dir"] = workspace.path
+    await _run(build_graph(InMemorySaver()), config)
 
 
 @pytest.mark.asyncio

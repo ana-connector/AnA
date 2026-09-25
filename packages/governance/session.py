@@ -88,6 +88,7 @@ class GateSession:
     send: Callable[[dict], Awaitable[None]]
     # Set by the planner only while the lead executes a tool-using turn.
     lead_scope: Optional[Scope] = None
+    workspace_prompt: str = ""
     # Which agent is running right now, so the audit row names the right CLI.
     # Updated per turn by the websocket handler.
     current_agent: Optional[str] = None

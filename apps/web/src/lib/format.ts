@@ -51,5 +51,5 @@ export function duration(ms: number): string {
   if (seconds < 60) return `${seconds}초`;
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
-  return rest ? `${minutes}분 ${rest}초` : `${minutes}분`;
+  return `${minutes}분 ${rest}초`;
 }
