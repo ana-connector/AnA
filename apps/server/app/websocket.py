@@ -919,6 +919,7 @@ async def _build_runner(
             "adapters": adapters,
             "adapter_factory": adapter_factory,
             "worker_factory": worker_factory,
+            "gate_session": gate_session,
             "claude_auth_mode": read_auth_mode(),
             # Where this conversation works. The fan-out needs it to give each
             # sub-agent its own git worktree under it.

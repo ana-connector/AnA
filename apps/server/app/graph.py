@@ -38,6 +38,7 @@ from packages.orchestrator.routing import (
     settings_for,
 )
 from packages.orchestrator.planner import (
+    EXECUTE,
     build_planning_prompt,
     build_replan_prompt,
     build_task_prompt,
@@ -633,6 +634,9 @@ def _codex_home_of(adapter) -> Optional[str]:
 
 async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     configurable = config["configurable"]
+    gate_session = configurable.get("gate_session")
+    if gate_session is not None:
+        gate_session.lead_scope = None
     pool = configurable["pool"]
     embedding_model = configurable["embedding_model"]
     transcript = configurable["transcript"]
@@ -705,6 +709,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     turn_model: Optional[str] = None
     subagent_cost = 0.0
     subagent_tokens = 0
+    lead_execution_scope = None
     planning_failed_over = False
     planning_failover_reason = ""
     planning_rung = None
@@ -962,6 +967,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             # prompt the normal (failover-protected) turn loop below runs.
             _status(writer, "synthesizing", agent)
             augmented_prompt = build_synthesis_prompt(state["prompt"], subagent_results)
+        elif plan.mode == EXECUTE:
+            lead_execution_scope = plan.scope
+            augmented_prompt += (
+                "\n\n[EXECUTION SCOPE] Complete this request yourself with tools. "
+                f"Permission mode: {plan.scope.mode}. "
+                f"Allowed workspace paths: {', '.join(plan.scope.paths) if plan.scope.paths else 'all'}. "
+                "The gate also applies its normal rules. Answer the user in Korean."
+            )
 
     if agent in session_ids:
         session_id = session_ids[agent]
@@ -1019,6 +1032,8 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     # what replaces this on screen.
     _status(writer, "answering", agent)
 
+    if gate_session is not None:
+        gate_session.lead_scope = lead_execution_scope
     try:
         for rung in chain[start_index:]:
             tried.append(rung.label)
@@ -1159,6 +1174,8 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             caught_exc = None  # recovered by moving down the chain
             for_error_text = ""
     finally:
+        if gate_session is not None:
+            gate_session.lead_scope = None
         # A cancelled attempt never gets to copy its fields out of the loop,
         # so read them straight off the in-flight outcome here.
         if in_flight is not None:

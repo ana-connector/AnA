@@ -45,9 +45,9 @@ def process_role(role: str):
     without git or postgres, which is exactly what happened the first time
     this ran for real.
 
-    The lead itself is still kept away from them by the gate, which refuses it
-    every tool call but delegation, the clock, and asking the user. Flags decide
-    what exists; the gate decides who may use it.
+    The gate permits lead work tools only for turns planned as execute, within
+    that turn's permission scope. Flags decide what exists; the gate decides
+    who may use it.
 
     So a lead process gets both sets: the worker servers its native sub-agents
     need, and the servers scoped to the lead itself. Returning only WORKER

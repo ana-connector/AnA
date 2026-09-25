@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from apps.server.app.main import app
 from packages.governance.audit import recent_events, run_audit_migrations
 from packages.governance.session import GateRegistry
+from packages.governance.subagent_scope import Scope
 
 
 @pytest_asyncio.fixture
@@ -95,6 +96,25 @@ def test_lead_can_read_the_clock_but_cannot_run_shell(client):
     )
     assert blocked.json()["decision"] == "deny"
     assert blocked.json()["rule_id"] == "lead-no-tools"
+
+
+def test_planner_grants_lead_a_temporary_read_scope(client):
+    session = _register(client, "lead-execute", [])
+    session.current_agent = "codex"
+    session.lead_scope = Scope(mode="read")
+
+    def call(command):
+        return client.post(
+            "/gate/tool-call",
+            headers={"x-ana-gate-token": session.token},
+            json={"tool_name": "Bash", "tool_input": {"command": command},
+                  "role": "lead", "scope_mode": "write"},
+        ).json()
+
+    assert call("ls")["decision"] == "allow"
+    assert call("touch changed.txt")["rule_id"] == "subagent-scope"
+    session.lead_scope = None
+    assert call("ls")["rule_id"] == "lead-no-tools"
 
 
 @pytest.mark.parametrize("tool_name", [

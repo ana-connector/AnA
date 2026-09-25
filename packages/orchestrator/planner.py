@@ -14,6 +14,7 @@ from packages.governance.subagent_scope import Scope
 from packages.orchestrator.handoff import AGENTS
 
 DIRECT = "direct"
+EXECUTE = "execute"
 DELEGATE = "delegate"
 
 # How many tasks one plan may contain, and how many may run at once. They
@@ -43,8 +44,15 @@ If you can answer from what you already know and this conversation, with no
 tools at all:
 {"mode": "direct"}
 
-If the request needs the machine (reading or writing files, running commands,
-inspecting code, searching):
+If one agent can complete the request in this conversation, using tools directly:
+{"mode": "execute", "scope": {"mode": "read", "paths": []}}
+
+Use "write" instead of "read" when changes are needed. ANA grants this scope
+to you for the execution call only; the gate still applies workspace and
+governance rules. Prefer this for a single investigation, fix, command or
+other straightforward task, even if it needs several tool calls.
+
+If independent tasks benefit from parallel work or isolation, delegate:
 {"mode": "delegate", "tasks": [
   {"id": "t1", "title": "짧은 제목", "needs": [],
    "prompt": "a self-contained instruction for this task alone",
@@ -86,9 +94,8 @@ Rules:
 - Keep ids short (t1, t2 …). `needs` may only name ids you already defined, and
   cycles are rejected.
 - Write each `prompt` so the task can be carried out from that text alone.
-- **"direct" means "needs no tools", not "easy".** You cannot read files or run
-  commands. If the answer depends on file contents, command output or repository
-  state, delegate — even a one-task plan.
+- **"direct" means "needs no tools", not "easy".** Use "execute" when you
+  need tools but can do the work yourself. Do not delegate a single simple task.
 - Conversely, do not delegate concept explanations, summaries of what was just
   said, or anything you already know: starting a sub-agent costs something too.
 - If there is no reason to split, a one-task plan is the right answer. Do not
@@ -185,6 +192,7 @@ class PlanTask:
 class Plan:
     mode: str = DIRECT
     tasks: list[PlanTask] = field(default_factory=list)
+    scope: Scope = field(default_factory=lambda: Scope(mode="read"))
     # Why the plan ended up direct, when that was not the model's choice.
     note: str = ""
     # A command ANA runs once, after every task has merged. Per-task checks
@@ -438,6 +446,12 @@ def parse_plan(
     payload = _extract_json(text or "")
     if payload is None:
         return Plan(note="계획을 JSON으로 읽지 못해 단독 처리")
+    if payload.get("mode") == EXECUTE:
+        raw_scope = payload.get("scope")
+        scope = Scope.parse(raw_scope) if isinstance(raw_scope, dict) else Scope(mode="read")
+        if not isinstance(raw_scope, dict) or raw_scope.get("mode") not in ("read", "write"):
+            scope = Scope(mode="read", paths=scope.paths)
+        return Plan(mode=EXECUTE, scope=scope)
     if payload.get("mode") != DELEGATE:
         return Plan()
 

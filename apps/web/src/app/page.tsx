@@ -425,7 +425,7 @@ export default function ChatPage() {
                   <MessageScrollerItem messageId="plan-outcome">
                     <Marker variant="separator">
                       <MarkerContent>
-                        대장이 직접 답했습니다 · 하위 에이전트 없음{planOutcome.note ? ` (${planOutcome.note})` : ""}
+                        {planOutcome.mode === "execute" ? "대장이 직접 작업합니다" : "대장이 직접 답합니다"} · 하위 에이전트 없음{planOutcome.note ? ` (${planOutcome.note})` : ""}
                       </MarkerContent>
                     </Marker>
                   </MessageScrollerItem>

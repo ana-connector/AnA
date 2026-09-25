@@ -4,6 +4,7 @@ import pytest
 from packages.orchestrator.planner import (
     DELEGATE,
     DIRECT,
+    EXECUTE,
     build_planning_prompt,
     build_replan_prompt,
     build_task_prompt,
@@ -26,6 +27,15 @@ def test_direct_plan():
 
     assert plan.mode == DIRECT
     assert plan.delegating is False
+
+
+def test_execute_plan_has_turn_scope():
+    plan = parse_plan('{"mode":"execute","scope":{"mode":"write","paths":["src"]}}')
+    assert plan.mode == EXECUTE
+    assert plan.scope.mode == "write"
+    assert plan.scope.paths == ("src",)
+    assert not plan.delegating
+    assert parse_plan('{"mode":"execute"}').scope.mode == "read"
 
 
 def test_delegation_with_tasks():

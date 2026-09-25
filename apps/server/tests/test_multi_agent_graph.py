@@ -1,6 +1,7 @@
 """The delegate path through the graph: plan, fan out, synthesize."""
 import asyncio
 from typing import AsyncIterator, Optional
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -392,6 +393,33 @@ async def test_direct_plan_runs_a_single_turn(db_pool):
     assert next(f for f in frames if f["type"] == "plan")["mode"] == "direct"
     assert called == []
     assert values["response_text"] == "바로 답변"
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_uses_lead_without_worker_and_revokes_scope(db_pool):
+    gate_session = SimpleNamespace(lead_scope=None)
+
+    class ScopedLead(ScriptedAdapter):
+        async def run_stream(self, prompt, session_id=None):
+            if len(self.prompts) == 1:
+                assert gate_session.lead_scope is not None
+                assert gate_session.lead_scope.mode == "read"
+            async for event in super().run_stream(prompt, session_id):
+                yield event
+
+    lead = ScopedLead(['{"mode":"execute","scope":{"mode":"read"}}', "확인했습니다"])
+
+    def worker_factory(*args, **kwargs):
+        raise AssertionError("execute must use the lead")
+
+    config = _config(db_pool, lead, worker_factory, "ma-execute")
+    config["configurable"]["gate_session"] = gate_session
+    frames, values = await _run(build_graph(InMemorySaver()), config)
+
+    assert next(f for f in frames if f["type"] == "plan")["mode"] == "execute"
+    assert values["response_text"] == "확인했습니다"
+    assert "[EXECUTION SCOPE]" in lead.prompts[1]
+    assert gate_session.lead_scope is None
 
 
 @pytest.mark.asyncio

@@ -116,10 +116,8 @@ def test_broken_registry_file_yields_an_empty_registry_not_an_exception(tmp_path
     assert load_registry().names() == ()
 
 
-def test_shipped_registry_scopes_the_tooling_to_workers():
-    """The lead plans and delegates, so every server that touches the machine is
-    worker-scoped. ANA's own two are the exceptions: `ask` reaches the user and
-    `schedule` puts a turn on a clock, and neither is work."""
+def test_shipped_registry_exposes_read_tools_to_lead():
+    """The gate grants lead tool calls only while execute mode is active."""
     registry = load_registry()
-    assert set(registry.names_for("lead")) == {"ask", "schedule"}
+    assert set(registry.names_for("lead")) == {"git", "postgres", "ask", "schedule"}
     assert set(registry.names_for("worker")) == {"git", "postgres", "github", "ask"}
