@@ -510,6 +510,7 @@ async def _stream_turn(
     rate_limit_utilization: float,
     usage_tracker=None,
     timeline=None,
+    native_agents=None,
 ) -> _TurnOutcome:
     """Runs one attempt, streaming its events to the client.
 
@@ -593,6 +594,14 @@ async def _stream_turn(
                 continue
             if event.type == "error":
                 continue  # held back until the caller knows whether it retries
+
+            if event.type == "subagent" and event.raw and event.raw.get("task"):
+                task = event.raw["task"]
+                if native_agents is not None:
+                    native_agents[task["id"]] = dict(task)
+                writer({"type": "subagent", "text": "", "session_id": event.session_id,
+                        "is_error": False, "agent": agent, "task": task})
+                continue
 
             payload = {
                 "type": event.type,
@@ -1131,6 +1140,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     rate_limit_utilization=breaker_config.rate_limit_utilization,
                     usage_tracker=usage_tracker,
                     timeline=configurable.get("timeline"),
+                    native_agents=configurable.get("native_agents"),
                 )
 
             response_text = outcome.response_text or response_text

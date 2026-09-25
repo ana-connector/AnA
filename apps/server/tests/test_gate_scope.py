@@ -115,11 +115,9 @@ def test_a_scope_cannot_widen_what_the_rules_deny(client, tmp_path):
     assert response.json()["rule_id"] == "fs-recursive-force-delete"
 
 
-def test_the_clis_own_subagent_tooling_is_refused(client, tmp_path):
-    """A natively-spawned sub-agent skips every ANA guarantee — no permission
-    scope, no worktree, no verification — and both CLIs hand those tools an
-    encrypted message, so the audit row and the leak scan see ciphertext where
-    the delegated task should be."""
+def test_the_clis_own_subagent_tooling_can_be_disabled(client, tmp_path, monkeypatch):
+    """The explicit off switch stops native delegation."""
+    monkeypatch.setenv("ANA_NATIVE_SUBAGENTS", "off")
     session = _register(client, "native-1", str(tmp_path))
 
     response = client.post(
@@ -135,12 +133,11 @@ def test_the_clis_own_subagent_tooling_is_refused(client, tmp_path):
     body = response.json()
     assert body["decision"] == "deny"
     assert body["rule_id"] == "native-subagents-disabled"
-    # The reason is what the agent reads, so it is English and names the path
-    # ANA wants it to take instead.
-    assert "plan" in body["reason"]
+    assert "ANA_NATIVE_SUBAGENTS=off" in body["reason"]
 
 
-def test_a_sub_agent_cannot_spawn_its_own_either(client, tmp_path):
+def test_a_sub_agent_cannot_spawn_when_disabled(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_NATIVE_SUBAGENTS", "off")
     session = _register(client, "native-2", str(tmp_path))
 
     response = client.post(
@@ -157,8 +154,8 @@ def test_a_sub_agent_cannot_spawn_its_own_either(client, tmp_path):
     assert response.json()["rule_id"] == "native-subagents-disabled"
 
 
-def test_the_switch_puts_them_back(client, tmp_path, monkeypatch):
-    monkeypatch.setenv("ANA_NATIVE_SUBAGENTS", "on")
+def test_native_subagents_are_available_by_default(client, tmp_path, monkeypatch):
+    monkeypatch.delenv("ANA_NATIVE_SUBAGENTS", raising=False)
     session = _register(client, "native-3", str(tmp_path))
 
     response = client.post(
@@ -172,6 +169,13 @@ def test_the_switch_puts_them_back(client, tmp_path, monkeypatch):
     )
 
     assert response.json()["decision"] == "allow"
+
+    swarm = client.post(
+        "/gate/tool-call",
+        headers={"x-ana-gate-token": session.token},
+        json={"tool_name": "AgentSwarm", "tool_input": {"items": ["work"]}, "role": "lead"},
+    )
+    assert swarm.json()["decision"] == "allow"
 
 
 def test_the_lead_still_gets_the_clock(client, tmp_path):

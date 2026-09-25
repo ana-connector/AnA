@@ -64,19 +64,13 @@ LEAD_CONTROL_SERVERS = {"ask", "schedule"}
 # browser and waits (packages/mcp/servers/ask_user.py).
 ASK_SERVER = "ask"
 
-# The CLIs' own sub-agent tooling. ANA refuses it by default and delegates
-# through its planner instead, because a natively-spawned sub-agent skips
-# everything ANA delegation provides: no per-task permission scope, no git
-# worktree of its own, no verification command, and no visible instruction —
-# both CLIs hand these tools an *encrypted* `message` (a Fernet token), so the
-# audit row, the approval card and the secret-leak scan all see ciphertext
-# where the delegated task should be. A delegation ANA cannot read is one it
-# cannot govern.
-#
-# ANA_NATIVE_SUBAGENTS=on puts them back, for comparing the two paths.
+# Native CLI delegation is available by default. ANA's planner remains an
+# optional path for tasks that need separate worktrees and explicit scopes.
+# ANA_NATIVE_SUBAGENTS=off disables native delegation when needed.
 NATIVE_DELEGATION_TOOLS = {
     "agent",
     "task",
+    "agentswarm",
     "collaborationspawn_agent",
     "collaborationfollowup_task",
     "collaborationsend_message",
@@ -87,7 +81,7 @@ NATIVE_DELEGATION_TOOLS = {
 
 
 def native_subagents_allowed() -> bool:
-    return os.environ.get("ANA_NATIVE_SUBAGENTS", "off").lower() == "on"
+    return os.environ.get("ANA_NATIVE_SUBAGENTS", "on").lower() == "on"
 
 
 def lead_control_tools() -> set[str]:
@@ -472,18 +466,13 @@ async def gate_tool_call(
         body.tool_name.lower() in NATIVE_DELEGATION_TOOLS
         and not native_subagents_allowed()
     ):
-        # Refused for every role, not just the lead: a sub-agent spawning its
-        # own sub-agents is the same blind spot one level down.
+        # The explicit off switch applies to every role.
         await _audit(DENY, "delegation", "native sub-agent tooling is disabled")
         return GateDecision(
             decision=DENY,
             # English, like every other text ANA writes for an agent to read:
             # the words the *user* sees are the card's Korean description.
-            reason=(
-                "This CLI's own sub-agent tooling is not available. To split work, "
-                "answer with a plan (JSON) — ANA runs each task with a permission "
-                "scope, its own worktree and a verification command."
-            ),
+            reason="This CLI's own sub-agent tooling is disabled by ANA_NATIVE_SUBAGENTS=off.",
             rule_id="native-subagents-disabled",
             category="delegation",
         )
