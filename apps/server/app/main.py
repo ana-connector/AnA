@@ -68,6 +68,7 @@ from packages.orchestrator.workspaces import (
     ensure_self_workspace,
     get_workspace,
     set_container_settings,
+    set_workspace_system_prompt,
     forget_workspace,
     list_workspaces,
     rename_workspace,
@@ -235,6 +236,7 @@ class WorkspaceRename(BaseModel):
     container_enabled: bool | None = None
     container_image: str | None = None
     container_ports: list | None = None
+    system_prompt: str | None = None
 
 
 @app.get("/workspaces")
@@ -267,6 +269,11 @@ async def patch_workspace(request: Request, workspace_id: str, body: WorkspaceRe
         if not body.name.strip():
             raise HTTPException(status_code=422, detail="workspace name is required")
         touched = await rename_workspace(pool, workspace_id, body.name) or touched
+
+    if body.system_prompt is not None:
+        touched = await set_workspace_system_prompt(
+            pool, workspace_id, body.system_prompt
+        ) or touched
 
     if (
         body.container_enabled is not None

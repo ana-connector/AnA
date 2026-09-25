@@ -179,6 +179,7 @@ export type WorkspaceSummary = {
   container_enabled: boolean;
   container_image: string | null;
   container_ports: PortMapping[];
+  system_prompt: string;
 };
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -220,6 +221,7 @@ export async function updateWorkspace(
     container_enabled?: boolean;
     container_image?: string | null;
     container_ports?: PortMapping[];
+    system_prompt?: string;
   }
 ): Promise<void> {
   const response = await fetch(`${apiBase()}/workspaces/${encodeURIComponent(id)}`, {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { TurnStatus } from "@/hooks/useChatSocket";
+import { duration } from "@/lib/format";
 
 /** What each phase is called, for the person waiting. The server sends a key —
  *  the wording lives here with every other Korean string. */
@@ -61,7 +62,7 @@ export function TurnStatusLine({
       </span>
       {/* Only once it has been a moment: a counter that appears instantly makes
           a fast turn feel slow. */}
-      {elapsed >= 3 && <span className="shrink-0 tabular-nums">{elapsed}초</span>}
+      {elapsed >= 3 && <span className="shrink-0 tabular-nums">{duration(elapsed * 1000)}</span>}
     </div>
   );
 }

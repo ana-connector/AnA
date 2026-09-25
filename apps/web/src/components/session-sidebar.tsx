@@ -360,6 +360,7 @@ export function SessionSidebar({
         {editing && (
           <>
             <WorkspaceEditor
+              key={editing.id}
               workspace={editing}
               isSelf={editing.id === selfWorkspaceId}
               onSaved={async () => {

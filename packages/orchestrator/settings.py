@@ -262,3 +262,14 @@ def system_prompt_for(agent: str, role: str = "lead") -> Optional[str]:
     if configured:
         parts.append(configured)
     return "\n\n".join(parts)
+
+
+def apply_workspace_prompt(adapter, prompt: str) -> None:
+    """Refresh the workspace instructions on an adapter reused across turns."""
+    if not hasattr(adapter, "system_prompt"):
+        return
+    if not hasattr(adapter, "_ana_base_system_prompt"):
+        adapter._ana_base_system_prompt = adapter.system_prompt
+    base = adapter._ana_base_system_prompt or ""
+    extra = prompt.strip()
+    adapter.system_prompt = f"{base}\n\n[WORKSPACE INSTRUCTIONS]\n{extra}" if extra else base

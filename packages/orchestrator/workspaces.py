@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_image TEXT;
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_ports JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS system_prompt TEXT NOT NULL DEFAULT '';
 """
 
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
@@ -64,6 +65,7 @@ class Workspace:
     container_enabled: bool = False
     container_image: Optional[str] = None
     container_ports: tuple = ()
+    system_prompt: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -73,6 +75,7 @@ class Workspace:
             "container_enabled": self.container_enabled,
             "container_image": self.container_image,
             "container_ports": list(self.container_ports),
+            "system_prompt": self.system_prompt,
         }
 
 
@@ -209,6 +212,7 @@ def _row_to_workspace(row) -> Workspace:
         container_enabled=bool(row[3]),
         container_image=row[4],
         container_ports=tuple(row[5] or ()),
+        system_prompt=row[6] or "",
     )
 
 
@@ -216,7 +220,7 @@ async def get_workspace(pool: AsyncConnectionPool, workspace_id: str) -> Optiona
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
-            SELECT id, name, path, container_enabled, container_image, container_ports
+            SELECT id, name, path, container_enabled, container_image, container_ports, system_prompt
             FROM workspaces WHERE id = %s
             """,
             (workspace_id,),
@@ -244,6 +248,17 @@ async def set_container_settings(
             WHERE id = %s
             """,
             (enabled, image or None, json.dumps(ports or []), workspace_id),
+        )
+        return cur.rowcount > 0
+
+
+async def set_workspace_system_prompt(
+    pool: AsyncConnectionPool, workspace_id: str, prompt: str
+) -> bool:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE workspaces SET system_prompt = %s WHERE id = %s",
+            (prompt, workspace_id),
         )
         return cur.rowcount > 0
 
@@ -388,6 +403,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             """
             SELECT w.id, w.name, w.path, w.last_used_at,
                    w.container_enabled, w.container_image, w.container_ports,
+                   w.system_prompt,
                    COUNT(t.id) AS turn_count,
                    MAX(t.created_at) AS last_turn_at,
                    (ARRAY_AGG(t.agent ORDER BY t.created_at DESC, t.id DESC)
@@ -403,7 +419,8 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             FROM workspaces w
             LEFT JOIN turns t ON t.thread_id = w.id
             GROUP BY w.id, w.name, w.path, w.last_used_at,
-                     w.container_enabled, w.container_image, w.container_ports
+                     w.container_enabled, w.container_image, w.container_ports,
+                     w.system_prompt
             ORDER BY lower(w.name), w.id
             LIMIT %s
             """,
@@ -419,10 +436,11 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             "container_enabled": bool(r[4]),
             "container_image": r[5],
             "container_ports": list(r[6] or ()),
-            "turn_count": r[7],
-            "last_turn_at": r[8].isoformat() if r[8] else None,
-            "last_agent": r[9],
-            "total_tokens": int(r[10] or 0),
+            "system_prompt": r[7] or "",
+            "turn_count": r[8],
+            "last_turn_at": r[9].isoformat() if r[9] else None,
+            "last_agent": r[10],
+            "total_tokens": int(r[11] or 0),
         }
         for r in rows
     ]

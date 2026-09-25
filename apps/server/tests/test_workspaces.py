@@ -1,5 +1,6 @@
 """Workspaces: the folder ANA works in, and the one conversation that owns it."""
 from pathlib import Path
+from types import SimpleNamespace
 
 import subprocess
 
@@ -8,6 +9,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from apps.server.app.main import app
+from packages.orchestrator.settings import apply_workspace_prompt
 from packages.orchestrator.workspaces import (
     SELF_WORKSPACE_ID,
     WorkspacePathError,
@@ -19,6 +21,7 @@ from packages.orchestrator.workspaces import (
     list_workspaces,
     rename_workspace,
     run_workspace_migrations,
+    set_workspace_system_prompt,
     slugify,
 )
 
@@ -42,6 +45,13 @@ async def workspace_pool(db_pool):
 )
 def test_slugify_produces_folder_safe_ids(name, expected):
     assert slugify(name) == expected
+
+
+def test_workspace_prompt_refreshes_without_accumulating_old_text():
+    adapter = SimpleNamespace(system_prompt="Global rules")
+    apply_workspace_prompt(adapter, "First workspace")
+    apply_workspace_prompt(adapter, "Second workspace")
+    assert adapter.system_prompt == "Global rules\n\n[WORKSPACE INSTRUCTIONS]\nSecond workspace"
 
 
 @pytest.mark.asyncio
@@ -182,6 +192,19 @@ async def test_a_workspace_with_no_turns_still_lists(workspace_pool, tmp_path, m
     assert rows[0]["last_agent"] is None
 
 
+@pytest.mark.asyncio
+async def test_workspace_system_prompt_is_isolated_and_listed(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    first = await create_workspace(workspace_pool, name="First")
+    second = await create_workspace(workspace_pool, name="Second")
+    assert await set_workspace_system_prompt(workspace_pool, first.id, "Use concise answers")
+    assert (await get_workspace(workspace_pool, first.id)).system_prompt == "Use concise answers"
+    assert (await get_workspace(workspace_pool, second.id)).system_prompt == ""
+    rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
+    assert rows[first.id]["system_prompt"] == "Use concise answers"
+    assert rows[second.id]["system_prompt"] == ""
+
+
 @pytest.fixture
 def client(workspace_pool, postgres_dsn, monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", postgres_dsn)
@@ -193,6 +216,12 @@ def client(workspace_pool, postgres_dsn, monkeypatch, tmp_path):
 def test_api_create_list_rename_delete(client):
     created = client.post("/workspaces", json={"name": "API Project"}).json()
     assert created["id"] == "api-project"
+
+    prompt_update = client.patch(
+        "/workspaces/api-project", json={"system_prompt": "Use Korean"}
+    )
+    assert prompt_update.status_code == 200
+    assert prompt_update.json()["system_prompt"] == "Use Korean"
 
     listed = client.get("/workspaces").json()["workspaces"]
     assert [w["id"] for w in listed] == ["api-project"]
