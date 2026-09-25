@@ -34,6 +34,14 @@ def main() -> None:
             }],
         }))
         print(json.dumps({"role": "tool", "tool_call_id": "tool_1", "content": "a.txt\n"}))
+    if os.environ.get("FAKE_KIMI_SWARM"):
+        print(json.dumps({
+            "role": "assistant",
+            "tool_calls": [{"type": "function", "id": "swarm_1",
+                            "function": {"name": "AgentSwarm", "arguments": json.dumps({
+                                "items": ["첫 번째 작업", "두 번째 작업"]})}}],
+        }))
+        print(json.dumps({"role": "tool", "tool_call_id": "swarm_1", "content": "완료"}))
     print(json.dumps({
         "role": "assistant",
         "content": os.environ.get("FAKE_KIMI_TEXT", "안녕"),

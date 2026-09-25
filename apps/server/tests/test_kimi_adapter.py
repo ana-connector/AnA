@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from packages.adapters.kimi import KimiAdapter
+from apps.server.app.graph import _TurnOutcome, _stream_turn
 
 FAKE_CLI = str(Path(__file__).parent / "fixtures" / "fake_kimi.py")
 
@@ -82,6 +83,39 @@ async def test_tool_events_are_left_to_the_gate(tmp_path, monkeypatch):
     events = await _collect(adapter.run_stream("ls 해줘"))
 
     assert [event.type for event in events] == ["text", "result"]
+
+
+async def test_swarm_children_are_streamed_with_completion(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_KIMI_SWARM", "1")
+    events = await _collect(_adapter(tmp_path).run_stream("분업해줘"))
+
+    tasks = [event.raw["task"] for event in events if event.type == "subagent"]
+    assert [(task["id"], task["status"]) for task in tasks] == [
+        ("native:kimi:swarm_1:0", "running"),
+        ("native:kimi:swarm_1:1", "running"),
+        ("native:kimi:swarm_1:0", "done"),
+        ("native:kimi:swarm_1:1", "done"),
+    ]
+    assert tasks[0]["title"] == "첫 번째 작업"
+    assert tasks[-1]["output"] == "완료"
+
+
+async def test_swarm_children_reach_web_frames_and_turn_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_KIMI_SWARM", "1")
+    frames = []
+    native_agents = {}
+
+    await _stream_turn(
+        _adapter(tmp_path), outcome=_TurnOutcome(), prompt="분업해줘", agent="kimi",
+        session_id=None, writer=frames.append, base_cost_usd=0, base_tokens=0,
+        rate_limit_utilization=1, native_agents=native_agents,
+    )
+
+    assert [frame["task"]["status"] for frame in frames if frame["type"] == "subagent"] == [
+        "running", "running", "done", "done",
+    ]
+    assert len(native_agents) == 2
+    assert all(task["status"] == "done" for task in native_agents.values())
 
 
 async def test_a_failed_run_reports_stderr_and_no_result(tmp_path, monkeypatch):

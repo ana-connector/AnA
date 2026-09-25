@@ -23,9 +23,9 @@ Two shapes differ from the other CLIs and drive the design here:
   back once the turn is over (see packages/observability/kimi_usage.py), so a
   Kimi turn still counts against the thread's token budget.
 
-Tool calls arrive as events too, but ANA does not surface them from here: the
-PreToolUse hook already reports every call to the gate, which is what the UI
-renders — taking them from both places would show each call twice.
+Ordinary tool calls are surfaced by the gate. AgentSwarm additionally emits
+sub-agent lifecycle events here because Kimi does not send SubagentStart/Stop
+hooks to ANA for its swarm children.
 """
 import asyncio
 import json
@@ -113,6 +113,7 @@ class KimiAdapter(AgentAdapter):
 
         resolved_session_id = session_id
         answer: list[str] = []
+        swarms: dict[str, list[dict]] = {}
 
         async for raw_line in self._process.stdout:
             line = raw_line.decode("utf-8", errors="replace").strip()
@@ -122,6 +123,47 @@ class KimiAdapter(AgentAdapter):
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if event.get("role") == "assistant":
+                for call in event.get("tool_calls") or []:
+                    function = call.get("function") or {}
+                    if function.get("name") != "AgentSwarm":
+                        continue
+                    call_id = call.get("id")
+                    if not call_id:
+                        continue
+                    arguments = function.get("arguments") or {}
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except json.JSONDecodeError:
+                            arguments = {}
+                    if not isinstance(arguments, dict):
+                        continue
+                    items = arguments.get("items") or []
+                    if not isinstance(items, list):
+                        continue
+                    tasks = []
+                    for index, item in enumerate(items):
+                        title = str(item).strip().splitlines()[0][:120] or "하위 에이전트"
+                        task = {
+                            "id": f"native:kimi:{call_id}:{index}",
+                            "title": title,
+                            "agent": "kimi",
+                            "status": "running",
+                            "output": "",
+                            "tools": [],
+                        }
+                        tasks.append(task)
+                        yield AdapterEvent(type="subagent", raw={"task": dict(task)})
+                    swarms[call_id] = tasks
+            elif event.get("role") == "tool":
+                call_id = event.get("tool_call_id")
+                if call_id in swarms:
+                    result = event.get("content") or ""
+                    failed = bool(event.get("is_error"))
+                    for task in swarms.pop(call_id):
+                        task.update(status="error" if failed else "done", output=str(result)[:4000])
+                        yield AdapterEvent(type="subagent", raw={"task": dict(task)})
             parsed, resolved_session_id = self._parse_event(event, resolved_session_id)
             if parsed is None:
                 continue
@@ -133,6 +175,10 @@ class KimiAdapter(AgentAdapter):
         return_code = await self._process.wait()
 
         if return_code != 0:
+            for tasks in swarms.values():
+                for task in tasks:
+                    task.update(status="error", output="Kimi exited before the swarm completed")
+                    yield AdapterEvent(type="subagent", raw={"task": dict(task)})
             yield AdapterEvent(
                 type="error",
                 text=stderr_bytes.decode("utf-8", errors="replace"),
@@ -140,6 +186,11 @@ class KimiAdapter(AgentAdapter):
                 is_error=True,
             )
             return
+
+        for tasks in swarms.values():
+            for task in tasks:
+                task.update(status="unknown", output="No AgentSwarm result was reported")
+                yield AdapterEvent(type="subagent", raw={"task": dict(task)})
 
         # The CLI ends the stream without a summary, so the result event the
         # graph records the turn from is assembled here. Cost is None: the
