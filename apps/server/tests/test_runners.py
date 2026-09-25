@@ -185,8 +185,40 @@ async def test_a_send_failure_detaches_without_stopping_the_turn():
             break
         await asyncio.sleep(0.01)
 
-    assert runner.sink is None
+    assert not runner.sinks
     assert graph.calls == ["keep going"]
+    await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_questions_reach_every_open_tab_and_clear_after_remote_answer():
+    runner = _runner(FakeGraph([]))
+    first: list[dict] = []
+    second: list[dict] = []
+
+    async def first_tab(frame):
+        first.append(frame)
+
+    async def second_tab(frame):
+        second.append(frame)
+
+    runner.attach(first_tab)
+    runner.attach(second_tab)
+    question = {"type": "question", "request_id": "q1", "questions": [{"question": "Which?"}]}
+    await runner.emit(question)
+    assert first == [question]
+    assert second == [question]
+
+    await runner.request_resolved("q1", "discord:42")
+    assert first[-1]["type"] == "request_resolved"
+    assert second[-1]["type"] == "request_resolved"
+    assert all(frame.get("request_id") != "q1" or frame["type"] != "question"
+               for frame in runner.buffer)
+
+    runner.detach(second_tab)
+    await runner.emit({"type": "question", "request_id": "q2"})
+    assert first[-1]["request_id"] == "q2"
+    assert second[-1]["request_id"] == "q1"
     await runner.close()
 
 

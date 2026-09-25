@@ -62,8 +62,7 @@ class TurnRunner:
     """One conversation's worker: a queue, a relay, and everything a turn needs.
 
     Created on the first connection for a thread and reused by every later one.
-    `attach` points it at a browser; `detach` takes the browser away without
-    stopping the work."""
+    `attach` adds a browser; `detach` removes it without stopping the work."""
 
     def __init__(
         self,
@@ -92,7 +91,7 @@ class TurnRunner:
 
         self.queue: "asyncio.Queue[tuple[str, str, bool]]" = asyncio.Queue()
         self.buffer: list[dict] = []
-        self.sink: Optional[Sink] = None
+        self.sinks: set[Sink] = set()
         self.cancel_requested = asyncio.Event()
         self.failed = asyncio.Event()
         self.current_turn_task: Optional[asyncio.Task] = None
@@ -134,23 +133,19 @@ class TurnRunner:
                 await self.gate_registry.notify_turn_ended(
                     self.gate_session, frame.get("text") or ""
                 )
-        sink = self.sink
-        if sink is None:
-            return
-        try:
-            await sink(frame)
-        except Exception:  # noqa: BLE001 - the socket went away mid-send; the
-            # turn keeps running, and the next client to attach gets the rest.
-            if self.sink is sink:
-                self.sink = None
+        for sink in tuple(self.sinks):
+            try:
+                await sink(frame)
+            except Exception:  # noqa: BLE001 - one dead tab must not stop the turn
+                self.sinks.discard(sink)
 
     def attach(self, sink: Sink) -> list[dict]:
-        """Points this runner at a connection and returns what it missed.
+        """Adds a browser and returns the frames it missed.
 
-        Last attach wins: two tabs on one conversation would otherwise race to
-        answer its approvals, and the one that answered second would look
-        ignored."""
-        self.sink = sink
+        Every open tab sees pending questions. The gate accepts only the first
+        answer, then broadcasts request_resolved to clear the other cards.
+        """
+        self.sinks.add(sink)
         self._idle_since = None
         return list(self.buffer)
 
@@ -182,14 +177,13 @@ class TurnRunner:
 
     def detach(self, sink: Sink) -> None:
         """The connection is gone. Nothing stops."""
-        if self.sink is sink:
-            self.sink = None
-        if not self.busy:
+        self.sinks.discard(sink)
+        if not self.sinks and not self.busy:
             self._idle_since = time.monotonic()
 
     def idle_for(self) -> float:
         """Seconds with nobody attached and nothing to do, or 0 while in use."""
-        if self.sink is not None or self.busy:
+        if self.sinks or self.busy:
             return 0.0
         if self._idle_since is None:
             self._idle_since = time.monotonic()
@@ -284,7 +278,7 @@ class TurnRunner:
                         self.current_turn_task.cancel()
                     self.current_turn_task = None
                     self.current_turn_agent = None
-                    if not self.busy and self.sink is None:
+                    if not self.busy and not self.sinks:
                         self._idle_since = time.monotonic()
         except asyncio.CancelledError:
             raise
@@ -309,7 +303,7 @@ class TurnRunner:
         if self.closed:
             return
         self.closed = True
-        self.sink = None
+        self.sinks.clear()
         self.relay_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self.relay_task
