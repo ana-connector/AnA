@@ -36,12 +36,13 @@ def test_mcp_servers_reports_active_and_why_not(client):
     assert all(entry["reason"] for entry in body["inactive"])
 
 
-def test_the_leads_only_mcp_server_is_asking_the_user(client):
-    """The lead does no work of its own, so it gets no tooling — except the one
-    server that is not tooling: `ask`, which reaches the user."""
+def test_the_leads_mcp_servers_are_the_two_that_are_not_tooling(client):
+    """The lead does no work of its own, so it gets no tooling — except the two
+    servers that are not tooling: `ask`, which reaches the user, and
+    `schedule`, which puts a turn on a clock."""
     body = client.get("/mcp/servers?role=lead").json()
 
-    assert [entry["name"] for entry in body["active"]] == ["ask"]
+    assert set(entry["name"] for entry in body["active"]) == {"ask", "schedule"}
 
 
 def test_skills_lists_the_library_with_schemas(client):

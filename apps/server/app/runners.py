@@ -203,7 +203,12 @@ class TurnRunner:
         # Recorded, not sent: the client that typed it already shows it, and a
         # client that attaches later needs it to have something to put the
         # streaming reply under.
-        self.buffer.append({"type": "prompt", "text": prompt, "agent": agent})
+        # started_at travels with it so a client that was not here when the
+        # prompt was sent still shows the time it was sent, not the time it
+        # happened to reconnect.
+        self.buffer.append(
+            {"type": "prompt", "text": prompt, "agent": agent, "started_at": time.time()}
+        )
         self._idle_since = None
         await self.queue.put((prompt, agent, plan_mode))
 

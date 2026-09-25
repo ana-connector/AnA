@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { clockTime, duration, timeExact } from "@/lib/format";
 import {
   Sheet,
   SheetContent,
@@ -298,6 +299,18 @@ export default function ChatPage() {
                               <span className="whitespace-pre-wrap">{message.text}</span>
                             </BubbleContent>
                           </Bubble>
+                          {message.at ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span className="mt-1 block text-right text-[11px] tabular-nums text-muted-foreground">
+                                    {clockTime(message.at)}
+                                  </span>
+                                }
+                              />
+                              <TooltipContent>{timeExact(message.at)}</TooltipContent>
+                            </Tooltip>
+                          ) : null}
                         </MessageContent>
                       </Message>
                     ) : (
@@ -315,10 +328,32 @@ export default function ChatPage() {
                         )}
                         {/* Who answered, as a quiet line above the text rather
                             than a label attached to a box. */}
-                        <div className="text-xs text-muted-foreground">
-                          {message.model ??
-                            models[message.agent] ??
-                            AGENT_LABELS[message.agent]}
+                        {/* Who answered and when it landed. With the prompt's
+                            own time above, the pair says how long the turn
+                            took once the live counter is gone. */}
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span>
+                            {message.model ??
+                              models[message.agent] ??
+                              AGENT_LABELS[message.agent]}
+                          </span>
+                          {message.at ? (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span className="tabular-nums">
+                                    {clockTime(message.at)}
+                                    {(() => {
+                                      const asked = messages[index - 1];
+                                      if (asked?.role !== "user" || !asked.at) return "";
+                                      return ` · ${duration(message.at - asked.at)}`;
+                                    })()}
+                                  </span>
+                                }
+                              />
+                              <TooltipContent>{timeExact(message.at)}</TooltipContent>
+                            </Tooltip>
+                          ) : null}
                         </div>
                         {groupBlocks(
                           message.blocks ?? [{ kind: "text" as const, text: message.text }]

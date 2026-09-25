@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, XIcon } from "lucide-react";
 import { apiBase } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
 import { AGENT_LABELS } from "@/components/ui/agent-toggle";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Item, ItemContent, ItemGroup } from "@/components/ui/item";
 import {
   Select,
   SelectContent,
@@ -19,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Rung = {
   agent: string;
@@ -36,21 +39,46 @@ type Vocabulary = {
 
 type Ladders = { lead: Rung[]; workers: Record<string, Rung[]> };
 
+type Usage = Record<string, { windows: { key: string; utilization: number | null }[] }>;
+
 const NONE = "__none__";
 
-function emptyRung(agent: string): Rung {
-  return { agent, model: "", effort: "", window: "", utilization: null };
+const AGENT_ICON: Record<string, (props: { className?: string }) => React.ReactElement> = {
+  claude: ClaudeIcon,
+  codex: OpenAIIcon,
+  kimi: KimiIcon,
+  tapie: TapieIcon,
+};
+
+function spent(usage: Usage, agent: string, window: string): number | null {
+  const found = (usage[agent]?.windows ?? []).find((entry) => entry.key === window);
+  return found?.utilization ?? null;
 }
 
-/** The routing ladder, as rungs instead of YAML.
+/** Which rung answers right now, by the rule the router itself uses: the first
+ *  one whose window still has room, and the last one when none does. */
+function activeIndex(rungs: Rung[], usage: Usage): number {
+  for (let index = 0; index < rungs.length; index += 1) {
+    const rung = rungs[index];
+    if (!rung.window || rung.utilization === null) return index;
+    const used = spent(usage, rung.agent, rung.window) ?? 0;
+    if (used < rung.utilization) return index;
+  }
+  return Math.max(rungs.length - 1, 0);
+}
+
+/** The routing ladder, as a ladder.
  *
- *  It used to be a text box holding the rules file, which asked whoever wanted
- *  to move one threshold to know the format — and made a typo a routing outage
- *  discovered on the next turn. The vocabulary comes from the server with the
- *  rules, so every field offers exactly what the router accepts. */
+ *  It was a YAML text box, then a row of five selects per rung — both of which
+ *  asked the reader to hold the rule in their head: "the first rung with room
+ *  takes the turn". So the rule is on screen instead. Each rung says what it
+ *  costs, what would make ANA leave it, and how full that window is right now,
+ *  and the one that would answer this second is marked. Editing a threshold
+ *  then has a visible consequence rather than being a number in a box. */
 export function RoutingEditor() {
   const [ladders, setLadders] = useState<Ladders | null>(null);
   const [vocabulary, setVocabulary] = useState<Vocabulary | null>(null);
+  const [usage, setUsage] = useState<Usage>({});
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +90,12 @@ export function RoutingEditor() {
       setVocabulary({ agents: body.agents, efforts: body.efforts, windows: body.windows });
     } catch (e) {
       setError(String(e));
+    }
+    try {
+      const body = await (await fetch(`${apiBase()}/usage`)).json();
+      setUsage(body.agents ?? {});
+    } catch {
+      // The ladder is editable without live usage; it just reads flatter.
     }
   }, []);
 
@@ -80,7 +114,9 @@ export function RoutingEditor() {
         body: JSON.stringify(ladders),
       });
       if (!response.ok) {
-        throw new Error(((await response.json()) as { detail?: string }).detail ?? response.statusText);
+        throw new Error(
+          ((await response.json()) as { detail?: string }).detail ?? response.statusText
+        );
       }
       const stored = await response.json();
       setLadders({ lead: stored.lead, workers: stored.workers ?? {} });
@@ -94,9 +130,10 @@ export function RoutingEditor() {
 
   if (!ladders || !vocabulary) {
     return (
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-9 w-full" />
-        <Skeleton className="h-24 w-full" />
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-9 w-56" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-20 w-full" />
       </div>
     );
   }
@@ -114,7 +151,7 @@ export function RoutingEditor() {
   };
 
   return (
-    <FieldGroup>
+    <div className="flex flex-col gap-4">
       {error ? (
         <Alert variant="destructive">
           <AlertTitle>저장하지 못했습니다</AlertTitle>
@@ -122,13 +159,14 @@ export function RoutingEditor() {
         </Alert>
       ) : null}
 
-      <Field>
-        <FieldLabel>자동 라우팅 규칙</FieldLabel>
-        <FieldDescription>
-          위에서부터 아직 여유가 있는 첫 단계가 그 턴을 맡습니다. 마지막 단계에는 한도를 두지
-          않습니다 — 앞 단계가 모두 소진됐을 때 여기로 떨어집니다.
-        </FieldDescription>
-      </Field>
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-medium">자동 라우팅 규칙</h2>
+        <p className="max-w-[70ch] text-sm text-muted-foreground">
+          위에서부터 <strong className="font-medium text-foreground">아직 여유가 있는 첫
+          단계</strong>가 그 턴을 맡습니다. 각 단계의 막대는 지금 그 창이 얼마나 찼는지이고,
+          눈금은 다음 단계로 넘어가는 지점입니다.
+        </p>
+      </div>
 
       <Tabs defaultValue="lead">
         <TabsList>
@@ -144,6 +182,7 @@ export function RoutingEditor() {
           <Ladder
             rungs={ladders.lead}
             vocabulary={vocabulary}
+            usage={usage}
             onChange={(rungs) => update("lead", rungs)}
           />
         </TabsContent>
@@ -152,31 +191,38 @@ export function RoutingEditor() {
             <Ladder
               rungs={ladders.workers[name]}
               vocabulary={vocabulary}
+              usage={usage}
               onChange={(rungs) => update(name, rungs)}
             />
           </TabsContent>
         ))}
       </Tabs>
 
-      <Field orientation="horizontal">
+      <div className="flex items-center gap-3">
         <Button size="sm" onClick={save} disabled={!dirty || saving}>
           {saving ? "저장 중…" : "저장"}
         </Button>
-        {dirty ? <FieldDescription>저장하지 않은 변경이 있습니다</FieldDescription> : null}
-      </Field>
-    </FieldGroup>
+        {dirty ? (
+          <span className="text-xs text-muted-foreground">저장하지 않은 변경이 있습니다</span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
 function Ladder({
   rungs,
   vocabulary,
+  usage,
   onChange,
 }: {
   rungs: Rung[];
   vocabulary: Vocabulary;
+  usage: Usage;
   onChange: (rungs: Rung[]) => void;
 }) {
+  const active = useMemo(() => activeIndex(rungs, usage), [rungs, usage]);
+
   const replace = (index: number, rung: Rung) =>
     onChange(rungs.map((item, position) => (position === index ? rung : item)));
 
@@ -189,175 +235,267 @@ function Ladder({
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      <ItemGroup className="gap-2">
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col">
         {rungs.map((rung, index) => {
           const last = index === rungs.length - 1;
+          const Icon = AGENT_ICON[rung.agent];
           const efforts = vocabulary.efforts[rung.agent] ?? [];
+          const used = rung.window ? spent(usage, rung.agent, rung.window) : null;
+          const threshold = rung.utilization;
+          const over = used !== null && threshold !== null && used >= threshold;
+
           return (
-            <Item key={index} variant="outline" className="flex-wrap items-end gap-3 py-3">
-              <ItemContent className="min-w-0 flex-row flex-wrap items-end gap-3">
-                <Field className="w-36">
-                  <FieldLabel>단계 {index + 1}</FieldLabel>
-                  <Select
-                    value={rung.agent}
-                    onValueChange={(value) =>
-                      // Effort vocabularies differ per CLI, so a level the new
-                      // agent does not have is dropped rather than carried over
-                      // to be rejected on save.
-                      replace(index, {
-                        ...rung,
-                        agent: String(value),
-                        effort: (vocabulary.efforts[String(value)] ?? []).includes(rung.effort)
-                          ? rung.effort
-                          : "",
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {vocabulary.agents.map((agent) => (
-                          <SelectItem key={agent} value={agent}>
-                            {AGENT_LABELS[agent as keyof typeof AGENT_LABELS] ?? agent}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-
-                <Field className="w-44">
-                  <FieldLabel>모델</FieldLabel>
-                  <Input
-                    value={rung.model}
-                    placeholder="opus"
-                    onChange={(event) => replace(index, { ...rung, model: event.target.value })}
-                  />
-                </Field>
-
-                <Field className="w-32">
-                  <FieldLabel>사고 강도</FieldLabel>
-                  <Select
-                    value={rung.effort || NONE}
-                    onValueChange={(value) =>
-                      replace(index, { ...rung, effort: value === NONE ? "" : String(value) })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value={NONE}>CLI 기본값</SelectItem>
-                        {efforts.map((level) => (
-                          <SelectItem key={level} value={level}>
-                            {level}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-
-                <Field className="w-36">
-                  <FieldLabel>다음으로 넘어갈 창</FieldLabel>
-                  <Select
-                    value={rung.window || NONE}
-                    onValueChange={(value) =>
-                      replace(index, {
-                        ...rung,
-                        window: value === NONE ? "" : String(value),
-                        // A threshold without a window is not a rung the router
-                        // can read, so the two move together.
-                        utilization: value === NONE ? null : (rung.utilization ?? 0.5),
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value={NONE}>없음 (마지막 단계)</SelectItem>
-                        {vocabulary.windows.map((window) => (
-                          <SelectItem key={window.key} value={window.key}>
-                            {window.label}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-
-                <Field className="w-28">
-                  <FieldLabel>사용률</FieldLabel>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={5}
-                    disabled={!rung.window}
-                    value={rung.utilization === null ? "" : Math.round(rung.utilization * 100)}
-                    onChange={(event) => {
-                      const percent = Number(event.target.value);
-                      replace(index, {
-                        ...rung,
-                        utilization: Number.isFinite(percent)
-                          ? Math.min(Math.max(percent, 0), 100) / 100
-                          : null,
-                      });
-                    }}
-                  />
-                </Field>
-              </ItemContent>
-
-              <div className="flex items-center gap-1">
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label="위로"
-                  disabled={index === 0}
-                  onClick={() => move(index, -1)}
+            <div key={index} className="flex gap-3">
+              {/* The rail: what makes this a ladder rather than a list. */}
+              <div className="flex w-6 shrink-0 flex-col items-center">
+                <span
+                  className={cn(
+                    "flex size-6 items-center justify-center rounded-full border text-[11px] tabular-nums",
+                    index === active
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border text-muted-foreground"
+                  )}
                 >
-                  <ArrowUpIcon />
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label="아래로"
-                  disabled={last}
-                  onClick={() => move(index, 1)}
-                >
-                  <ArrowDownIcon />
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label="이 단계 삭제"
-                  // The ladder always needs somewhere for a turn to land.
-                  disabled={rungs.length === 1}
-                  onClick={() => onChange(rungs.filter((_, position) => position !== index))}
-                >
-                  <XIcon />
-                </Button>
+                  {index + 1}
+                </span>
+                {!last ? <span className="w-px flex-1 bg-border" /> : null}
               </div>
-            </Item>
+
+              <div
+                className={cn(
+                  "mb-3 flex min-w-0 flex-1 flex-col gap-3 rounded-lg border p-3",
+                  index === active ? "border-primary/60 bg-muted/40" : "border-border"
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  {Icon ? <Icon className="size-4 shrink-0" /> : null}
+                  <span className="text-sm font-medium">
+                    {AGENT_LABELS[rung.agent as keyof typeof AGENT_LABELS] ?? rung.agent}
+                  </span>
+                  {rung.model ? (
+                    <span className="font-mono text-xs text-muted-foreground">{rung.model}</span>
+                  ) : null}
+                  {index === active ? (
+                    <Badge variant="secondary">지금 이 단계가 답합니다</Badge>
+                  ) : null}
+                  {last ? <Badge variant="outline">마지막</Badge> : null}
+
+                  <div className="ml-auto flex items-center gap-1">
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label="한 단계 위로"
+                      disabled={index === 0}
+                      onClick={() => move(index, -1)}
+                    >
+                      <ArrowUpIcon />
+                    </Button>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label="한 단계 아래로"
+                      disabled={last}
+                      onClick={() => move(index, 1)}
+                    >
+                      <ArrowDownIcon />
+                    </Button>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label="이 단계 삭제"
+                      disabled={rungs.length === 1}
+                      onClick={() => onChange(rungs.filter((_, position) => position !== index))}
+                    >
+                      <XIcon />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field>
+                    <FieldLabel>CLI</FieldLabel>
+                    <Select
+                      value={rung.agent}
+                      onValueChange={(value) =>
+                        // Effort vocabularies differ per CLI, so a level the new
+                        // agent does not have is dropped rather than carried over
+                        // to be rejected on save.
+                        replace(index, {
+                          ...rung,
+                          agent: String(value),
+                          effort: (vocabulary.efforts[String(value)] ?? []).includes(rung.effort)
+                            ? rung.effort
+                            : "",
+                        })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {vocabulary.agents.map((agent) => (
+                            <SelectItem key={agent} value={agent}>
+                              {AGENT_LABELS[agent as keyof typeof AGENT_LABELS] ?? agent}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel>모델</FieldLabel>
+                    <Input
+                      value={rung.model}
+                      placeholder="opus"
+                      className="font-mono"
+                      onChange={(event) => replace(index, { ...rung, model: event.target.value })}
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel>사고 강도</FieldLabel>
+                    <Select
+                      value={rung.effort || NONE}
+                      onValueChange={(value) =>
+                        replace(index, { ...rung, effort: value === NONE ? "" : String(value) })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value={NONE}>CLI 기본값</SelectItem>
+                          {efforts.map((level) => (
+                            <SelectItem key={level} value={level}>
+                              {level}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+
+                {/* The condition as a sentence, because that is how the rule
+                    reads: leave this rung when the window passes the mark. */}
+                {last ? (
+                  <p className="text-xs text-muted-foreground">
+                    마지막 단계에는 한도가 없습니다. 앞 단계가 모두 소진되면 여기로 떨어집니다.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <Select
+                        value={rung.window || NONE}
+                        onValueChange={(value) =>
+                          replace(index, {
+                            ...rung,
+                            window: value === NONE ? "" : String(value),
+                            // A threshold without a window is not a rung the
+                            // router can read, so the two move together.
+                            utilization: value === NONE ? null : (rung.utilization ?? 0.5),
+                          })
+                        }
+                      >
+                        <SelectTrigger size="sm" className="w-28">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={NONE}>한도 없음</SelectItem>
+                            {vocabulary.windows.map((window) => (
+                              <SelectItem key={window.key} value={window.key}>
+                                {window.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <span className="text-muted-foreground">창이</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={5}
+                        disabled={!rung.window}
+                        className="w-20 text-right tabular-nums"
+                        value={threshold === null ? "" : Math.round(threshold * 100)}
+                        onChange={(event) => {
+                          const percent = Number(event.target.value);
+                          replace(index, {
+                            ...rung,
+                            utilization: Number.isFinite(percent)
+                              ? Math.min(Math.max(percent, 0), 100) / 100
+                              : null,
+                          });
+                        }}
+                      />
+                      <span className="text-muted-foreground">% 를 넘으면 다음 단계로</span>
+                    </div>
+
+                    {rung.window ? (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <div className="flex cursor-default items-center gap-2">
+                              <span className="relative h-1.5 w-full max-w-72 overflow-hidden rounded-full bg-muted">
+                                <span
+                                  className={cn(
+                                    "block h-full rounded-full",
+                                    over ? "bg-destructive" : "bg-primary/60"
+                                  )}
+                                  style={{ width: `${Math.round((used ?? 0) * 100)}%` }}
+                                />
+                                {threshold !== null ? (
+                                  <span
+                                    className="absolute top-0 h-full w-px bg-foreground/70"
+                                    style={{ left: `${Math.round(threshold * 100)}%` }}
+                                  />
+                                ) : null}
+                              </span>
+                              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                                {used === null ? "측정 전" : `${Math.round(used * 100)}%`}
+                              </span>
+                            </div>
+                          }
+                        />
+                        <TooltipContent>
+                          {over
+                            ? "지금은 한도를 넘어 다음 단계로 넘어갑니다"
+                            : "지금은 한도 안이라 이 단계가 쓰입니다"}
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </div>
           );
         })}
-      </ItemGroup>
+      </div>
 
-      <Button
-        size="sm"
-        variant="outline"
-        className="w-fit"
-        onClick={() => onChange([...rungs, emptyRung(vocabulary.agents[0] ?? "claude")])}
-      >
-        <PlusIcon data-icon="inline-start" />
-        단계 추가
-      </Button>
+      <div className="flex items-center gap-3 pl-9">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            onChange([
+              ...rungs,
+              { agent: vocabulary.agents[0] ?? "claude", model: "", effort: "", window: "", utilization: null },
+            ])
+          }
+        >
+          <PlusIcon data-icon="inline-start" />
+          단계 추가
+        </Button>
+        <FieldDescription>
+          새 단계는 맨 아래에 붙습니다. 화살표로 순서를 바꾸세요.
+        </FieldDescription>
+      </div>
     </div>
   );
 }

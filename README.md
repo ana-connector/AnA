@@ -263,6 +263,30 @@ and the answers come back as the tool's result.
   `tools/call`) is ~200 lines of stdlib, against `@shadcn/questionnaire` on the
   browser side.
 
+### Automation (scheduled turns)
+
+A schedule is a prompt, a workspace and a cron expression. When one comes due,
+ANA opens that workspace's conversation — the same one the browser opens, with
+the same gate token and CLI sessions — and submits the prompt as if a person
+had. The answer lands in the conversation; the gate, the sub-agents and the
+transcript all work exactly as they do for a typed turn.
+
+- **Managed at `/automation`**, reachable from the sidebar above the workspace
+  list. Presets cover the usual shapes; the expression stays editable.
+- **Agents can schedule their own work** through the `schedule` MCP server
+  (`create_schedule`, `list_schedules`, `delete_schedule`), so "check the deploy
+  every morning" becomes a job rather than a promise to remember. Everything an
+  agent creates belongs to the conversation it is in: the gate token says which
+  one, and the server refuses to schedule anywhere else.
+- **Five-field cron, UTC**, parsed in `packages/orchestrator/schedules.py` —
+  including cron's own rule that day-of-month and day-of-week are a union when
+  both are restricted. No dependency: it is sixty lines.
+- **A busy conversation is skipped, not queued.** Two copies of "clean up the
+  branch" running at once is how a scheduled job becomes an incident. The slot
+  is left due, so the next tick tries again.
+- **A failed run reschedules.** The reason is kept on the row where the list
+  shows it; a job that could not run once is not a job that should stop.
+
 ### TAPIE, the fourth agent
 
 `tapie` is the Claude Code CLI again — the same binary, the same adapter, the

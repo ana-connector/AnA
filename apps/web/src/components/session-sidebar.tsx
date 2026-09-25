@@ -5,12 +5,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
-  KeyRoundIcon,
+  ClockIcon,
+  LockIcon,
   MoonIcon,
   PlusIcon,
   SearchIcon,
   SettingsIcon,
-  SlidersHorizontalIcon,
+  Settings2Icon,
   SunIcon,
   TerminalIcon,
 } from "lucide-react";
@@ -182,12 +183,30 @@ export function SessionSidebar({
       </SidebarHeader>
 
       <SidebarContent>
+        {/* Above the workspaces because it is not one of them: a schedule
+            belongs to the installation and picks its workspace per job. */}
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={pathname === "/automation"}
+                  render={<a href="/automation" />}
+                >
+                  <ClockIcon strokeWidth={1.5} />
+                  자동화
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         <SidebarGroup>
           <SidebarGroupLabel>모든 워크스페이스</SidebarGroupLabel>
           {/* Adding is what people come to this header for; the list
               refetches itself whenever a turn finishes. */}
           <SidebarGroupAction title="워크스페이스 추가" onClick={() => setAdding(true)}>
-            <PlusIcon />
+            <PlusIcon strokeWidth={1.5} />
           </SidebarGroupAction>
           <SidebarGroupContent>
             {(workspaces?.length ?? 0) >= FILTER_THRESHOLD && (
@@ -245,7 +264,7 @@ export function SessionSidebar({
                       title="워크스페이스 설정"
                       onClick={() => setEditing(item)}
                     >
-                      <SettingsIcon />
+                      <SettingsIcon strokeWidth={1.5} />
                     </SidebarMenuAction>
                   </SidebarMenuItem>
                 ))}
@@ -260,19 +279,19 @@ export function SessionSidebar({
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton isActive={pathname === "/settings"} render={<a href="/settings" />}>
-              <SlidersHorizontalIcon />
+              <Settings2Icon strokeWidth={1.5} />
               설정
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton isActive={pathname === "/tools"} render={<a href="/tools" />}>
-              <TerminalIcon />
+              <TerminalIcon strokeWidth={1.5} />
               도구 로그
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton isActive={pathname === "/secrets"} render={<a href="/secrets" />}>
-              <KeyRoundIcon />
+              <LockIcon strokeWidth={1.5} />
               시크릿
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -282,8 +301,8 @@ export function SessionSidebar({
             <SidebarMenuButton
               onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
             >
-              <SunIcon className="dark:hidden" />
-              <MoonIcon className="hidden dark:block" />
+              <SunIcon strokeWidth={1.5} className="dark:hidden" />
+              <MoonIcon strokeWidth={1.5} className="hidden dark:block" />
               <span className="dark:hidden">라이트</span>
               <span className="hidden dark:inline">다크</span>
             </SidebarMenuButton>

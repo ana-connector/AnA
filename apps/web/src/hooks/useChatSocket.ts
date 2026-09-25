@@ -57,6 +57,11 @@ export type ChatEvent =
       running?: boolean;
       role?: string;
       request_id?: string;
+      /** Epoch seconds, by the server's clock: when a phase started, or when
+       *  a prompt was submitted. Read through the offset learned on connect. */
+      started_at?: number;
+      /** The server's clock at connect time (thread_id frame only). */
+      server_now?: number;
       rule_id?: string | null;
       tool?: ToolEvent;
       cost_usd?: number | null;
@@ -90,6 +95,9 @@ export type ChatMessage = {
   /** The sub-agent fan-out this turn ran, restored from history too — a
    *  reopened conversation should show the work, not just the answer. */
   plan?: PlanState;
+  /** When this was sent (user) or finished (agent), in epoch milliseconds.
+   *  Absent on messages restored from before this was recorded. */
+  at?: number;
 };
 
 /** A tool call the governance gate is holding until the user answers. */
@@ -250,6 +258,10 @@ export function useChatSocket() {
   // "the provider is having a moment" is a state the status bar should show
   // rather than something you discover one failed turn at a time.
   const [failingAgents, setFailingAgents] = useState<Record<string, string>>({});
+  // clientNow - serverNow, learned from the thread_id frame on every connect.
+  // Everything the server timestamps is read through it, so the two clocks
+  // never have to agree.
+  const serverOffsetRef = useRef(0);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   // Questions the agent is waiting on. Plural because one call can ask several,
   // and a second call can arrive while the first is unanswered.
@@ -362,7 +374,13 @@ export function useChatSocket() {
           const restored: ChatMessage[] = [];
           for (const turn of turns) {
             const agent: Agent = isAgentName(turn.agent) ? turn.agent : "claude";
-            restored.push({ role: "user", text: turn.prompt, agent });
+            const finishedAt = Date.parse(turn.created_at);
+            restored.push({
+              role: "user",
+              text: turn.prompt,
+              agent,
+              at: Number.isNaN(finishedAt) ? undefined : finishedAt,
+            });
 
             // Older turns have no ordered blocks. Fall back to their audit
             // tools and final answer; new turns restore the recorded sequence.
@@ -488,7 +506,18 @@ export function useChatSocket() {
           messageCountRef.current += 1;
           const agent = isAgentName(event.agent ?? "") ? (event.agent as Agent) : pendingAgentRef.current;
           pendingAgentRef.current = agent;
-          setMessages((prev) => [...prev, { role: "user", text: event.text, agent }]);
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "user",
+              text: event.text,
+              agent,
+              at:
+                typeof event.started_at === "number"
+                  ? event.started_at * 1000 + serverOffsetRef.current
+                  : Date.now(),
+            },
+          ]);
           return;
         }
 
@@ -498,6 +527,9 @@ export function useChatSocket() {
           setThreadId(event.text);
           if (event.workspace) setWorkspace(event.workspace);
           if (event.workspace_name) setWorkspaceName(event.workspace_name);
+          if (typeof event.server_now === "number") {
+            serverOffsetRef.current = Date.now() - event.server_now * 1000;
+          }
           // A conversation can be mid-turn when it is opened: the work belongs
           // to the thread, not to whoever is looking at it, so the composer has
           // to come up in its streaming state rather than pretending it is idle.
@@ -522,7 +554,13 @@ export function useChatSocket() {
             phase,
             agent: event.agent ?? pendingAgentRef.current,
             count: event.count ?? 0,
-            since: Date.now(),
+            // The server says when the phase started. Stamping it on arrival
+            // is what made the counter restart at zero every time you came
+            // back to a conversation that was still working.
+            since:
+              typeof event.started_at === "number"
+                ? event.started_at * 1000 + serverOffsetRef.current
+                : Date.now(),
           });
           return;
         }
@@ -803,11 +841,19 @@ export function useChatSocket() {
             )) {
             setHasUnpricedUsage(true);
           }
-          if (finishedPlan && index !== null) {
+          if (index !== null) {
+            // When it finished, on the reply itself: with the prompt's own
+            // time above it, the pair says how long the turn took long after
+            // the live counter is gone.
+            const finishedAt = Date.now();
             setMessages((prev) => {
               if (!prev[index]) return prev;
               const next = [...prev];
-              next[index] = { ...next[index], plan: finishedPlan };
+              next[index] = {
+                ...next[index],
+                at: finishedAt,
+                ...(finishedPlan ? { plan: finishedPlan } : {}),
+              };
               return next;
             });
           }
@@ -855,7 +901,12 @@ export function useChatSocket() {
       if (agent !== "auto") pendingAgentRef.current = agent;
       setMessages((prev) => [
         ...prev,
-        { role: "user", text, agent: agent === "auto" ? pendingAgentRef.current : agent },
+        {
+          role: "user",
+          text,
+          agent: agent === "auto" ? pendingAgentRef.current : agent,
+          at: Date.now(),
+        },
       ]);
       setStreaming(true);
       // Set before the server says anything: the gap between pressing Enter and

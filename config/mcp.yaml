@@ -85,6 +85,19 @@ servers:
   #
   # `python -m` with PYTHONPATH rather than a path: the same image runs the
   # server and every workspace container, and /app is where ANA lives in both.
+  # ⑥ Schedule — the agent putting work on a clock instead of promising to
+  # remember. Scoped to the conversation the token belongs to; see
+  # packages/mcp/servers/schedule.py.
+  - name: schedule
+    description: "이 대화에 반복 실행을 예약한다 (ANA 자체 서버)"
+    command: python
+    args: ["-m", "packages.mcp.servers.schedule"]
+    env:
+      PYTHONPATH: "/app"
+      PYTHONUNBUFFERED: "1"
+    roles: [lead]
+    enabled: true
+
   - name: ask
     description: "사용자에게 직접 질문하고 답을 기다린다 (ANA 자체 서버)"
     command: python

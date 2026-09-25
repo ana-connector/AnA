@@ -19,6 +19,14 @@ from packages.governance.rules import ALLOW, ASK, DENY, Verdict, load_ruleset
 from packages.governance.subagent_scope import Scope, violation as scope_violation
 from packages.governance.workspace import escaping_paths
 from packages.mcp.registry import load_registry
+from packages.orchestrator.schedules import (
+    CronError,
+    create_schedule,
+    delete_schedule,
+    describe,
+    get_schedule,
+    list_schedules,
+)
 from packages.mcp.scope import scope_denial, server_for_tool
 from packages.governance.secrets import (
     GLOBAL_SCOPE,
@@ -49,7 +57,9 @@ LEAD_CONTROL_TOOLS = {
 # reports. `ask` is how the lead reaches the user (see ASK_SERVER below):
 # withholding it would leave the lead guessing at a decision that is the
 # user's, which is the thing it is supposed to stop doing.
-LEAD_CONTROL_SERVERS = {"ask"}
+# `schedule` joins it: putting work on a clock is the lead deciding when a
+# turn happens, not the lead doing the work itself.
+LEAD_CONTROL_SERVERS = {"ask", "schedule"}
 
 # ANA's own MCP server: one tool, `ask_user`, which puts a question to the
 # browser and waits (packages/mcp/servers/ask_user.py).
@@ -263,6 +273,88 @@ async def gate_ask(
     if not answered:
         return {"answered": False, "answers": [], "note": UNANSWERED}
     return {"answered": True, "answers": answers}
+
+
+class ScheduleRequest(BaseModel):
+    name: str
+    cron: str
+    prompt: str
+
+
+@router.post("/gate/schedules")
+async def gate_create_schedule(
+    request: Request,
+    body: ScheduleRequest,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    """An agent scheduling a turn for the conversation it is already in.
+
+    Scoped to that conversation on purpose: the token says which one this is,
+    and an agent that could schedule work in someone else's workspace is an
+    agent that can reach outside its own sandbox on a timer."""
+    session = request.app.state.gate_registry.get(x_ana_gate_token)
+    if session is None:
+        raise HTTPException(status_code=403, detail="unknown gate token")
+    try:
+        created = await create_schedule(
+            request.app.state.pool,
+            workspace_id=session.thread_id,
+            name=body.name.strip() or "이름 없는 자동화",
+            cron=body.cron.strip(),
+            prompt=body.prompt,
+            created_by="agent",
+        )
+    except CronError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "id": created.id,
+        "name": created.name,
+        "cron": created.cron,
+        "cron_text": describe(created.cron),
+        "next_run_at": created.next_run_at.isoformat() if created.next_run_at else None,
+    }
+
+
+@router.get("/gate/schedules")
+async def gate_list_schedules(
+    request: Request, x_ana_gate_token: str = Header(default="")
+) -> dict:
+    session = request.app.state.gate_registry.get(x_ana_gate_token)
+    if session is None:
+        raise HTTPException(status_code=403, detail="unknown gate token")
+    rows = await list_schedules(request.app.state.pool, workspace_id=session.thread_id)
+    return {
+        "schedules": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "cron": row.cron,
+                "cron_text": describe(row.cron),
+                "prompt": row.prompt,
+                "enabled": row.enabled,
+                "created_by": row.created_by,
+                "next_run_at": row.next_run_at.isoformat() if row.next_run_at else None,
+                "last_status": row.last_status,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.delete("/gate/schedules/{schedule_id}")
+async def gate_delete_schedule(
+    request: Request, schedule_id: str, x_ana_gate_token: str = Header(default="")
+) -> dict:
+    session = request.app.state.gate_registry.get(x_ana_gate_token)
+    if session is None:
+        raise HTTPException(status_code=403, detail="unknown gate token")
+    existing = await get_schedule(request.app.state.pool, schedule_id)
+    # 404 rather than 403 for someone else's: the agent has no business
+    # learning that an id it cannot touch exists.
+    if existing is None or existing.workspace_id != session.thread_id:
+        raise HTTPException(status_code=404, detail="no such schedule")
+    await delete_schedule(request.app.state.pool, schedule_id)
+    return {"status": "deleted", "id": schedule_id}
 
 
 class GateDecision(BaseModel):

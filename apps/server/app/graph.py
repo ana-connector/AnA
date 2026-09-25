@@ -279,6 +279,10 @@ def _status(writer, phase: str, agent: str, count: int = 0) -> None:
             "is_error": False,
             "agent": agent,
             "count": count,
+            # When this phase started, by the server's clock. The browser used
+            # to stamp it on arrival, so leaving the conversation and coming
+            # back restarted the counter at zero while the turn kept going.
+            "started_at": time.time(),
         }
     )
 
