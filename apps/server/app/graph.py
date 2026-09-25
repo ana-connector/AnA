@@ -62,6 +62,10 @@ NULL_TRACER = Tracer(None)
 
 logger = logging.getLogger("ana.graph")
 
+# Resumed CLI sessions can retain an older system prompt even after the server
+# image changes. Bump this when lead permissions or instructions change.
+CLI_INSTRUCTIONS_VERSION = 1
+
 
 @contextlib.contextmanager
 def _suppress_tracing():
@@ -92,6 +96,7 @@ class GraphState(TypedDict):
     # `session_id` field above -- that one stays as the active agent's id for
     # backward compatibility with callers/tests that read it.
     session_ids: dict[str, Optional[str]]
+    instruction_version: int
     # Which agent ran the previous turn in this thread; a mismatch with
     # `agent` is what triggers the handoff brief.
     last_agent: Optional[str]
@@ -684,9 +689,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     adapter = _resolve_adapter(
         configurable, agent, model=lead_model, effort=lead_effort
     )
-    session_ids: dict[str, Optional[str]] = dict(state.get("session_ids") or {})
+    refresh_cli_sessions = state.get("instruction_version") != CLI_INSTRUCTIONS_VERSION
+    session_ids: dict[str, Optional[str]] = (
+        {} if refresh_cli_sessions else dict(state.get("session_ids") or {})
+    )
 
-    is_handoff = last_agent is not None and last_agent != agent
+    # A fresh CLI session still needs recent conversation context, even when
+    # it is the same agent whose stale session was discarded.
+    is_handoff = last_agent is not None and (last_agent != agent or refresh_cli_sessions)
     with tracer.span(trace, name="prompt.handoff" if is_handoff else "prompt.rag"):
         if is_handoff:
             # Handoff turn: the incoming CLI has no idea what the other one just
@@ -985,7 +995,9 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 "The gate also applies its normal rules. Answer the user in Korean."
             )
 
-    if agent in session_ids:
+    if refresh_cli_sessions:
+        session_id = None
+    elif agent in session_ids:
         session_id = session_ids[agent]
     elif last_agent is None or last_agent == agent:
         # Nothing recorded for this agent yet, but the flat session_id field
@@ -1291,6 +1303,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     return {
         "session_id": session_id,
         "session_ids": session_ids,
+        "instruction_version": CLI_INSTRUCTIONS_VERSION,
         "agent": used_rung.agent,
         "last_agent": used_rung.agent,
         "response_text": final_response,

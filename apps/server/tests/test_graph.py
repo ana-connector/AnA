@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from apps.server.app.graph import build_graph
+from apps.server.app.graph import CLI_INSTRUCTIONS_VERSION, build_graph
 from packages.adapters.base import AdapterEvent, AgentAdapter
 from packages.memory.embeddings import EmbeddingModel
 from packages.memory.rag import search_similar_turns, store_turn
@@ -399,3 +399,49 @@ async def test_total_cost_usd_accumulates_across_turns_in_the_same_thread(db_poo
 
     state = await graph.aget_state(config)
     assert state.values["total_cost_usd"] == pytest.approx(0.02)
+
+
+@pytest.mark.asyncio
+async def test_old_cli_session_is_replaced_once_after_instruction_change(db_pool):
+    class RecordingAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__([])
+            self.sessions = []
+
+        async def run_stream(self, prompt, session_id=None):
+            self.sessions.append(session_id)
+            async for event in super().run_stream(prompt, session_id):
+                yield event
+
+    graph = build_graph(InMemorySaver())
+    adapter = RecordingAdapter()
+    config = {"configurable": {
+        "thread_id": "instruction-upgrade",
+        "adapter": adapter,
+        "pool": db_pool,
+        "embedding_model": EmbeddingModel(),
+        "transcript": Mock(),
+    }}
+
+    async for _ in graph.astream(
+        {"prompt": "old turn", "agent": "claude", "session_id": None},
+        config=config, stream_mode="custom",
+    ):
+        pass
+    assert (await graph.aget_state(config)).values["instruction_version"] == CLI_INSTRUCTIONS_VERSION
+
+    await graph.aupdate_state(config, {
+        "instruction_version": 0,
+        "session_id": "old-cli-session",
+        "session_ids": {"claude": "old-cli-session"},
+        "last_agent": "claude",
+    })
+    for prompt in ("after upgrade", "next turn"):
+        async for _ in graph.astream(
+            {"prompt": prompt, "agent": "claude", "session_id": "old-cli-session"},
+            config=config, stream_mode="custom",
+        ):
+            pass
+
+    assert adapter.sessions == [None, None, "cli-sid-1"]
+    assert "old turn" in adapter.prompts_seen[1]
