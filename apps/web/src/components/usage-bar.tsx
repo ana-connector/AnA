@@ -19,6 +19,11 @@ type Window = {
 
 type UsageSnapshot = Record<string, { windows: Window[] }>;
 
+/** How often the bar re-asks while the tab is open. Fast enough that a window
+ *  filling up during a long turn is visible, slow enough that it is not a
+ *  request every few seconds for a number that moves in percents. */
+const POLL_SECONDS = 20;
+
 /** One mark per CLI. The row is a glance at how much room is left, not a
  *  legend — the name is one hover away, and three spelled-out names crowded
  *  out the bars they were labelling. */
@@ -101,6 +106,23 @@ export function UsageBar({
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
+
+  // The windows move while a turn runs, and a turn runs for minutes. Without
+  // this the bar only changed when the next prompt was sent, which is what
+  // made it look stale. Paused while the tab is hidden: nobody is reading a
+  // status bar they cannot see, and the poll keeps a CLI log being re-read on
+  // the server side.
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const timer = setInterval(tick, POLL_SECONDS * 1000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [refresh]);
 
   const agents = Object.entries(usage);
 

@@ -37,6 +37,7 @@ from packages.observability.codex_usage import read_rate_limits as read_codex_ra
 from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports, stop_workspace
 from packages.orchestrator.handoff import AGENTS
+from packages.orchestrator.models import model_catalog
 from packages.orchestrator.routing import EFFORTS, load_routing_table
 from packages.orchestrator.schedules import (
     CronError,
@@ -465,10 +466,19 @@ async def routing_rules() -> dict:
     The editor used to be a YAML text box, which asked the person changing one
     threshold to know the file format. The vocabulary travels with the rules so
     the form can offer exactly what the router accepts."""
+    rules = read_routing_structured()
+    # Whatever the rules already name, so a model this build has not heard of
+    # keeps its place in the picker instead of vanishing on first edit.
+    used: dict[str, list[str]] = {}
+    for rungs in [rules["lead"], *rules["workers"].values()]:
+        for rung in rungs:
+            if rung.get("model"):
+                used.setdefault(rung["agent"], []).append(rung["model"])
     return {
-        **read_routing_structured(),
+        **rules,
         "agents": list(AGENTS),
         "efforts": {agent: list(levels) for agent, levels in EFFORTS.items()},
+        "models": model_catalog(used),
         "windows": [
             {"key": "five_hour", "label": "5시간"},
             {"key": "seven_day", "label": "7일"},

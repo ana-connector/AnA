@@ -34,6 +34,8 @@ type Rung = {
 type Vocabulary = {
   agents: string[];
   efforts: Record<string, string[]>;
+  /** What each CLI will accept, discovered where the CLI can be asked. */
+  models: Record<string, string[]>;
   windows: { key: string; label: string }[];
 };
 
@@ -42,6 +44,7 @@ type Ladders = { lead: Rung[]; workers: Record<string, Rung[]> };
 type Usage = Record<string, { windows: { key: string; utilization: number | null }[] }>;
 
 const NONE = "__none__";
+const CUSTOM = "__custom__";
 
 const AGENT_ICON: Record<string, (props: { className?: string }) => React.ReactElement> = {
   claude: ClaudeIcon,
@@ -87,7 +90,12 @@ export function RoutingEditor() {
     try {
       const body = await (await fetch(`${apiBase()}/routing`)).json();
       setLadders({ lead: body.lead, workers: body.workers ?? {} });
-      setVocabulary({ agents: body.agents, efforts: body.efforts, windows: body.windows });
+      setVocabulary({
+        agents: body.agents,
+        efforts: body.efforts,
+        models: body.models ?? {},
+        windows: body.windows,
+      });
     } catch (e) {
       setError(String(e));
     }
@@ -222,6 +230,8 @@ function Ladder({
   onChange: (rungs: Rung[]) => void;
 }) {
   const active = useMemo(() => activeIndex(rungs, usage), [rungs, usage]);
+  // Which rung is currently typing a model name by hand.
+  const [customAt, setCustomAt] = useState<number | null>(null);
 
   const replace = (index: number, rung: Rung) =>
     onChange(rungs.map((item, position) => (position === index ? rung : item)));
@@ -241,6 +251,10 @@ function Ladder({
           const last = index === rungs.length - 1;
           const Icon = AGENT_ICON[rung.agent];
           const efforts = vocabulary.efforts[rung.agent] ?? [];
+          const models = vocabulary.models[rung.agent] ?? [];
+          // A name the catalog does not carry is edited as text, so it is not
+          // quietly replaced by whatever the dropdown lands on.
+          const custom = customAt === index || (!!rung.model && !models.includes(rung.model));
           const used = rung.window ? spent(usage, rung.agent, rung.window) : null;
           const threshold = rung.utilization;
           const over = used !== null && threshold !== null && used >= threshold;
@@ -347,12 +361,47 @@ function Ladder({
 
                   <Field>
                     <FieldLabel>모델</FieldLabel>
-                    <Input
-                      value={rung.model}
-                      placeholder="opus"
-                      className="font-mono"
-                      onChange={(event) => replace(index, { ...rung, model: event.target.value })}
-                    />
+                    {/* A picker, because a model name is something the CLI
+                        either knows or rejects a turn later. CUSTOM keeps the
+                        text box for a name this build has not heard of. */}
+                    {custom ? (
+                      <Input
+                        autoFocus
+                        value={rung.model}
+                        placeholder="opus"
+                        className="font-mono"
+                        onChange={(event) => replace(index, { ...rung, model: event.target.value })}
+                        onBlur={() => {
+                          if (!rung.model.trim()) setCustomAt(null);
+                        }}
+                      />
+                    ) : (
+                      <Select
+                        value={rung.model || NONE}
+                        onValueChange={(value) => {
+                          if (value === CUSTOM) {
+                            setCustomAt(index);
+                            return;
+                          }
+                          replace(index, { ...rung, model: value === NONE ? "" : String(value) });
+                        }}
+                      >
+                        <SelectTrigger className="font-mono">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={NONE}>CLI 기본값</SelectItem>
+                            {models.map((name) => (
+                              <SelectItem key={name} value={name} className="font-mono">
+                                {name}
+                              </SelectItem>
+                            ))}
+                            <SelectItem value={CUSTOM}>직접 입력…</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    )}
                   </Field>
 
                   <Field>

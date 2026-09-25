@@ -262,6 +262,10 @@ export function useChatSocket() {
   // Everything the server timestamps is read through it, so the two clocks
   // never have to agree.
   const serverOffsetRef = useRef(0);
+  // Bumped when a turn finishes: that is the moment the usage windows have
+  // new numbers in them, and the status bar was previously keyed on the count
+  // of prompts *sent*, which is the wrong end of the turn.
+  const [turnsFinished, setTurnsFinished] = useState(0);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   // Questions the agent is waiting on. Plural because one call can ask several,
   // and a second call can arrive while the first is unanswered.
@@ -821,6 +825,7 @@ export function useChatSocket() {
         }
 
         if (event.type === "result") {
+          setTurnsFinished((count) => count + 1);
           // It answered, so whatever it was is over.
           if (event.agent) {
             setFailingAgents((prev) => {
@@ -1003,6 +1008,7 @@ export function useChatSocket() {
     usage,
     hasUnpricedUsage,
     failingAgents,
+    turnsFinished,
     workspace,
     workspaceName,
     threadId,

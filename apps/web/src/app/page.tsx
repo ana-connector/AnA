@@ -98,6 +98,7 @@ export default function ChatPage() {
     streaming,
     usage,
     failingAgents,
+    turnsFinished,
     workspace,
     workspaceName,
     threadId,
@@ -467,7 +468,7 @@ export default function ChatPage() {
         />
 
         <UsageBar
-          refreshKey={completedTurns}
+          refreshKey={turnsFinished}
           totalCostUsd={usage.totalCostUsd}
           totalTokens={usage.totalTokens}
           failingAgents={failingAgents}
