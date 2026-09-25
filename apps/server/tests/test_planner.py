@@ -35,7 +35,7 @@ def test_execute_plan_has_turn_scope():
     assert plan.scope.mode == "write"
     assert plan.scope.paths == ("src",)
     assert not plan.delegating
-    assert parse_plan('{"mode":"execute"}').scope.mode == "read"
+    assert parse_plan('{"mode":"execute"}').scope.mode == "write"
 
 
 def test_delegation_with_tasks():

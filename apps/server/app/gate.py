@@ -41,9 +41,8 @@ from packages.governance.secrets import (
 
 router = APIRouter()
 
-# What the lead may call without being granted file, shell, network or search
-# access. Hook tool names omit punctuation, so a tool can arrive in either
-# spelling and both are listed.
+# Control tools used by the optional planner. Ordinary lead turns can use
+# work tools; this list remains useful for classifying control calls.
 LEAD_CONTROL_TOOLS = {
     "clockcurr_time", "askask_user", "mcp__ask__ask_user",
     # Codex's built-in question tools are reported directly by its hook,
@@ -98,13 +97,7 @@ def lead_control_tools() -> set[str]:
 
 
 def lead_may_call(tool_name: str) -> bool:
-    """Whether the lead itself may make this call.
-
-    The lead does no work of its own — everything that touches the machine goes
-    through a sub-agent — with two exceptions: reading the clock, and asking the
-    user. Both spellings of an MCP tool name are recognized, and the server is
-    matched as well as the literal name, so a renamed tool inside the `ask`
-    server does not silently become a denial."""
+    """Whether a tool is a lead control call rather than a work call."""
     if tool_name.lower() in lead_control_tools():
         return True
     return server_for_tool(tool_name, load_registry().names()) in LEAD_CONTROL_SERVERS
@@ -495,28 +488,12 @@ async def gate_tool_call(
             category="delegation",
         )
 
-    if body.role == "lead" and not body.agent_id and not lead_may_call(body.tool_name) and session.lead_scope is None:
-        # Only the planner can grant a scope for this turn. A tool request
-        # cannot grant permission to itself through its hook payload.
-        await _audit(DENY, "role", "lead sessions do not use tools")
-        return GateDecision(
-            decision=DENY,
-            reason=(
-                "The lead has no tool scope for this call. Choose execute mode "
-                "during planning or delegate the work."
-            ),
-            rule_id="lead-no-tools",
-            category="delegation",
-        )
-
-    # The scope its lead gave this sub-agent (roadmap stage 3's 권한 스코프,
-    # stage 5's Elevation-of-Privilege row). Checked before the rule set
-    # because it only ever narrows: a scope cannot grant what the rules deny.
-    scope = (
-        session.lead_scope
-        if body.role == "lead" and not body.agent_id and session.lead_scope is not None
-        else Scope.from_payload(body.scope_mode, body.scope_paths)
-    )
+    # Ordinary lead turns have full workspace scope. An explicit plan may
+    # narrow that scope; workers still use the scope passed by their lead.
+    if body.role == "lead" and not body.agent_id:
+        scope = session.lead_scope or Scope()
+    else:
+        scope = Scope.from_payload(body.scope_mode, body.scope_paths)
     scope_reason = scope_violation(
         body.tool_name, body.tool_input, scope, session.workspace, body.cwd
     )

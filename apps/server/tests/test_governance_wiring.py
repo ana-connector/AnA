@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from apps.server.app.main import app
 from apps.server.app.websocket import _parse_client_frame, build_adapter, build_codex_adapter
+from apps.server.app.websocket import planning_enabled
 from packages.adapters.claude_code import ClaudeCodeAdapter
 from packages.adapters.codex import CodexAdapter
 from packages.adapters.env_builder import with_gate
@@ -221,6 +222,8 @@ def test_a_gate_token_outlives_the_connection(client):
 
     with client.websocket_connect("/ws/chat?thread_id=gate-ws-1") as ws:
         ws.receive_json()  # thread_id
+        ws.send_json({"type": "cancel"})
+        ws.receive_json()  # runner has finished setup and handled the frame
         assert len(_session_for(registry, "gate-ws-1")) == 1
 
     assert len(_session_for(registry, "gate-ws-1")) == 1
@@ -236,6 +239,8 @@ def test_background_turns_off_releases_the_token_with_the_connection(client, mon
 
     with client.websocket_connect("/ws/chat?thread_id=gate-ws-off") as ws:
         ws.receive_json()  # thread_id
+        ws.send_json({"type": "cancel"})
+        ws.receive_json()  # runner is ready
         assert len(_session_for(registry, "gate-ws-off")) == 1
 
     # Teardown runs on the app's own loop, so this polls rather than assuming it
@@ -289,17 +294,17 @@ def test_codex_without_a_sandbox_mode_still_runs_the_hook(tmp_path):
     assert "--dangerously-bypass-hook-trust" in args
 
 
-def test_plan_mode_reaches_the_graph(client):
+def test_plan_mode_reaches_the_graph(client, monkeypatch):
     """A regression guard: the flag has to survive parse → queue → astream, and
     a missing key in the astream payload silently disables planning."""
     import apps.server.app.graph as graph_module
 
-    seen: list = []
-    original = graph_module.call_lead_agent
+    monkeypatch.setenv("ANA_PLANNER", "on")
 
+    seen: list = []
     async def spy(state, config):
         seen.append(state.get("plan_mode"))
-        return await original(state, config)
+        return {"response_text": "ok"}
 
     with patch.object(graph_module, "call_lead_agent", spy):
         # The graph is compiled at startup, so patch the node and rebuild it
@@ -308,9 +313,17 @@ def test_plan_mode_reaches_the_graph(client):
         with client.websocket_connect("/ws/chat?thread_id=plan-flag") as ws:
             ws.receive_json()
             ws.send_json({"prompt": "hi", "agent": "claude", "plan_mode": True})
-            while True:
-                event = ws.receive_json()
-                if event["type"] in ("result", "error"):
-                    break
+            import time
+
+            deadline = time.monotonic() + 5
+            while not seen and time.monotonic() < deadline:
+                time.sleep(0.01)
 
     assert seen == [True]
+
+
+def test_planning_is_opt_in(monkeypatch):
+    monkeypatch.delenv("ANA_PLANNER", raising=False)
+    assert planning_enabled() is False
+    monkeypatch.setenv("ANA_PLANNER", "on")
+    assert planning_enabled() is True

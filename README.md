@@ -480,8 +480,8 @@ finishes.
 - `ANA_SUBAGENT_TIMEOUT_SECONDS` (default 600) bounds each worker. A timeout or
   an error is a task result, not a turn failure — the lead is told what failed
   and still answers.
-- Planning is on for every turn by default; `ANA_PLANNER=off` disables it for
-  debugging. If a lead reaches a session limit while planning, replanning, or
+- Planning is off for ordinary turns; `ANA_PLANNER=on` enables the explicit
+  planner and worker flow. If a lead reaches a session limit while planning, replanning, or
   synthesizing, AnA switches models and preserves the worker results.
 
 **The plan is not fixed when it is written.** A plan made before anything has

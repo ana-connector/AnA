@@ -76,10 +76,8 @@ def test_allowed_command_passes_and_is_audited(client, prepared_pool):
     assert events[0]["agent"] == "claude"
 
 
-def test_lead_can_read_the_clock_but_cannot_run_shell(client):
-    """Delegation is no longer a tool the lead calls: ANA's planner is the
-    only path, so the CLIs' own spawn tooling is refused (see
-    test_gate_scope.py) and the clock is what is left."""
+@pytest.mark.parametrize("command", ["pytest -q", "git add .", "git commit -m update"])
+def test_lead_can_use_tools_without_a_planning_scope(client, command):
     session = _register(client, "lead-controls", [])
     session.current_agent = "codex"
     response = client.post(
@@ -89,13 +87,12 @@ def test_lead_can_read_the_clock_but_cannot_run_shell(client):
     )
     assert response.json()["decision"] == "allow"
 
-    blocked = client.post(
+    shell = client.post(
         "/gate/tool-call",
         headers={"x-ana-gate-token": session.token},
-        json={"tool_name": "Bash", "tool_input": {"command": "echo hi"}, "role": "lead"},
+        json={"tool_name": "Bash", "tool_input": {"command": command}, "role": "lead"},
     )
-    assert blocked.json()["decision"] == "deny"
-    assert blocked.json()["rule_id"] == "lead-no-tools"
+    assert shell.json()["decision"] == "allow"
 
 
 def test_planner_grants_lead_a_temporary_read_scope(client):
@@ -114,7 +111,7 @@ def test_planner_grants_lead_a_temporary_read_scope(client):
     assert call("ls")["decision"] == "allow"
     assert call("touch changed.txt")["rule_id"] == "subagent-scope"
     session.lead_scope = None
-    assert call("ls")["rule_id"] == "lead-no-tools"
+    assert call("ls")["decision"] == "allow"
 
 
 @pytest.mark.parametrize("tool_name", [
@@ -199,13 +196,13 @@ def test_risky_command_asks_and_can_be_approved(client, prepared_pool):
     result = {}
 
     def do_call():
-        result["response"] = _call(client, session.token, "curl https://example.com")
+        result["response"] = _call(client, session.token, "git push origin main")
 
     thread = threading.Thread(target=do_call)
     thread.start()
     request = _await_approval(sent)
 
-    assert request["rule_id"] == "network-egress"
+    assert request["rule_id"] == "git-push"
     # The live "tool" frame goes out too, but the approval is its own frame.
     assert any(f["type"] == "tool" for f in sent)
 
@@ -228,7 +225,7 @@ def test_risky_command_can_be_denied_by_the_user(client, prepared_pool):
     result = {}
 
     def do_call():
-        result["response"] = _call(client, session.token, "curl https://example.com")
+        result["response"] = _call(client, session.token, "git push origin main")
 
     thread = threading.Thread(target=do_call)
     thread.start()
@@ -253,7 +250,7 @@ def test_an_approval_from_discord_says_so_in_the_log(client, prepared_pool):
     result = {}
 
     def do_call():
-        result["response"] = _call(client, session.token, "curl https://example.com")
+        result["response"] = _call(client, session.token, "git push origin main")
 
     thread = threading.Thread(target=do_call)
     thread.start()
@@ -274,7 +271,7 @@ def test_unanswered_request_times_out_as_denied(client, prepared_pool):
     sent: list = []
     session = _register(client, "gate-5", sent, timeout=0.3)
 
-    response = _call(client, session.token, "curl https://example.com")
+    response = _call(client, session.token, "git push origin main")
 
     assert response.json()["decision"] == "deny"
     events = asyncio.run(recent_events(prepared_pool, thread_id="gate-5"))
@@ -315,7 +312,7 @@ def test_pending_and_final_rows_share_the_tool_use_id(client, prepared_pool):
             headers={"x-ana-gate-token": session.token},
             json={
                 "tool_name": "Bash",
-                "tool_input": {"command": "curl https://example.com"},
+                "tool_input": {"command": "git push origin main"},
                 "tool_use_id": "toolu_shared",
             },
         )

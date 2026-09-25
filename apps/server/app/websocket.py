@@ -92,15 +92,12 @@ CONTAINER_GATE_URL = os.environ.get("ANA_CONTAINER_GATE_URL", "http://server:800
 
 
 def planning_enabled() -> bool:
-    """Whether the lead decides for itself how to handle a turn.
+    """Use the extra planning call only when explicitly enabled.
 
-    It always does, unless ANA_PLANNER=off — which exists for debugging a
-    problem that is clearly not about planning. There is no "plan mode" for
-    the user to pick: the lead has no tools at all, so whether a request needs
-    sub-agents is a judgement about the request, not a preference about the
-    UI, and asking the user to choose meant they could pick the mode that
-    cannot do the job."""
-    return os.environ.get("ANA_PLANNER", "on").lower() != "off"
+    Ordinary turns run directly with tools. Planning remains available for
+    requests that benefit from ANA's isolated worker worktrees.
+    """
+    return os.environ.get("ANA_PLANNER", "off").lower() == "on"
 
 
 def gate_enabled() -> bool:
