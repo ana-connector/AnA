@@ -541,3 +541,25 @@ def test_an_empty_ladder_is_refused(client, tmp_path, monkeypatch):
     monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
 
     assert client.put("/routing", json={"lead": [], "workers": {}}).status_code == 400
+
+
+def test_routing_carries_the_models_each_cli_takes(client, tmp_path, monkeypatch):
+    """The editor offers names rather than asking someone to spell one. A model
+    the rules already use is in the list even if this build has never heard of
+    it, so editing a rung cannot quietly replace it."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    client.put(
+        "/routing",
+        json={
+            "lead": [{"agent": "codex", "model": "gpt-6-experimental-unheard-of"}],
+            "workers": {},
+        },
+    )
+
+    models = client.get("/routing").json()["models"]
+
+    assert "opus" in models["claude"]
+    # TAPIE runs the same CLI, so the same names.
+    assert models["tapie"] == models["claude"]
+    assert models["codex"][0] == "gpt-6-experimental-unheard-of"
+    assert "kimi" in models
