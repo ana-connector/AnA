@@ -105,6 +105,12 @@ class GateSession:
     pending: dict[str, "_Pending"] = field(default_factory=dict)
     timeline: Optional[TurnTimeline] = None
     native_agents: dict[str, dict] = field(default_factory=dict)
+    # Native Agent/Task calls report a human description before their later
+    # SubagentStart hook reports only a generic agent_type.
+    pending_native_titles: list[str] = field(default_factory=list)
+    # Bound by the WebSocket runner: a routed worker launched on demand by the
+    # lead's delegate MCP tool, using the current worker ladder.
+    delegate_worker: Optional[Callable[[str, str], Awaitable[dict]]] = None
     # Called when a request this session raised is over, whoever ended it.
     # TurnRunner binds it to "drop the buffered card and tell the browser", so
     # a question answered from a phone stops being offered in the tab.

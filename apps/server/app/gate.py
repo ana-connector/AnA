@@ -58,7 +58,7 @@ LEAD_CONTROL_TOOLS = {
 # user's, which is the thing it is supposed to stop doing.
 # `schedule` joins it: putting work on a clock is the lead deciding when a
 # turn happens, not the lead doing the work itself.
-LEAD_CONTROL_SERVERS = {"ask", "schedule"}
+LEAD_CONTROL_SERVERS = {"ask", "schedule", "delegate"}
 
 # ANA's own MCP server: one tool, `ask_user`, which puts a question to the
 # browser and waits (packages/mcp/servers/ask_user.py).
@@ -122,6 +122,27 @@ class SubagentEvent(BaseModel):
     output: str = ""
 
 
+class DelegateRequest(BaseModel):
+    title: str
+    prompt: str
+
+
+@router.post("/gate/delegate")
+async def gate_delegate(
+    request: Request,
+    body: DelegateRequest,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    session = request.app.state.gate_registry.get(x_ana_gate_token)
+    if session is None:
+        raise HTTPException(status_code=403, detail="unknown gate token")
+    if session.delegate_worker is None:
+        raise HTTPException(status_code=409, detail="no worker runner for this session")
+    if not body.title.strip() or not body.prompt.strip():
+        raise HTTPException(status_code=422, detail="title and prompt are required")
+    return await session.delegate_worker(body.title.strip()[:120], body.prompt.strip())
+
+
 @router.post("/gate/subagent")
 async def gate_subagent_event(
     request: Request,
@@ -133,9 +154,13 @@ async def gate_subagent_event(
         raise HTTPException(status_code=403, detail="unknown gate token")
     if body.event not in ("SubagentStart", "SubagentStop"):
         raise HTTPException(status_code=400, detail="unknown subagent event")
+    title = ""
+    if body.event == "SubagentStart" and body.agent_id not in session.native_agents:
+        if session.pending_native_titles:
+            title = session.pending_native_titles.pop(0)
     task = session.native_agents.get(body.agent_id) or {
         "id": f"native:{body.agent_id}",
-        "title": body.agent_type or "하위 에이전트",
+        "title": title or "하위 에이전트",
         "agent": session.current_agent or "claude",
         "status": "running",
         "output": "",
@@ -365,9 +390,13 @@ async def gate_tool_call(
         raise HTTPException(status_code=403, detail="unknown gate token")
 
     pool = request.app.state.pool
+    call_agent = (
+        session.native_agents.get(body.agent_id, {}).get("agent")
+        if body.agent_id else None
+    ) or session.current_agent
 
-    if body.model and session.models.get(session.current_agent or "") != body.model:
-        session.models[session.current_agent or ""] = body.model
+    if body.model and session.models.get(call_agent or "") != body.model:
+        session.models[call_agent or ""] = body.model
         with contextlib.suppress(Exception):
             await session.send(
                 {
@@ -375,7 +404,7 @@ async def gate_tool_call(
                     "text": body.model,
                     "session_id": body.cli_session_id,
                     "is_error": False,
-                    "agent": session.current_agent,
+                    "agent": call_agent,
                 }
             )
 
@@ -393,6 +422,13 @@ async def gate_tool_call(
     )
 
     async def _audit(decision: str, decided_by: str, reason: str) -> None:
+        if (
+            decision == ALLOW and body.role == "lead" and not body.agent_id
+            and body.tool_name.lower() in {"agent", "task"}
+        ):
+            title = str(body.tool_input.get("description") or "").strip()
+            if title:
+                session.pending_native_titles.append(title[:120])
         # Counted next to the audit row so the metric and the log can never
         # disagree about what happened. The metric gets only the channel --
         # "discord", not "discord:<user id>" -- because a Prometheus label with
@@ -412,7 +448,7 @@ async def gate_tool_call(
             task = session.native_agents.setdefault(body.agent_id, {
                 "id": f"native:{body.agent_id}",
                 "title": body.agent_type or "하위 에이전트",
-                "agent": session.current_agent or "codex",
+                "agent": call_agent or "codex",
                 "status": "running",
                 "output": "",
                 "tools": [],
@@ -435,14 +471,14 @@ async def gate_tool_call(
                     "text": reason,
                     "session_id": body.cli_session_id,
                     "is_error": decision == DENY,
-                    "agent": session.current_agent,
+                    "agent": call_agent,
                     "tool": tool_event,
                 }
             )
         await audit.record_event(
             pool,
             thread_id=session.thread_id,
-            agent=session.current_agent,
+            agent=call_agent,
             cli_session_id=body.cli_session_id,
             tool_name=body.tool_name,
             tool_input=safe_input,

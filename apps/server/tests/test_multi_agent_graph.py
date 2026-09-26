@@ -95,13 +95,13 @@ def _config(db_pool, lead, worker_factory, thread_id):
     }
 
 
-async def _run(graph, config, *, prompt="큰 작업 해줘", plan_mode=True):
+async def _run(graph, config, *, prompt="큰 작업 해줘", plan_mode=True, agent="claude"):
     frames = [
         chunk
         async for chunk in graph.astream(
             {
                 "prompt": prompt,
-                "agent": "claude",
+                "agent": agent,
                 "plan_mode": plan_mode,
                 "session_id": None,
                 "response_text": "",
@@ -646,6 +646,36 @@ async def test_a_direct_turn_still_says_it_is_answering(db_pool):
 
     phases = [f["text"] for f in frames if f["type"] == "status"]
     assert phases == ["planning", "answering"]
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_falls_back_without_keeping_english_error(db_pool):
+    class PausedAccount(AgentAdapter):
+        async def run_stream(self, prompt: str, session_id=None):
+            error = "Failed to authenticate. API Error: 403 Claude Code가 일시정지되어 있습니다."
+            yield AdapterEvent(type="text", text=error)
+            yield AdapterEvent(type="result", text=error, is_error=True)
+            yield AdapterEvent(type="error", text="claude.ai connectors are disabled", is_error=True)
+
+        async def terminate(self):
+            return None
+
+    winner = ScriptedAdapter(["저장소 목록을 확인했습니다."], label="claude")
+    attempted = []
+
+    def adapter_factory(agent, auth_mode=None, model=None, effort=None):
+        attempted.append(agent)
+        return PausedAccount() if agent == "tapie" else winner
+
+    config = _config(db_pool, PausedAccount(), None, "ma-auth-failover")
+    config["configurable"]["adapter_factory"] = adapter_factory
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, config, plan_mode=False, agent="tapie")
+
+    assert attempted[0] == "tapie"
+    assert attempted[-1] == "claude"
+    assert any(frame["type"] == "failover" for frame in frames)
+    assert values["response_text"] == "저장소 목록을 확인했습니다."
 
 
 @pytest.mark.asyncio

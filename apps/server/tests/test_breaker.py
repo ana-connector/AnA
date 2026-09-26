@@ -6,6 +6,8 @@ from packages.orchestrator.breaker import (
     BreakerState,
     Rung,
     build_chain,
+    is_auth_failure,
+    is_recoverable_failure,
     is_usage_limit,
     next_rung,
     rate_limit_exceeded,
@@ -41,6 +43,25 @@ def test_ordinary_failures_are_not_usage_limits(text):
     # A wrong request must surface as an error, not silently cost a retry on
     # another provider.
     assert is_usage_limit(text) is False
+
+
+@pytest.mark.parametrize("text", [
+    "Failed to authenticate. API Error: 403 Claude Code가 일시정지되어 있습니다.",
+    "API Error: 401 Unauthorized",
+    "invalid API key",
+])
+def test_authentication_failures_can_switch_provider(text):
+    assert is_auth_failure(text)
+    assert is_recoverable_failure(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Command blocked by PreToolUse hook: ANA governance rule",
+    "API Error: 404 Not Found",
+    "⚠ claude.ai connectors are disabled because another auth source is set",
+])
+def test_non_authentication_errors_do_not_switch_provider(text):
+    assert not is_auth_failure(text)
 
 
 def test_rate_limit_windows_at_the_threshold_count():

@@ -55,6 +55,7 @@ from packages.orchestrator.workspaces import ensure_workspace
 from packages.observability.metrics import active_sessions
 from packages.orchestrator.handoff import AGENTS
 from packages.orchestrator.routing import AUTO
+from apps.server.app.delegation import run_routed_task
 from packages.orchestrator.settings import apply_workspace_prompt, read_auth_mode, system_prompt_for
 from packages.orchestrator.timeline import TurnTimeline
 
@@ -910,6 +911,16 @@ async def _build_runner(
         _drop_finished_workers(adapters)
         adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built
         return built
+
+    async def delegate_worker(title: str, prompt: str) -> dict:
+        return await run_routed_task(
+            title, prompt, worker_factory=worker_factory,
+            workspace_dir=workspace_dir, usage_tracker=app.state.usage_tracker,
+            native_agents=gate_session.native_agents, send=gate_session.send,
+            secrets=registered_secrets,
+        )
+
+    gate_session.delegate_worker = delegate_worker
 
     config = {
         "configurable": {

@@ -786,12 +786,24 @@ export function useChatSocket() {
         }
 
         if (event.type === "failover") {
+          const authFailure = /failed to authenticate|api error:\s*40[13]|일시정지/i.test(event.text || "");
+          const reason = authFailure ? "인증 오류" : (event.text || "오류");
           // from_rung is the rung being left, as "agent/model": that agent is
           // the one that just failed, not event.agent, which is where the turn
           // is going next.
           const failed = (event.from_rung ?? "").split("/")[0];
           if (failed) {
-            setFailingAgents((prev) => ({ ...prev, [failed]: event.text || "오류" }));
+            setFailingAgents((prev) => ({ ...prev, [failed]: reason }));
+          }
+          if (authFailure && agentMessageIndexRef.current !== null) {
+            const index = agentMessageIndexRef.current;
+            const summary = "인증 오류로 다른 모델로 전환합니다.";
+            setMessages((prev) => prev.map((message, i) => i === index ? {
+              ...message,
+              text: summary,
+              blocks: [...(message.blocks ?? []).filter((block) => block.kind !== "text"),
+                { kind: "text" as const, text: summary }],
+            } : message));
           }
           // The turn is continuing on another rung, so this is a notice in the
           // transcript rather than an error: the answer still arrives.
@@ -803,7 +815,7 @@ export function useChatSocket() {
               role: "agent",
               agent,
               notice: true,
-              text: `${event.from_rung} → ${event.to_rung} 전환 (${event.text})`,
+              text: `${event.from_rung} → ${event.to_rung} 전환 (${reason})`,
             },
           ]);
           // The next text chunk belongs to the retry, not to the partial reply
@@ -820,8 +832,11 @@ export function useChatSocket() {
           setStatus(null);
           messageCountRef.current += 1;
           const agent = event.agent ?? pendingAgentRef.current;
-          setFailingAgents((prev) => ({ ...prev, [agent]: event.text || "오류" }));
-          setMessages((prev) => [...prev, { role: "agent", text: `⚠️ ${event.text}`, agent }]);
+          const reason = /failed to authenticate|api error:\s*40[13]|일시정지/i.test(event.text || "")
+            ? "인증 오류로 요청을 완료하지 못했습니다."
+            : (event.text || "요청을 완료하지 못했습니다.");
+          setFailingAgents((prev) => ({ ...prev, [agent]: reason }));
+          setMessages((prev) => [...prev, { role: "agent", text: `⚠️ ${reason}`, agent }]);
           agentMessageIndexRef.current = null;
           setStreaming(false);
           return;

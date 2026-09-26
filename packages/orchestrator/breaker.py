@@ -52,6 +52,16 @@ _USAGE_LIMIT_PATTERNS = (
 )
 _USAGE_LIMIT_RE = re.compile("|".join(_USAGE_LIMIT_PATTERNS), re.IGNORECASE)
 
+# Account and credential failures are recoverable by another configured CLI,
+# just like an exhausted window. Keep this narrow: a gate denial or a bad
+# user command must still be reported rather than retried elsewhere.
+_AUTH_FAILURE_RE = re.compile(
+    r"failed to authenticate|authentication failed|invalid api key|"
+    r"api error:\s*40[13]\b|(?:account|claude code).{0,30}(?:suspended|paused)|"
+    r"claude code가 일시정지",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class Rung:
@@ -89,6 +99,15 @@ def is_usage_limit(text: str) -> bool:
     """Whether a CLI's error text reads as "you are out of budget/quota"
     rather than "your request was wrong"."""
     return bool(text) and bool(_USAGE_LIMIT_RE.search(text))
+
+
+def is_auth_failure(text: str) -> bool:
+    """A provider rejected this CLI's credentials or account."""
+    return bool(text) and bool(_AUTH_FAILURE_RE.search(text))
+
+
+def is_recoverable_failure(text: str) -> bool:
+    return is_usage_limit(text) or is_auth_failure(text)
 
 
 def rate_limit_exceeded(usage: Optional[dict], threshold: float) -> bool:

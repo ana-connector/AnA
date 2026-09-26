@@ -50,8 +50,9 @@ def ask_gate(payload: dict) -> dict:
             "model": payload.get("model"),
             # "lead" or "worker": the lead plans and answers, sub-agents do the
             # work, and the gate is where that split is enforced.
-            "role": "worker" if payload.get("agent_id") else os.environ.get("ANA_GATE_ROLE", "worker"),
-            "agent_id": payload.get("agent_id"),
+            "role": "worker" if (payload.get("agent_id") or os.environ.get("ANA_GATE_AGENT_ID"))
+                    else os.environ.get("ANA_GATE_ROLE", "worker"),
+            "agent_id": payload.get("agent_id") or os.environ.get("ANA_GATE_AGENT_ID"),
             "agent_type": payload.get("agent_type"),
             # The permission scope this sub-agent's lead gave it, carried in
             # its environment (packages/governance/subagent_scope.py).
