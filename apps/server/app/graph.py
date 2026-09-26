@@ -64,7 +64,7 @@ logger = logging.getLogger("ana.graph")
 
 # Resumed CLI sessions can retain an older system prompt even after the server
 # image changes. Bump this when lead permissions or instructions change.
-CLI_INSTRUCTIONS_VERSION = 1
+CLI_INSTRUCTIONS_VERSION = 2
 
 
 @contextlib.contextmanager
