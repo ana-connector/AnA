@@ -107,3 +107,13 @@ servers:
       PYTHONUNBUFFERED: "1"
     roles: [lead, worker]
     enabled: true
+
+  - name: delegate
+    description: "리드가 workers 라우팅으로 하위 작업을 실행한다 (ANA 자체 서버)"
+    command: python
+    args: ["-m", "packages.mcp.servers.delegate"]
+    env:
+      PYTHONPATH: "/app"
+      PYTHONUNBUFFERED: "1"
+    roles: [lead]
+    enabled: true

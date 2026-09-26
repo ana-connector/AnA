@@ -222,6 +222,7 @@ class TurnRunner:
         timeline = TurnTimeline()
         self.gate_session.timeline = timeline
         self.gate_session.native_agents.clear()
+        self.gate_session.pending_native_titles.clear()
         self.config["configurable"]["timeline"] = timeline
         self.config["configurable"]["native_agents"] = self.gate_session.native_agents
         try:

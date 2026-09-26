@@ -17,7 +17,9 @@ from packages.orchestrator.breaker import (
     BreakerConfig,
     BreakerState,
     build_chain,
+    is_auth_failure,
     is_usage_limit,
+    is_recoverable_failure,
     next_rung,
     rate_limit_exceeded,
     thread_budget_exceeded,
@@ -64,7 +66,7 @@ logger = logging.getLogger("ana.graph")
 
 # Resumed CLI sessions can retain an older system prompt even after the server
 # image changes. Bump this when lead permissions or instructions change.
-CLI_INSTRUCTIONS_VERSION = 2
+CLI_INSTRUCTIONS_VERSION = 3
 
 
 @contextlib.contextmanager
@@ -188,7 +190,8 @@ async def _run_worker(adapter, prompt: str) -> WorkerRun:
                 run.tokens += _tokens_from_usage(event.usage)
             elif event.type == "error":
                 run.failed = True
-                run.error = event.text
+                if not is_recoverable_failure(run.error):
+                    run.error = event.text or run.error
     finally:
         # The worker's subprocess must not outlive the fan-out, including when
         # the turn is cancelled mid-flight.
@@ -220,7 +223,7 @@ async def _work_the_task(task, prompt, base_prompt, cwd, worker_route, worker_fa
             run.extras["agent"] = route.agent
             if not run.model:
                 run.model = route.model
-            if not run.failed or not is_usage_limit(f"{run.error}\n{run.output}"):
+            if not run.failed or not is_recoverable_failure(f"{run.error}\n{run.output}"):
                 break
             if index + 1 < len(routes):
                 next_route = routes[index + 1]
@@ -345,8 +348,8 @@ async def _ask_for_plan(adapter, prompt: str, *, tracer, trace, span: str,
             # costs latency, not the turn.
             planning.error = str(exc)
     plan = parse_plan(planning.output, id_offset=id_offset, known_ids=known_ids)
-    if is_usage_limit(planning.error) or (
-        not plan.delegating and plan.note and is_usage_limit(planning.output)
+    if is_recoverable_failure(planning.error) or (
+        not plan.delegating and plan.note and is_recoverable_failure(planning.output)
     ):
         raise _PlanningLimit(planning.error or planning.output)
     return plan
@@ -531,22 +534,24 @@ async def _stream_turn(
                 outcome.response_text += event.text
             if event.type == "result":
                 outcome.cost_usd = event.cost_usd
+                if event.is_error:
+                    outcome.error_text = event.text or "CLI reported a failed turn"
                 # `is_error` is not always set for this: a plan that cannot pay
                 # for the model answers "Fable 5 requires usage credits…" as a
                 # perfectly successful result whose entire content is that
                 # sentence. A reply that is *only* a limit message is a limit
                 # message.
-                looks_like_limit = is_usage_limit(event.text)
+                looks_like_failure = is_recoverable_failure(event.text)
                 whole_reply = outcome.response_text.strip() in ("", event.text.strip())
-                if looks_like_limit and (event.is_error or whole_reply):
-                    outcome.usage_limited = True
+                if looks_like_failure and (event.is_error or whole_reply):
+                    outcome.usage_limited = is_usage_limit(event.text)
                     outcome.error_text = event.text
             if event.type == "error":
                 # Never clobber a real message with an empty one: the CLI can
                 # follow a "requires usage credits" result with a bare non-zero
                 # exit whose stderr is empty, and overwriting the reason made
                 # the turn look like it had not failed at all.
-                if event.text or not outcome.error_text:
+                if (event.text and not is_recoverable_failure(outcome.error_text)) or not outcome.error_text:
                     outcome.error_text = event.text or "CLI exited with an error"
                 if is_usage_limit(event.text):
                     outcome.usage_limited = True
@@ -1125,6 +1130,8 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             # is cancelled mid-stream.
             outcome = _TurnOutcome(session_id=attempt_session_id)
             in_flight = outcome
+            if gate_session is not None:
+                gate_session.current_agent = rung.agent
             with tracer.span(
                 trace, name=f"cli.{rung.label}", metadata={"resumed": bool(attempt_session_id)}
             ):
@@ -1143,7 +1150,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     native_agents=configurable.get("native_agents"),
                 )
 
-            response_text = outcome.response_text or response_text
+            response_text = outcome.response_text
             turn_model = outcome.model or turn_model
             session_id = outcome.session_id
             turn_tokens += outcome.turn_tokens
@@ -1169,7 +1176,9 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 [r.label for r in chain],
                 (outcome.error_text or "")[:120],
             )
-            follow_up = next_rung(chain, tried) if outcome.usage_limited else None
+            follow_up = next_rung(chain, tried) if (
+                outcome.usage_limited or is_auth_failure(outcome.error_text)
+            ) else None
             if follow_up is None:
                 # Either an ordinary failure (report it as-is) or the chain is
                 # exhausted (nothing left to try). Either way this attempt was
@@ -1204,6 +1213,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             )
             caught_exc = None  # recovered by moving down the chain
             for_error_text = ""
+            response_text = ""  # never retain the failed CLI's partial answer
     finally:
         if gate_session is not None:
             gate_session.lead_scope = None
@@ -1213,9 +1223,15 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             response_text = response_text or in_flight.response_text
             session_id = session_id or in_flight.session_id
             cost_usd = cost_usd if cost_usd is not None else in_flight.cost_usd
-        final_response = response_text or for_error_text or (
-            f"[error: {caught_exc}]" if caught_exc is not None else ""
-        )
+        if caught_exc is not None or for_error_text:
+            reason = for_error_text or str(caught_exc)
+            final_response = (
+                "인증 오류로 요청을 완료하지 못했습니다. 다른 모델도 사용할 수 있는지 확인해 주세요."
+                if is_auth_failure(reason) else
+                "요청을 완료하지 못했습니다. 서버 오류 기록을 확인해 주세요."
+            )
+        else:
+            final_response = response_text
         # asyncio.CancelledError is a BaseException (not Exception, since
         # Python 3.8), so it is NOT caught by `except Exception` above — it
         # passes straight through to this `finally` block instead, exactly

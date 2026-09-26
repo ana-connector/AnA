@@ -120,7 +120,7 @@ def test_broken_registry_file_yields_an_empty_registry_not_an_exception(tmp_path
 def test_shipped_registry_exposes_read_tools_to_lead():
     """The gate grants lead tool calls only while execute mode is active."""
     registry = load_registry()
-    assert set(registry.names_for("lead")) == {"git", "postgres", "ask", "schedule"}
+    assert set(registry.names_for("lead")) == {"git", "postgres", "ask", "schedule", "delegate"}
     assert set(registry.names_for("worker")) == {"git", "postgres", "github", "ask"}
 
 
@@ -128,5 +128,5 @@ def test_lead_is_told_to_delegate_worker_only_github_requests():
     assert "github" not in load_registry().names_for("lead")
     assert "github" in load_registry().names_for("worker")
     assert "worker-only tool" in LEAD_INSTRUCTIONS
-    assert "GitHub repositories" in LEAD_INSTRUCTIONS
+    assert "GitHub" in LEAD_INSTRUCTIONS and "repositories" in LEAD_INSTRUCTIONS
     assert "Do not use the CLI's own sub-agent tooling" not in LEAD_INSTRUCTIONS

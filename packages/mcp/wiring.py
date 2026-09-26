@@ -87,7 +87,7 @@ def resolve_for_role(
     if token:
         servers = [
             replace(server, env={**server.env, "ANA_GATE_TOKEN": token})
-            if server.name == "ask" else server
+            if server.name in {"ask", "delegate"} else server
             for server in servers
         ]
     return servers, skipped

@@ -170,6 +170,56 @@ def test_native_subagent_lifecycle_is_streamed(client):
     assert sent[-1]["task"]["output"] == "done"
 
 
+def test_native_subagent_card_uses_the_agent_call_description(client):
+    sent: list = []
+    session = _register(client, "native-title", sent)
+    session.current_agent = "claude"
+    call = client.post(
+        "/gate/tool-call",
+        headers={"x-ana-gate-token": session.token},
+        json={"tool_name": "Agent", "tool_input": {
+            "description": "GitHub 저장소 목록 조회", "prompt": "List repositories",
+            "subagent_type": "general-purpose"}, "role": "lead"},
+    )
+    assert call.json()["decision"] == "allow"
+    started = client.post(
+        "/gate/subagent",
+        headers={"x-ana-gate-token": session.token},
+        json={"event": "SubagentStart", "agent_id": "child-1",
+              "agent_type": "general-purpose"},
+    )
+    assert started.json() == {"ok": True}
+    assert sent[-1]["task"]["title"] == "GitHub 저장소 목록 조회"
+
+
+def test_delegate_endpoint_runs_the_bound_worker(client):
+    session = _register(client, "routed-worker", [])
+    called = []
+
+    async def delegate(title, prompt):
+        called.append((title, prompt))
+        return {"status": "done", "output": "저장소 3개", "agent": "codex"}
+
+    session.delegate_worker = delegate
+    response = client.post(
+        "/gate/delegate", headers={"x-ana-gate-token": session.token},
+        json={"title": "저장소 조회", "prompt": "List repositories"},
+    )
+    assert response.json() == {"status": "done", "output": "저장소 3개", "agent": "codex"}
+    assert called == [("저장소 조회", "List repositories")]
+
+
+def test_lead_can_call_delegate_mcp_but_worker_cannot(client):
+    session = _register(client, "delegate-scope", [])
+    headers = {"x-ana-gate-token": session.token}
+    body = {"tool_name": "mcp__delegate__run_task",
+            "tool_input": {"title": "저장소 조회", "prompt": "List repositories"}}
+    lead = client.post("/gate/tool-call", headers=headers, json={**body, "role": "lead"})
+    worker = client.post("/gate/tool-call", headers=headers, json={**body, "role": "worker"})
+    assert lead.json()["decision"] == "allow"
+    assert worker.json()["rule_id"] == "mcp-scope"
+
+
 def test_denied_command_is_blocked_with_its_rule(client, prepared_pool):
     session = _register(client, "gate-2", [])
 
