@@ -5,6 +5,7 @@ import textwrap
 import pytest
 
 from packages.mcp.registry import Registry, load_registry
+from packages.orchestrator.settings import LEAD_INSTRUCTIONS
 
 SAMPLE = textwrap.dedent(
     """
@@ -121,3 +122,11 @@ def test_shipped_registry_exposes_read_tools_to_lead():
     registry = load_registry()
     assert set(registry.names_for("lead")) == {"git", "postgres", "ask", "schedule"}
     assert set(registry.names_for("worker")) == {"git", "postgres", "github", "ask"}
+
+
+def test_lead_is_told_to_delegate_worker_only_github_requests():
+    assert "github" not in load_registry().names_for("lead")
+    assert "github" in load_registry().names_for("worker")
+    assert "worker-only tool" in LEAD_INSTRUCTIONS
+    assert "GitHub repositories" in LEAD_INSTRUCTIONS
+    assert "Do not use the CLI's own sub-agent tooling" not in LEAD_INSTRUCTIONS
