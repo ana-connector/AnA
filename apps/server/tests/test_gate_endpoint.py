@@ -196,8 +196,8 @@ def test_delegate_endpoint_runs_the_bound_worker(client):
     session = _register(client, "routed-worker", [])
     called = []
 
-    async def delegate(title, prompt):
-        called.append((title, prompt))
+    async def delegate(title, prompt, task_id):
+        called.append((title, prompt, task_id))
         return {"status": "done", "output": "저장소 3개", "agent": "codex"}
 
     session.delegate_worker = delegate
@@ -206,7 +206,14 @@ def test_delegate_endpoint_runs_the_bound_worker(client):
         json={"title": "저장소 조회", "prompt": "List repositories"},
     )
     assert response.json() == {"status": "done", "output": "저장소 3개", "agent": "codex"}
-    assert called == [("저장소 조회", "List repositories")]
+    assert called == [("저장소 조회", "List repositories", "")]
+
+    polled = client.post(
+        "/gate/delegate", headers={"x-ana-gate-token": session.token},
+        json={"task_id": "existing-task"},
+    )
+    assert polled.status_code == 200
+    assert called[-1] == ("", "", "existing-task")
 
 
 def test_lead_can_call_delegate_mcp_but_worker_cannot(client):

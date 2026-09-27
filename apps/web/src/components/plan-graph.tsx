@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useTheme } from "next-themes";
 import {
   Background,
   Controls,
   Position,
   ReactFlow,
+  useNodesInitialized,
+  useReactFlow,
   type Edge,
   type Node,
 } from "@xyflow/react";
@@ -60,6 +62,35 @@ function nodeStyle(status?: SubagentTask["status"]): React.CSSProperties {
   return base;
 }
 
+function FitWhenReady({ container, taskIds }: {
+  container: RefObject<HTMLDivElement | null>;
+  taskIds: string;
+}) {
+  const flow = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
+
+  useEffect(() => {
+    if (!nodesInitialized || !container.current) return;
+    const element = container.current;
+    let fitted = false;
+    let frame = 0;
+    const fit = () => {
+      if (fitted || element.clientWidth === 0 || element.clientHeight === 0) return;
+      fitted = true;
+      frame = requestAnimationFrame(() => { void flow.fitView({ padding: 0.16 }); });
+    };
+    // The scroller can mount the graph before it has a width. React Flow's
+    // one-time fitView then runs against a zero-size viewport and leaves the
+    // live graph blank until a reload. Fit after both nodes and size exist.
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    fit();
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [container, flow, nodesInitialized, taskIds]);
+
+  return null;
+}
+
 /** The plan as a graph, drawn as it happens: the lead, its tasks, and the
  *  order they run in. A task that waits for another is drawn behind it rather
  *  than beside it, because "these two are parallel and that one is next" is
@@ -89,6 +120,7 @@ export function PlanGraph({
 }) {
   const { resolvedTheme } = useTheme();
   const [toggled, setToggled] = useState<boolean | null>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const open = toggled ?? (autoCollapse ? false : defaultOpen);
   const running = plan.tasks.filter((task) => task.status === "running").length;
   const done = plan.tasks.filter((task) => task.status === "done").length;
@@ -213,11 +245,10 @@ export function PlanGraph({
       {/* Draggable and pannable: the layout is ANA's guess at a readable
           arrangement, and the person reading it is allowed to disagree —
           especially once the fan-out is wide enough that nodes overlap. */}
-      <div className="w-full" style={{ height: canvasHeight }}>
+      <div ref={canvasRef} className="w-full" style={{ height: canvasHeight }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
-          fitView
           // React Flow ships its own dark palette; without this the canvas and
           // the controls stay light-mode while the app is dark.
           colorMode={resolvedTheme === "dark" ? "dark" : "light"}
@@ -238,6 +269,7 @@ export function PlanGraph({
           minZoom={0.2}
           maxZoom={2}
         >
+          <FitWhenReady container={canvasRef} taskIds={plan.tasks.map((task) => task.id).join("|")} />
           <Background gap={16} size={1} />
           <Controls showInteractive={false} className="!shadow-none" />
         </ReactFlow>

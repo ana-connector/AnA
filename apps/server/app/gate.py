@@ -129,8 +129,9 @@ class SubagentEvent(BaseModel):
 
 
 class DelegateRequest(BaseModel):
-    title: str
-    prompt: str
+    title: str = ""
+    prompt: str = ""
+    task_id: str = ""
 
 
 @router.post("/gate/delegate")
@@ -144,9 +145,11 @@ async def gate_delegate(
         raise HTTPException(status_code=403, detail="unknown gate token")
     if session.delegate_worker is None:
         raise HTTPException(status_code=409, detail="no worker runner for this session")
-    if not body.title.strip() or not body.prompt.strip():
+    if not body.task_id and (not body.title.strip() or not body.prompt.strip()):
         raise HTTPException(status_code=422, detail="title and prompt are required")
-    return await session.delegate_worker(body.title.strip()[:120], body.prompt.strip())
+    return await session.delegate_worker(
+        body.title.strip()[:120], body.prompt.strip(), body.task_id.strip()
+    )
 
 
 @router.post("/gate/subagent")

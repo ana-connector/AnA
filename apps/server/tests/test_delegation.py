@@ -7,7 +7,32 @@ from packages.governance.secrets import Secret
 from packages.orchestrator.activity import ActivityTracker
 from packages.orchestrator import context as shared_context
 from packages.orchestrator.context import SharedContext
-from apps.server.app.delegation import run_routed_task
+from apps.server.app.delegation import DelegationManager, run_routed_task
+
+
+async def test_long_delegation_poll_and_retry_keep_one_worker():
+    finished = asyncio.Event()
+    active: set[asyncio.Task] = set()
+    manager = DelegationManager(active, poll_seconds=0.01)
+    starts = 0
+
+    async def worker():
+        nonlocal starts
+        starts += 1
+        await finished.wait()
+        return {"status": "done", "output": "completed"}
+
+    first = await manager.request(1, "작업", "same prompt", worker)
+    retry = await manager.request(1, "작업", "same prompt", worker)
+    assert first == retry
+    assert first["status"] == "running"
+    assert starts == 1
+
+    finished.set()
+    result = await manager.request(1, "", "", worker, first["task_id"])
+    assert result == {"status": "done", "output": "completed", "task_id": first["task_id"]}
+    assert (await manager.request(1, "작업", "same prompt", worker)) == result
+    assert starts == 1
 
 
 class FakeUsage:

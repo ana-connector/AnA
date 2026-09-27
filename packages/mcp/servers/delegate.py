@@ -10,17 +10,19 @@ TOOL = {
     "description": (
         "Run one delegated task with ANA's worker routing. Use this for tasks "
         "that need a worker-only MCP server, or whenever the worker model "
-        "ladder should choose the sub-agent. Wait for the result and answer "
-        "the user in Korean. Write a short Korean title and a self-contained "
-        "English prompt."
+        "ladder should choose the sub-agent. Start with a short Korean title "
+        "and a self-contained English prompt. If the result says running, "
+        "call this same tool again with its task_id until it returns done or "
+        "error. Never start a second task for the same work."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
             "title": {"type": "string", "description": "Short task title in Korean"},
             "prompt": {"type": "string", "description": "Self-contained worker instruction"},
+            "task_id": {"type": "string", "description": "ID returned while running; resumes waiting for that same task"},
         },
-        "required": ["title", "prompt"],
+        "required": [],
     },
 }
 
@@ -45,12 +47,13 @@ def _timeout() -> float:
 def _call(arguments: dict) -> dict:
     title = str(arguments.get("title") or "").strip()
     prompt = str(arguments.get("prompt") or "").strip()
-    if not title or not prompt:
-        return {"content": [{"type": "text", "text": "title and prompt are required"}], "isError": True}
+    task_id = str(arguments.get("task_id") or "").strip()
+    if not task_id and (not title or not prompt):
+        return {"content": [{"type": "text", "text": "title and prompt, or task_id, are required"}], "isError": True}
     request = urllib.request.Request(
         (os.environ.get("ANA_GATE_URL") or "http://127.0.0.1:8000").rstrip("/")
         + "/gate/delegate",
-        data=json.dumps({"title": title, "prompt": prompt}).encode("utf-8"),
+        data=json.dumps({"title": title, "prompt": prompt, "task_id": task_id}).encode("utf-8"),
         headers={
             "content-type": "application/json",
             "x-ana-gate-token": os.environ.get("ANA_GATE_TOKEN", ""),
@@ -65,13 +68,19 @@ def _call(arguments: dict) -> dict:
     # An error carries the worker's partial output when it left any: a worker
     # ANA gave up on has usually done real work, and "failed" on its own is what
     # sent the lead off to repeat it.
-    if result.get("status") == "done":
+    if result.get("status") == "running":
+        message = (
+            f"하위 작업이 진행 중입니다. task_id={result['task_id']}. "
+            "새 작업을 만들지 말고 같은 도구를 이 task_id로 다시 호출해 결과를 기다리세요."
+        )
+    elif result.get("status") == "done":
         message = result.get("output") or "Worker returned no output"
     else:
         message = "\n\n".join(
             part for part in (result.get("error"), result.get("output")) if part
         ) or "Worker returned no output"
-    return {"content": [{"type": "text", "text": message}], "isError": result.get("status") != "done"}
+    return {"content": [{"type": "text", "text": message}],
+            "isError": result.get("status") not in ("running", "done")}
 
 
 def handle(message: dict) -> dict | None:
