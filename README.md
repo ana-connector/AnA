@@ -632,3 +632,7 @@ python -m venv .venv && .venv/bin/pip install -r apps/server/requirements.txt
 The suite starts a throwaway `pgvector/pgvector:pg16` container, so a working
 Docker daemon is required. Adapter tests run against fake CLIs
 (`apps/server/tests/fixtures/`) and never call a real model.
+
+## License
+
+ANA is licensed under the [GNU General Public License v3.0](LICENSE).
