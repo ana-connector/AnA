@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   fetchWorkspaceCapabilities,
   fetchWorkspaces,
@@ -18,6 +20,7 @@ import { notify } from "@/lib/notify";
  *  which keeps the list itself to one line per project. */
 export default function WorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const [workspace, setWorkspace] = useState<WorkspaceSummary | null | undefined>(undefined);
   const [selfWorkspaceId, setSelfWorkspaceId] = useState<string | null>(null);
 
@@ -53,8 +56,8 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
             다른 워크스페이스를 고르거나 새로 만드세요.
           </AlertDescription>
         </Alert>
-        <Button size="sm" variant="outline" render={<a href="/" />} className="w-fit">
-          채팅으로 돌아가기
+        <Button size="sm" variant="outline" render={<Link href="/" />} className="w-fit">
+          시작 페이지로 돌아가기
         </Button>
       </PageShell>
     );
@@ -84,7 +87,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
           if (window.localStorage.getItem("ana_thread_id") === workspace.id) {
             window.localStorage.removeItem("ana_thread_id");
           }
-          window.location.href = "/";
+          router.push("/");
         }}
       />
     </PageShell>

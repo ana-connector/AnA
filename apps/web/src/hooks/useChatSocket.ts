@@ -259,7 +259,7 @@ function isAgentName(value: string): value is Agent {
   return (AGENTS as readonly string[]).includes(value);
 }
 
-export function useChatSocket() {
+export function useChatSocket(initialThreadId: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -304,11 +304,6 @@ export function useChatSocket() {
   // A workspace owns exactly one conversation, so its name is the name of the
   // conversation too.
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
-  // What the next connection should ask for: a specific thread, or null to let
-  // the server mint one. Changing it is what switches conversations.
-  const [requestedThreadId, setRequestedThreadId] = useState<string | null | undefined>(
-    undefined
-  );
 
   const socketRef = useRef<WebSocket | null>(null);
   // Total number of messages appended so far, kept in sync by hand next to
@@ -340,22 +335,10 @@ export function useChatSocket() {
   // Mirrors `models` for the onmessage handler, which needs the current value
   // synchronously rather than after a render.
   const modelsRef = useRef<Record<string, string>>({});
-  // The conversation the socket is actually on. Distinct from
-  // `requestedThreadId` (which only triggers the effect): when the server mints
-  // an id for a brand-new conversation, a later reconnect has to reuse *that*
-  // id, or a dropped connection would silently start yet another thread.
-  const activeThreadRef = useRef<string | null>(null);
-
-  // Resolved once on mount: which conversation to open first.
-  useEffect(() => {
-    const stored = window.localStorage.getItem(THREAD_STORAGE_KEY);
-    activeThreadRef.current = stored;
-    setRequestedThreadId(stored);
-  }, []);
+  // The URL chooses the conversation. Keep the connected id for reconnects.
+  const activeThreadRef = useRef<string | null>(initialThreadId);
 
   useEffect(() => {
-    if (requestedThreadId === undefined) return; // still resolving from storage
-
     let disposed = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // Grows per failed attempt so a server that is down does not get hammered,
@@ -997,7 +980,7 @@ export function useChatSocket() {
       if (retryTimer !== null) clearTimeout(retryTimer);
       socketRef.current?.close();
     };
-  }, [requestedThreadId]);
+  }, [initialThreadId]);
 
   const sendMessage = useCallback(
     (text: string, agent: Agent | "auto") => {
@@ -1070,47 +1053,6 @@ export function useChatSocket() {
     setApprovals((prev) => prev.filter((a) => a.request_id !== requestId));
   }, []);
 
-  /** Opens another workspace's conversation, or a brand new one when `id` is
-   *  null. The socket and the transcript are both rebuilt, since each
-   *  workspace has its own CLI sessions, folder and history. */
-  const openThread = useCallback((id: string | null) => {
-    setConnected(false);
-    socketRef.current?.close();
-    socketRef.current = null;
-    messageCountRef.current = 0;
-    agentMessageIndexRef.current = null;
-    // Held thinking belongs to the turn it arrived in: left behind, it used to
-    // be attached to the first reply of the conversation being opened.
-    pendingReasoningRef.current = "";
-    turnStartRef.current = null;
-    setLoadingHistory(true);
-    setMessages([]);
-    setApprovals([]);
-    setQuestions([]);
-    setPlan(null);
-    planRef.current = null;
-    // The previous conversation's planning result and route would otherwise
-    // stay on screen: "대장이 직접 답했습니다" above an empty transcript, and a
-    // model badge for a turn this workspace never ran.
-    setPlanOutcome(null);
-    setRoute(null);
-    setStatus(null);
-    setUsage({ totalCostUsd: 0, totalTokens: 0 });
-    setHasUnpricedUsage(false);
-    setWorkspace(null);
-    setWorkspaceName(null);
-    setStreaming(false);
-    activeThreadRef.current = id;
-    setThreadId(id);
-    if (id) window.localStorage.setItem(THREAD_STORAGE_KEY, id);
-    else window.localStorage.removeItem(THREAD_STORAGE_KEY);
-    // A new thread id is minted by the server; passing a fresh random string
-    // instead would create the row before the first turn exists.
-    // Bumped even when the id is unchanged so the effect re-runs and rebuilds
-    // the socket; the value itself is only a trigger (see activeThreadRef).
-    setRequestedThreadId((prev) => (prev === id ? `${id ?? ""}#${Date.now()}` : id));
-  }, []);
-
   return {
     messages,
     connected,
@@ -1134,6 +1076,5 @@ export function useChatSocket() {
     cancel,
     answerApproval,
     answerQuestion,
-    openThread,
   };
 }

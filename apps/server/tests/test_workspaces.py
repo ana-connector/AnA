@@ -424,6 +424,15 @@ async def test_the_self_workspace_id_is_reserved(workspace_pool, tmp_path, monke
     assert created.id != SELF_WORKSPACE_ID
 
 
+@pytest.mark.asyncio
+async def test_web_page_paths_are_reserved_for_session_urls(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+
+    created = await create_workspace(workspace_pool, name="settings")
+
+    assert created.id == "settings-2"
+
+
 def test_capabilities_report_the_self_workspace(client, tmp_path, monkeypatch):
     payload = client.get("/workspaces/capabilities").json()
     assert "containers" in payload

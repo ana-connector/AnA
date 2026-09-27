@@ -1,6 +1,8 @@
 "use client";
 
 import { type ReactNode } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { SessionSidebar } from "@/components/session-sidebar";
 import {
   Breadcrumb,
@@ -37,10 +39,11 @@ export function PageShell({
   center?: boolean;
   children: ReactNode;
 }) {
+  const router = useRouter();
   const openWorkspace = (id: string | null) => {
     if (id) window.localStorage.setItem("ana_thread_id", id);
     else window.localStorage.removeItem("ana_thread_id");
-    window.location.href = "/";
+    router.push(id ? `/${encodeURIComponent(id)}` : "/");
   };
 
   return (
@@ -62,7 +65,7 @@ export function PageShell({
           <Breadcrumb>
             <BreadcrumbList>
               <BreadcrumbItem className="hidden sm:block">
-                <BreadcrumbLink href="/">AnA</BreadcrumbLink>
+                <BreadcrumbLink render={<Link href="/" />}>AnA</BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator className="hidden sm:block" />
               <BreadcrumbItem>
