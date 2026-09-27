@@ -918,6 +918,12 @@ async def _build_runner(
             workspace_dir=workspace_dir, usage_tracker=app.state.usage_tracker,
             native_agents=gate_session.native_agents, send=gate_session.send,
             secrets=registered_secrets,
+            # Same clock the gate touches on every tool call: what ends a
+            # delegated worker is silence, not a fixed budget.
+            activity=gate_session.activity,
+            # Names the worker's branch and worktree, so two browser tabs on the
+            # same workspace cannot pick the same one.
+            thread_id=thread_id,
         )
 
     gate_session.delegate_worker = delegate_worker

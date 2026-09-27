@@ -21,6 +21,14 @@ SYSTEM_PROMPT_FILENAME = "system_prompt.txt"
 ROUTING_FILENAME = "routing.yaml"
 AUTH_MODE_FILENAME = "claude_auth_mode.txt"
 AUTH_MODES = ("pro", "api")
+GOVERNANCE_MODE_FILENAME = "governance_mode.txt"
+# "normal" asks the user whatever config/governance.yaml says to ask about.
+# "yolo" answers those approvals with "allow" on the user's behalf. Neither
+# touches the `deny` rules, the secret scan, or workspace and sub-agent scope:
+# what YOLO removes is the human from the loop, not the floor under it.
+NORMAL_MODE = "normal"
+YOLO_MODE = "yolo"
+GOVERNANCE_MODES = (NORMAL_MODE, YOLO_MODE)
 
 
 def state_dir() -> Path:
@@ -193,6 +201,55 @@ def write_auth_mode(mode: str) -> None:
     if mode not in AUTH_MODES:
         raise ValueError(f"unknown auth mode: {mode!r}")
     auth_mode_path().write_text(mode, encoding="utf-8")
+
+
+def governance_mode_path() -> Path:
+    return state_dir() / GOVERNANCE_MODE_FILENAME
+
+
+def _governance_mode_file() -> Path:
+    """The same path, without creating the state directory.
+
+    Reading the mode happens on *every tool call*, including ones whose state
+    directory does not exist and cannot be created — a container whose
+    ANA_STATE_DIR points somewhere unwritable. Creating a directory is not
+    something a read should do, and doing it here turned an unwritable path
+    into a failed tool call instead of a mode of "normal"."""
+    return Path(os.environ.get("ANA_STATE_DIR", os.path.expanduser("~/.ana"))) / (
+        GOVERNANCE_MODE_FILENAME
+    )
+
+
+def read_governance_mode() -> str:
+    """Whether approvals still reach a human.
+
+    Read per tool call rather than cached at startup, like the rule set itself:
+    turning YOLO off has to take effect on the *next* call, not at the next
+    restart — that is the whole reason a mode like this can be offered at all.
+
+    The stored file wins over ANA_GOVERNANCE_MODE so a change made in the UI
+    outlives a container restart; the environment variable is the deployment's
+    starting position."""
+    try:
+        stored = _governance_mode_file().read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        stored = ""  # no file yet, or a state directory this process cannot read
+    if stored in GOVERNANCE_MODES:
+        return stored
+    configured = (os.environ.get("ANA_GOVERNANCE_MODE") or "").strip().lower()
+    return configured if configured in GOVERNANCE_MODES else NORMAL_MODE
+
+
+def write_governance_mode(mode: str) -> None:
+    normalized = (mode or "").strip().lower()
+    if normalized not in GOVERNANCE_MODES:
+        raise ValueError(f"unknown governance mode: {mode!r}")
+    governance_mode_path().write_text(normalized, encoding="utf-8")
+
+
+def yolo() -> bool:
+    """Whether the gate should approve on the user's behalf."""
+    return read_governance_mode() == YOLO_MODE
 
 
 def system_prompt_path() -> Path:

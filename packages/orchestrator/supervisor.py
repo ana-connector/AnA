@@ -1,11 +1,18 @@
 """Supervises the worker fan-out.
 
 Owns the four things that make parallel sub-agents safe to run: a concurrency
-cap, a per-task timeout, error isolation — one worker failing is a task
-result, not a turn failure — and the order the plan asked for. Cancellation
-propagates: a cancelled turn kills every worker subprocess it started, because
-an orphaned CLI keeps working (and billing) against a conversation nobody is
-watching.
+cap, a give-up rule, error isolation — one worker failing is a task result, not
+a turn failure — and the order the plan asked for. Cancellation propagates: a
+cancelled turn kills every worker subprocess it started, because an orphaned
+CLI keeps working (and billing) against a conversation nobody is watching.
+
+The give-up rule is about *silence*, not elapsed time. A wall clock gets both
+cases wrong: it kills a worker that is thirty minutes into real work three
+commands from finishing, and it waits the full budget on one that died quietly
+in its first second. What separates those two is whether anything is happening
+— a tool call, a line of output — so that is what is watched
+(packages/orchestrator/activity.py). The wall clock remains available as an
+opt-in ceiling and is off by default.
 
 Tasks form a graph, not a single parallel round. Each task names the tasks it
 `needs`; a task starts when all of them are done, tasks with nothing to wait
@@ -19,6 +26,12 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
+from packages.orchestrator.activity import (
+    ActivityTracker,
+    IdleTimeout,
+    WallTimeout,
+    supervise,
+)
 from packages.orchestrator.planner import PlanTask
 
 RUNNING = "running"
@@ -28,6 +41,8 @@ TIMEOUT = "timeout"
 # Never started: something it waited for did not finish.
 BLOCKED = "blocked"
 
+# Kept for callers that still import it; the fan-out no longer imposes a wall
+# clock of its own (see the module docstring).
 DEFAULT_TIMEOUT_SECONDS = 600.0
 
 
@@ -49,6 +64,10 @@ class TaskResult:
     # its branch. Both are None when the task asked for neither.
     verification: Optional[dict] = None
     merge: Optional[dict] = None
+    # The gate-screened calls this worker made and its own narration, in order,
+    # so one sub-agent's record reads the way the lead's transcript does.
+    tools: list = field(default_factory=list)
+    blocks: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -67,6 +86,8 @@ class TaskResult:
             "model": self.model,
             "verification": self.verification,
             "merge": self.merge,
+            "tools": self.tools,
+            "blocks": self.blocks,
         }
 
 
@@ -97,10 +118,18 @@ async def run_tasks(
     run_worker: RunWorker,
     *,
     max_concurrency: int = 5,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float = 0.0,
+    idle_timeout_seconds: float = 0.0,
+    tracker: Optional[ActivityTracker] = None,
+    key_for: Optional[Callable[[PlanTask], str]] = None,
     on_update: Optional[OnUpdate] = None,
 ) -> list[TaskResult]:
     """Runs every task, at most `max_concurrency` at a time.
+
+    `idle_timeout_seconds` gives up on a task that stops doing anything, judged
+    by the activity `tracker`; `timeout_seconds` is an optional hard ceiling on
+    total runtime and is off (0) unless a caller asks for one. With neither, a
+    task runs until it finishes.
 
     Returns one result per task, in the order the tasks were planned, whatever
     happened to each — the synthesis step needs to see the failures too."""
@@ -125,12 +154,30 @@ async def run_tasks(
             # Reported inside the semaphore, so "running" in the UI means
             # actually running rather than queued behind the cap.
             result.status = RUNNING
+            key = key_for(result.task) if key_for else result.task.id
+            if tracker is not None:
+                # Started before the worker runs: a CLI that dies before its
+                # first tool call still needs a clock to be judged by.
+                tracker.start(key)
             await notify(result)
             try:
                 upstream = [by_id[need] for need in waiting_on[result.task.id]]
-                run = await asyncio.wait_for(
-                    run_worker(result.task, upstream), timeout=timeout_seconds
+                run = await supervise(
+                    run_worker(result.task, upstream),
+                    tracker=tracker,
+                    key=key,
+                    idle_timeout=idle_timeout_seconds,
+                    wall_timeout=timeout_seconds,
                 )
+            except IdleTimeout as idle:
+                result.status = TIMEOUT
+                # Named, because the two ways out are acted on differently: a
+                # worker that went quiet is a failure to report, one that hit a
+                # ceiling may just need a bigger one.
+                result.error = f"{idle.idle_for:.0f}초 동안 아무 활동이 없어 중단했다"
+            except WallTimeout as wall:
+                result.status = TIMEOUT
+                result.error = f"{wall.ran_for:.0f}s 안에 끝나지 않음"
             except asyncio.TimeoutError:
                 result.status = TIMEOUT
                 result.error = f"{timeout_seconds:.0f}s 안에 끝나지 않음"
@@ -150,6 +197,8 @@ async def run_tasks(
                 result.agent = run.extras.get("agent") or result.agent
                 result.verification = run.extras.get("verification")
                 result.merge = run.extras.get("merge")
+                result.tools = run.extras.get("tools") or result.tools
+                result.blocks = run.extras.get("blocks") or result.blocks
                 if run.failed or run.error:
                     result.status = ERROR
                     result.error = run.error or "서브에이전트가 실패를 보고함"
@@ -168,6 +217,8 @@ async def run_tasks(
                     )
                 else:
                     result.status = DONE
+            if tracker is not None:
+                tracker.forget(key)
             await notify(result)
 
     pending = {result.task.id for result in results}

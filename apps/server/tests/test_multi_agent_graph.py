@@ -293,6 +293,7 @@ async def test_worker_tokens_are_attributed_to_the_worker_model(db_pool):
 
 @pytest.mark.asyncio
 async def test_bad_verify_command_does_not_repeat_worker(db_pool, tmp_path):
+    await run_workspace_migrations(db_pool)
     lead = ScriptedAdapter([
         '{"mode":"delegate","tasks":[{"title":"구현","prompt":"build site",'
         '"verify":"Verify that the site works"}]}',
@@ -725,3 +726,70 @@ async def test_a_streaming_planner_is_not_cut_off_at_the_timeout(db_pool, monkey
     # The plan it streamed was used, so the turn answered rather than failing over.
     assert values["response_text"]
     assert not [f for f in frames if f["type"] == "failover"]
+
+
+@pytest.mark.asyncio
+async def test_shared_context_is_read_once_and_given_to_every_worker(db_pool, tmp_path):
+    """The plan's `context` reaches all workers, so none of them re-reads it.
+
+    Five sub-agents given five slices of one job used to each open the same
+    files to find out what they were looking at."""
+    (tmp_path / "routing.py").write_text("def decide():\n    return 1\n", encoding="utf-8")
+    plan = (
+        '{"mode": "delegate",'
+        ' "context": {"files": ["routing.py"], "notes": "decide() returns a Rung."},'
+        ' "tasks": [{"title": "구현", "prompt": "구현해라"},'
+        ' {"title": "리뷰", "prompt": "리뷰해라"}]}'
+    )
+    await run_workspace_migrations(db_pool)
+    lead = ScriptedAdapter([plan, DONE_JSON, "종합"])
+    workers: list[ScriptedAdapter] = []
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        worker = ScriptedAdapter(["했습니다"], label=f"worker{len(workers)}")
+        workers.append(worker)
+        return worker
+
+    config = _config(db_pool, lead, worker_factory, "shared-context")
+    config["configurable"]["workspace_dir"] = str(tmp_path)
+    await _run(build_graph(InMemorySaver()), config)
+
+    assert len(workers) == 2
+    for worker in workers:
+        assert "[SHARED CONTEXT]" in worker.prompts[0]
+        assert "decide() returns a Rung." in worker.prompts[0]
+        assert "def decide():" in worker.prompts[0]
+    # Each worker still gets its own instruction after the shared part. The two
+    # start together, so which one is built first is not fixed.
+    instructions = {prompt.split("[INSTRUCTION]")[-1].strip() for w in workers
+                    for prompt in w.prompts}
+    assert instructions == {"구현해라", "리뷰해라"}
+
+
+@pytest.mark.asyncio
+async def test_project_notes_the_lead_marked_survive_into_the_next_turn(db_pool, tmp_path):
+    plan = (
+        '{"mode": "delegate",'
+        ' "context": {"notes": "The gate owns path confinement.", "remember": true},'
+        ' "tasks": [{"title": "작업", "prompt": "해라"}]}'
+    )
+    second = '{"mode": "delegate", "tasks": [{"title": "다음", "prompt": "또 해라"}]}'
+    await run_workspace_migrations(db_pool)
+    lead = ScriptedAdapter([plan, DONE_JSON, "종합", second, DONE_JSON, "종합"])
+    workers: list[ScriptedAdapter] = []
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        worker = ScriptedAdapter(["했습니다"], label=f"worker{len(workers)}")
+        workers.append(worker)
+        return worker
+
+    graph = build_graph(InMemorySaver())
+    config = _config(db_pool, lead, worker_factory, "remembered-context")
+    config["configurable"]["workspace_dir"] = str(tmp_path)
+    await _run(graph, config)
+    await _run(graph, config, prompt="다음 작업")
+
+    # The second turn's plan named no context at all; the notes came from the
+    # workspace, which is where a fact about the project belongs.
+    assert "[PROJECT NOTES]" in workers[1].prompts[0]
+    assert "The gate owns path confinement." in workers[1].prompts[0]

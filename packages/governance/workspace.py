@@ -35,6 +35,17 @@ _IGNORED_PREFIXES = (
     "/dev/null",
     "/dev/stdout",
     "/dev/stderr",
+    # Not files: bash's own networking and the character devices a script
+    # redirects to. `echo > /dev/tcp/127.0.0.1/8430` is how an agent checks
+    # whether a port is taken, and it produced an approval card about touching
+    # something outside the workspace.
+    "/dev/tcp",
+    "/dev/udp",
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/fd",
+    "/dev/tty",
     "/etc/ssl",
 )
 
@@ -46,6 +57,34 @@ _TEMP_PREFIXES = ("/tmp", "/var/tmp")
 # exemptions, and reaching into a private name across modules is how two
 # copies of a list start to drift.
 IGNORED_PREFIXES = _IGNORED_PREFIXES
+
+
+def agent_state_prefixes() -> tuple[str, ...]:
+    """Where a CLI keeps its own logs, and its package manager keeps theirs.
+
+    Exempt from workspace confinement *for reads only* (see the caller in
+    apps/server/app/gate.py), because an agent reading its own diagnostics is
+    not an agent reaching into someone else's work. Kimi drives this: it runs
+    long commands as background tasks and reads their output back out of
+    `$KIMI_CODE_HOME/sessions/.../tasks/<id>/output.log`, so *every* background
+    command it ran produced an approval card, and an npm failure it wanted the
+    debug log for produced two more. Two of those cards were answered by nobody
+    and denied on the 5-minute approval timeout, spending ten minutes of that
+    worker's turn on reading two log files it was always going to be allowed to
+    read."""
+    home = os.path.expanduser("~")
+    return tuple(
+        path
+        for path in (
+            os.environ.get("ANA_STATE_DIR") or os.path.join(home, ".ana"),
+            os.environ.get("KIMI_CODE_HOME") or os.path.join(home, ".kimi-code"),
+            os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"),
+            os.path.join(home, ".npm", "_logs"),
+            os.path.join(home, ".cache"),
+            os.path.join(home, ".local", "state"),
+        )
+        if path
+    )
 
 
 def is_ignored_system_path(path: str) -> bool:
@@ -123,11 +162,30 @@ def extract_paths(tool_input: dict) -> list[str]:
             # Accept path operands and option assignments, not arbitrary slash
             # fragments in URLs, regexes, markup, or quoted output strings.
             candidate = token.split("=", 1)[-1] if "=" in token else token
+            # Shell grouping travels with the token — `2>/dev/null)` — and a
+            # trailing bracket is what kept `/dev/null` from matching the list
+            # of paths that are not worth asking about.
+            candidate = candidate.rstrip(")};,'\"")
             if candidate.startswith("@/"):
                 candidate = candidate[1:]
+            if _is_glob_root(candidate):
+                continue
             if candidate.startswith(("/", "~/")) and not candidate.startswith("//"):
                 paths.append(candidate)
     return paths
+
+
+def _is_glob_root(candidate: str) -> bool:
+    """Whether this looks like a pattern rooted at `/` rather than a path.
+
+    `--import-alias "@/*"` is in every `create-next-app` invocation, and it
+    reached this function as the path `/*`: the whole filesystem, escalated to a
+    human, twice per scaffolded project. A glob in a *later* segment is still a
+    path worth checking — `/etc/*.conf` names /etc."""
+    if not candidate.startswith("/"):
+        return False
+    first = candidate[1:].split("/", 1)[0]
+    return any(char in first for char in "*?[")
 
 
 def _normalize(path: str) -> str:

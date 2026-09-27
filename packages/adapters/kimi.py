@@ -28,16 +28,26 @@ sub-agent lifecycle events here because Kimi does not send SubagentStart/Stop
 hooks to ANA for its swarm children.
 """
 import asyncio
+import contextlib
 import json
 import os
+import signal
+import time
 from typing import AsyncIterator, Optional
 
 from packages.adapters.base import AdapterEvent, AgentAdapter
-from packages.observability.kimi_usage import read_session_tokens
+from packages.observability.kimi_usage import read_last_error, read_session_tokens
 
 
 class KimiAdapter(AgentAdapter):
     """Wraps the `kimi` CLI as a one-subprocess-per-turn adapter."""
+
+    # How long output written around the CLI's exit is still waited for. Short
+    # on purpose: past this point what is left on the pipe belongs to a child
+    # that outlived its parent, not to the turn.
+    EXIT_GRACE_SECONDS = 2.0
+    # How often the CLI's liveness is rechecked while a read is outstanding.
+    POLL_SECONDS = 0.1
 
     def __init__(
         self,
@@ -95,10 +105,19 @@ class KimiAdapter(AgentAdapter):
             *args,
             cwd=self.workspace_dir,
             env=self.env,
+            # DEVNULL for the same reason as CodexAdapter: an inherited stdin
+            # is a pipe nobody writes to, and a CLI that decides to read it
+            # waits for input that never comes.
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=10 * 1024 * 1024,  # same rationale as the other adapters: a
             # single JSONL line carries a whole assistant message.
+            # Its own process group, so terminate() can take the MCP servers
+            # and shells kimi spawned with it. Those children inherit this
+            # process's stdout and stderr, and an orphan holding the write end
+            # open is what used to keep the stream below from ever ending.
+            start_new_session=True,
         )
 
         assert self._process.stdout is not None
@@ -115,7 +134,7 @@ class KimiAdapter(AgentAdapter):
         answer: list[str] = []
         swarms: dict[str, list[dict]] = {}
 
-        async for raw_line in self._process.stdout:
+        async for raw_line in self._readlines():
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -171,17 +190,34 @@ class KimiAdapter(AgentAdapter):
                 answer.append(parsed.text)
             yield parsed
 
-        stderr_bytes = await stderr_task if stderr_task is not None else b""
-        return_code = await self._process.wait()
+        # wait() first, and the stderr read second with a bound: an orphaned
+        # child (an MCP server kimi started and did not reap) inherits this
+        # pipe, so reading it to EOF can outlive the CLI by as long as that
+        # child lives. This used to hang the turn here forever, and with the
+        # lead parked on its delegate call the whole task read as "running"
+        # until the lead's own 30-minute HTTP timeout fired.
+        return_code = await self._exit_code()
+        stderr_bytes = await self._drain(stderr_task)
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
 
-        if return_code != 0:
+        # A refused request — an exhausted 5-hour window above all — can leave
+        # the CLI exiting 0 with an empty stream. Reported as an error, because
+        # a silent success is the one outcome the failover ladder cannot act on:
+        # it would hand the lead an empty answer and move on.
+        quiet_failure = ""
+        if return_code == 0 and not answer:
+            quiet_failure = self._log_error(resolved_session_id) or (
+                "Kimi produced no output and reported no result"
+            )
+
+        if return_code != 0 or quiet_failure:
             for tasks in swarms.values():
                 for task in tasks:
                     task.update(status="error", output="Kimi exited before the swarm completed")
                     yield AdapterEvent(type="subagent", raw={"task": dict(task)})
             yield AdapterEvent(
                 type="error",
-                text=stderr_bytes.decode("utf-8", errors="replace"),
+                text="\n".join(part for part in (stderr_text, quiet_failure) if part),
                 session_id=resolved_session_id,
                 is_error=True,
             )
@@ -204,6 +240,80 @@ class KimiAdapter(AgentAdapter):
             is_error=False,
             usage=self._read_usage(resolved_session_id),
         )
+
+    async def _readlines(self) -> AsyncIterator[bytes]:
+        """Stdout, line by line, ending when the CLI does.
+
+        `async for line in process.stdout` ends on EOF, and EOF needs *every*
+        holder of the write end to close it. Kimi starts MCP servers and shells
+        that inherit this pipe, so a child it fails to reap keeps the stream
+        open after the CLI itself is gone: the read never returns and the worker
+        never finishes. `Process.wait()` is no help — asyncio resolves it only
+        once every pipe has disconnected, so it hangs on exactly the same
+        orphan. `Process.returncode` is set as soon as the child is reaped, so
+        that is what this watches, with a short grace period after the exit so
+        output already on the pipe is not thrown away."""
+        assert self._process is not None and self._process.stdout is not None
+        stdout = self._process.stdout
+        while True:
+            read = asyncio.ensure_future(stdout.readline())
+            line = await self._next_line(read)
+            if not line:  # real EOF, or the CLI is gone and nothing followed
+                return
+            yield line
+
+    async def _next_line(self, read: asyncio.Future) -> bytes:
+        """The pending read's line, or b"" once waiting for it is pointless."""
+        exited_at: Optional[float] = None
+        while True:
+            done, _ = await asyncio.wait({read}, timeout=self.POLL_SECONDS)
+            if done:
+                return read.result()
+            if self._process is None or self._process.returncode is None:
+                continue
+            now = time.monotonic()
+            if exited_at is None:
+                exited_at = now
+            elif now - exited_at > self.EXIT_GRACE_SECONDS:
+                read.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await read
+                return b""
+
+    async def _exit_code(self) -> int:
+        """The CLI's exit status, without waiting on its pipes.
+
+        Same reason as _readlines: `wait()` needs every pipe disconnected, and
+        a leaked child holding one would make reading the status outlast the
+        turn. A process that somehow has not been reaped counts as success — the
+        stream already ended, and inventing a failure would fail a turn that
+        produced a real answer."""
+        assert self._process is not None
+        deadline = time.monotonic() + self.EXIT_GRACE_SECONDS
+        while self._process.returncode is None and time.monotonic() < deadline:
+            await asyncio.sleep(self.POLL_SECONDS)
+        return self._process.returncode or 0
+
+    async def _drain(self, stderr_task: Optional[asyncio.Task]) -> bytes:
+        """Stderr, bounded. See the comment at the call site: an orphan holding
+        the pipe open must cost this turn a couple of seconds, not its life."""
+        if stderr_task is None:
+            return b""
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(stderr_task), timeout=self.EXIT_GRACE_SECONDS
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            stderr_task.cancel()
+            return b""
+
+    def _log_error(self, session_id: Optional[str]) -> str:
+        if not session_id:
+            return ""
+        try:
+            return read_last_error(session_id, kimi_home=self.env.get("KIMI_CODE_HOME")) or ""
+        except Exception:  # noqa: BLE001 - diagnosing a failure must not fail
+            return ""
 
     def _read_usage(self, session_id: Optional[str]) -> Optional[dict]:
         if not session_id:
@@ -241,13 +351,36 @@ class KimiAdapter(AgentAdapter):
         return None, session_id
 
     async def terminate(self) -> None:
-        if self._process is not None and self._process.returncode is None:
+        if self._process is None or self._process.returncode is not None:
+            # The CLI is already gone, but the MCP servers and shells it started
+            # may not be: they are in its process group, and an orphan that
+            # keeps running is what leaves `uvx` servers alive for days.
+            self._signal_group(signal.SIGTERM)
+            return
+        # The whole group, not just the CLI: signalling only the parent leaves
+        # its children holding this turn's pipes open.
+        if not self._signal_group(signal.SIGTERM):
             self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+        try:
+            await asyncio.wait_for(self._process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            if not self._signal_group(signal.SIGKILL):
                 self._process.kill()
-                await self._process.wait()
+            await self._process.wait()
+
+    def _signal_group(self, sig: int) -> bool:
+        """Signals the CLI's process group, reporting whether it could.
+
+        False on a platform without process groups, or when the group is
+        already gone — both mean "fall back to signalling the process", not
+        "something went wrong"."""
+        if self._process is None or not hasattr(os, "killpg"):
+            return False
+        try:
+            os.killpg(os.getpgid(self._process.pid), sig)
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
 
 
 def default_executable() -> str:

@@ -16,9 +16,15 @@ from pydantic import BaseModel
 from packages.governance import audit
 from packages.observability.metrics import gate_wait_seconds, record_gate_decision
 from packages.governance.rules import ALLOW, ASK, DENY, Verdict, load_ruleset
-from packages.governance.subagent_scope import Scope, violation as scope_violation
-from packages.governance.workspace import escaping_paths
+from packages.governance.subagent_scope import (
+    Scope,
+    reads_only,
+    violation as scope_violation,
+)
+from packages.governance.workspace import agent_state_prefixes, escaping_paths
 from packages.mcp.registry import load_registry
+from packages.orchestrator import timeline as timeline_blocks
+from packages.orchestrator.settings import yolo as yolo_mode
 from packages.orchestrator.schedules import (
     CronError,
     create_schedule,
@@ -205,6 +211,8 @@ class AskRequest(BaseModel):
     questions: list[Question] = []
     # Which agent is asking, for the card's header.
     role: str | None = None
+    # The sub-agent asking, when it is one. Only used to pause its idle clock.
+    agent_id: str | None = None
 
 
 # A question the user never answered. Returned as a result rather than an
@@ -245,17 +253,23 @@ async def gate_ask(
         raise HTTPException(status_code=422, detail="each question needs two choices or a labelled input")
 
     payload = [q.model_dump() for q in questions]
-    result = await registry.request_answer(
-        session,
-        {
-            "text": "",
-            "session_id": None,
-            "is_error": False,
-            "agent": session.current_agent,
-            "role": body.role or "lead",
-            "questions": payload,
-        },
-    )
+    # Same reason as an approval: the agent is waiting on a person, and a
+    # question can sit unanswered far longer than an approval does.
+    session.activity.hold(body.agent_id)
+    try:
+        result = await registry.request_answer(
+            session,
+            {
+                "text": "",
+                "session_id": None,
+                "is_error": False,
+                "agent": session.current_agent,
+                "role": body.role or "lead",
+                "questions": payload,
+            },
+        )
+    finally:
+        session.activity.release(body.agent_id)
 
     answers = result.value
     answered = answers is not None
@@ -434,6 +448,10 @@ async def gate_tool_call(
         # "discord", not "discord:<user id>" -- because a Prometheus label with
         # one value per person is a cardinality leak.
         record_gate_decision(decision, decided_by.split(":", 1)[0], verdict.rule_id)
+        # A tool call is this sub-agent's proof of life, whatever the verdict
+        # was: a worker whose commands keep being denied is still working, and
+        # the watchdog that gives up on silence must not count it as silent.
+        session.activity.touch(body.agent_id)
         tool_event = {
             "tool_use_id": body.tool_use_id,
             "tool_name": body.tool_name,
@@ -460,6 +478,10 @@ async def gate_tool_call(
                 tools.append(tool_event)
             else:
                 tools[match] = tool_event
+            # And in order, next to what the sub-agent said around them: the
+            # panel that shows one worker's record reads like the lead's
+            # transcript, which needs the interleaving, not two separate lists.
+            timeline_blocks.append_tool(task.setdefault("blocks", []), tool_event)
         if session.timeline is not None:
             session.timeline.append_tool(tool_event)
         # Also shown live in the chat: an agent silently running commands is
@@ -496,7 +518,18 @@ async def gate_tool_call(
     # "outside your workspace" is decided.
     escaping: list[str] = []
     if session.workspace:
-        escaping = escaping_paths(body.tool_input, session.workspace)
+        escaping = escaping_paths(
+            body.tool_input,
+            session.workspace,
+            # An agent reading its own CLI logs (or npm's) is not escaping
+            # anything, and asking about it cost more than it protected — see
+            # agent_state_prefixes(). Writing there still needs a human.
+            extra_allowed=(
+                agent_state_prefixes()
+                if reads_only(body.tool_name, body.tool_input)
+                else ()
+            ),
+        )
 
     if (
         body.tool_name.lower() in NATIVE_DELEGATION_TOOLS
@@ -609,27 +642,54 @@ async def gate_tool_call(
             ),
         )
 
+    # YOLO mode: the user has said in advance that anything ANA would ask
+    # about is approved. Deliberately placed *here*, at the last step before a
+    # human is involved, and nowhere earlier — every `deny` rule, the secret
+    # scan, sub-agent scope and MCP scope have already run and already
+    # returned above. What this removes is the person, not the floor.
+    #
+    # `decided_by` is "yolo", never "user": the audit log has to say that
+    # nobody looked at this. A row claiming a human approved something they
+    # never saw is worse than no row.
+    if yolo_mode():
+        await _audit(ALLOW, "yolo", f"auto-approved in YOLO mode: {verdict.reason}")
+        return GateDecision(
+            decision=ALLOW,
+            reason="auto-approved in YOLO mode",
+            rule_id=verdict.rule_id,
+            category=verdict.category,
+        )
+
     # ASK: record that approval was sought *before* waiting on a human, so an
     # abandoned request is still visible in the log.
     await _audit("pending", "rule", verdict.reason)
     asked_at = time.time()
-    answer = await registry.request_approval(
-        session,
-        {
-            "tool_name": body.tool_name,
-            "tool_input": safe_input,
-            "rule_id": verdict.rule_id,
-            "category": verdict.category,
-            # Why this is being asked, in the words of whoever wrote the rule
-            # (config/governance.yaml). The id and the category are for querying
-            # the audit log afterwards; they do not tell the person answering
-            # what the machine is worried about.
-            "description": verdict.description,
-            "agent": session.current_agent,
-            "cwd": body.cwd,
-            "workspace": session.workspace,
-        },
-    )
+    # The agent is now waiting on a person, and that wait is not its idleness:
+    # an approval that takes five minutes to answer used to be charged to the
+    # worker's own budget, so a slow human could get a working sub-agent killed.
+    session.activity.hold(body.agent_id)
+    try:
+        answer = await registry.request_approval(
+            session,
+            {
+                "tool_name": body.tool_name,
+                "tool_input": safe_input,
+                "rule_id": verdict.rule_id,
+                "category": verdict.category,
+                # Why this is being asked, in the words of whoever wrote the
+                # rule (config/governance.yaml). The id and the category are for
+                # querying the audit log afterwards; they do not tell the person
+                # answering what the machine is worried about.
+                "description": verdict.description,
+                "agent": session.current_agent,
+                "cwd": body.cwd,
+                "workspace": session.workspace,
+            },
+        )
+    finally:
+        # Whatever the answer was, and even if the wait was cancelled: a hold
+        # that is never released stops that agent's clock forever.
+        session.activity.release(body.agent_id)
 
     gate_wait_seconds.observe(time.time() - asked_at)
 

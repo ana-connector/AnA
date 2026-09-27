@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from packages.orchestrator.activity import ActivityTracker
 from packages.orchestrator.planner import PlanTask
 from packages.orchestrator.supervisor import (
     DONE,
@@ -172,3 +173,60 @@ async def test_a_task_whose_worker_never_said_carries_no_model():
     results = await run_tasks(_tasks(1), run_worker)
 
     assert results[0].as_dict()["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_goes_quiet_is_given_up_on():
+    """The wall clock is gone: what ends a task is silence. A worker that dies
+    without saying so used to hold its slot for the whole budget."""
+    tracker = ActivityTracker()
+
+    async def run_worker(task, upstream=()):
+        await asyncio.sleep(5)  # alive, but reports nothing
+        return WorkerRun(output="never")
+
+    results = await run_tasks(
+        _tasks(1), run_worker, tracker=tracker, idle_timeout_seconds=0.2
+    )
+
+    assert results[0].status == TIMEOUT
+    assert "활동이 없어" in results[0].error
+
+
+@pytest.mark.asyncio
+async def test_a_busy_worker_outlives_the_idle_budget():
+    """The case a 30-minute wall clock got wrong: a worker still working when
+    the budget expires. As long as it keeps reporting activity it keeps going."""
+    tracker = ActivityTracker()
+
+    async def run_worker(task, upstream=()):
+        for _ in range(6):
+            await asyncio.sleep(0.1)
+            tracker.touch(task.id)  # a tool call, as the gate would report one
+        return WorkerRun(output="finished")
+
+    results = await run_tasks(
+        _tasks(1), run_worker, tracker=tracker, idle_timeout_seconds=0.25
+    )
+
+    assert [r.status for r in results] == [DONE]
+    assert results[0].output == "finished"
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_a_human_is_not_idleness():
+    """A worker parked on an approval card is behaving correctly; the person is
+    the slow part. Its clock stops until the answer arrives."""
+    tracker = ActivityTracker()
+
+    async def run_worker(task, upstream=()):
+        tracker.hold(task.id)  # the gate, while an approval is outstanding
+        await asyncio.sleep(0.6)
+        tracker.release(task.id)
+        return WorkerRun(output="approved and finished")
+
+    results = await run_tasks(
+        _tasks(1), run_worker, tracker=tracker, idle_timeout_seconds=0.2
+    )
+
+    assert [r.status for r in results] == [DONE]

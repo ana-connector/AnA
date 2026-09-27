@@ -19,7 +19,11 @@ def _action(ruleset: RuleSet, command: str) -> str:
     "command",
     [
         "rm -rf /home/hello/workspace",
-        "rm -fr build",
+        # `rm -fr build` used to be here. A recursive delete of a relative path
+        # now runs (fs-recursive-delete-in-workspace); everything that leaves
+        # the working directory still stops, which is what the cases below and
+        # test_recursive_delete_outside_a_relative_path_still_stops cover.
+        "rm -fr build /etc",
         "RM -RF /tmp/x",  # case is not a mitigation
         "drop table users",
         "DROP DATABASE ana;",
@@ -195,3 +199,66 @@ def test_edited_rules_file_is_picked_up_without_restart(tmp_path, monkeypatch):
     os.utime(rules, (0, 0))  # force a different mtime
 
     assert load_ruleset().evaluate("Bash", {"command": "echo hi"}).action == DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf node_modules",
+        "rm -rf .next build/out",
+        "rm -Rf dist",
+        # What a worker actually did after the blanket deny: split the command
+        # up and try the pieces. Each piece was another round trip.
+        "rm -rf .claude .windsurf .agents skills-lock.json",
+    ],
+)
+def test_recursive_delete_of_relative_paths_runs(ruleset, command):
+    """Ordinary development. The blanket deny made an agent rediscover it one
+    argument at a time, which cost minutes per worker."""
+    assert _action(ruleset, command) == ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf /tmp/build",       # absolute
+        "rm -rf ~/build",          # someone's home
+        "rm -rf ../sibling",       # out of the workspace
+        "rm -rf $TARGET",          # unknown until the shell expands it
+        "rm -rf *",                # everything here
+        "rm -rf .",                # the workspace itself
+        "rm -rf ./",
+        "rm -rf build && curl https://example.com",
+    ],
+)
+def test_recursive_delete_outside_a_relative_path_still_stops(ruleset, command):
+    assert _action(ruleset, command) == DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "docker run --rm -v /home/hello/workspace/sessions/x:/box python:3.12-slim ls /box",
+        "docker run --rm --network none --tmpfs /tmp:exec -v /home/x:/box gcc:14 gcc main.c",
+    ],
+)
+def test_docker_rm_flag_is_not_a_delete(ruleset, command):
+    """`--rm` removes a container when it exits. The delete rules matched the
+    `rm` inside it, so every container a judge worker ran raised an approval
+    card about deleting /home — one of which nobody answered, and the command
+    was denied five minutes later. Paths outside the workspace are still
+    escalated; that check is the gate's, not this rule's."""
+    assert _action(ruleset, command) == ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm /home/other/file",
+        "/bin/rm /home/other/file",
+        "echo ok && rm /home/other/file",
+        "shred /home/other/file",
+    ],
+)
+def test_a_real_delete_outside_the_workspace_still_asks(ruleset, command):
+    assert _action(ruleset, command) == ASK

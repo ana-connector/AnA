@@ -435,3 +435,25 @@ async def test_a_rung_without_an_effort_does_not_inherit_the_planning_one(db_poo
 
     _resolve_adapter(configurable, "claude", model=None, effort=None)
     assert (adapter.model, adapter.effort) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_the_switch_is_recorded_in_the_turn_transcript(db_pool):
+    """The divider that marks a model switch lived only in the open tab, so
+    opening another conversation and coming back showed the same turn with the
+    switch quietly removed. It is a transcript block now, sent with the frame so
+    both copies read the same."""
+    from packages.orchestrator.timeline import TurnTimeline
+
+    def factory(agent, auth_mode=None, model=None, effort=None):
+        return WorkingAdapter("tapie") if agent == "tapie" else LimitedAdapter(agent)
+
+    timeline = TurnTimeline()
+    config = _config(db_pool, factory, "fo-notice")
+    config["configurable"]["timeline"] = timeline
+    frames, _ = await _run(graph := build_graph(InMemorySaver()), config)
+    assert graph is not None
+
+    failover = next(f for f in frames if f["type"] == "failover")
+    assert failover["notice"] == "claude → tapie 전환 (사용량 한도)"
+    assert {"kind": "notice", "text": failover["notice"]} in timeline.blocks

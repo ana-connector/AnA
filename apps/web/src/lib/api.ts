@@ -42,10 +42,7 @@ export type HistoryTurn = {
   meta?: {
     model?: string | null;
     rung?: string;
-    blocks?: (
-      | { kind: "text"; text: string }
-      | { kind: "tool"; tool: HistoryTool }
-    )[];
+    blocks?: HistoryBlock[];
     subagents?: {
       id: string;
       title: string;
@@ -58,9 +55,19 @@ export type HistoryTurn = {
       tokens?: number;
       cost_usd?: number;
       tools?: HistoryTool[];
+      /** What this sub-agent said and did, in order. Absent on turns recorded
+       *  before sub-agents kept one. */
+      blocks?: HistoryBlock[];
     }[];
   };
 };
+
+/** One entry of a saved transcript: text an agent wrote, a call the gate
+ *  screened, or a divider ANA inserted where the work changed model. */
+export type HistoryBlock =
+  | { kind: "text"; text: string }
+  | { kind: "tool"; tool: HistoryTool }
+  | { kind: "notice"; text: string };
 
 export type ThreadHistory = {
   turns: HistoryTurn[];
@@ -264,6 +271,12 @@ export type AnaSettings = {
    *  "api" (key + base URL). Applies to conversations opened after the save. */
   auth_mode?: string;
   auth_modes?: string[];
+  /** "normal" asks the user whatever the rule set says to ask about; "yolo"
+   *  answers those approvals with "allow" on their behalf. Denies, the secret
+   *  scan and scope checks are unaffected, and unlike the settings above this
+   *  one applies to the very next tool call. */
+  governance_mode?: string;
+  governance_modes?: string[];
 };
 
 export async function fetchSettings(): Promise<AnaSettings> {
@@ -284,6 +297,28 @@ export async function saveSettings(patch: Partial<AnaSettings>): Promise<AnaSett
     throw new Error(payload?.detail ?? `HTTP ${response.status}`);
   }
   return payload as AnaSettings;
+}
+
+/** What one agent's half of a manual usage sync did. `refreshed: false` is a
+ *  normal answer — Codex may have no log yet, and the Claude probe can come
+ *  back without a rate-limit event — so `reason` is what the UI shows. */
+export type UsageSyncResult = {
+  agent: string;
+  refreshed: boolean;
+  source?: string;
+  reason?: string;
+  cost_usd?: number;
+  tokens?: number;
+};
+
+/** Re-reads the providers' real figures now instead of at the next turn. Costs
+ *  a short Claude turn (see apps/server/app/usage_sync.py), which is why it is
+ *  a button and not a poll. */
+export async function syncUsage(): Promise<UsageSyncResult[]> {
+  const response = await fetch(`${apiBase()}/usage/sync`, { method: "POST" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload?.detail ?? `HTTP ${response.status}`);
+  return (payload as { synced: UsageSyncResult[] }).synced;
 }
 
 export type LadderModel = { agent: string; model: string | null; label: string };

@@ -106,7 +106,14 @@ def _gate_url() -> str:
 def _ask(questions: list) -> dict:
     """Puts the questions to ANA and returns its answer payload."""
     body = json.dumps(
-        {"questions": questions, "role": os.environ.get("ANA_GATE_ROLE") or "lead"}
+        {
+            "questions": questions,
+            "role": os.environ.get("ANA_GATE_ROLE") or "lead",
+            # Which sub-agent is asking, so ANA stops that agent's idle clock
+            # while the question is on screen: an agent waiting for an answer is
+            # not an agent that has stopped working.
+            "agent_id": os.environ.get("ANA_GATE_AGENT_ID"),
+        }
     ).encode("utf-8")
     request = urllib.request.Request(
         _gate_url(),

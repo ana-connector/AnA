@@ -1,5 +1,6 @@
 """The Kimi Code CLI adapter: argv, event mapping, and the result it has to
 synthesize because the CLI never sends one."""
+import asyncio
 import json
 import os
 import sys
@@ -210,3 +211,49 @@ def test_the_session_id_arrives_with_the_resume_hint():
 
     assert parsed is None
     assert session_id == "session_new"
+
+
+async def test_a_leaked_child_holding_the_pipes_does_not_hang_the_turn(tmp_path, monkeypatch):
+    """Kimi starts MCP servers and shells that inherit its stdout and stderr.
+    One it fails to reap keeps both pipes open after the CLI itself is gone, so
+    reading either to EOF never returns — which is how a finished worker used to
+    sit at "running" until the lead's own timeout fired half an hour later."""
+    monkeypatch.setenv("FAKE_KIMI_ORPHAN", "60")
+    adapter = _adapter(tmp_path)
+
+    events = await asyncio.wait_for(_collect(adapter.run_stream("안녕")), timeout=20)
+
+    assert [event.type for event in events] == ["text", "result"]
+    await adapter.terminate()  # takes the leaked child with it
+
+
+async def test_a_refused_request_is_an_error_even_when_the_cli_exits_cleanly(
+    tmp_path, monkeypatch
+):
+    """An exhausted 5-hour window is reported only in the CLI's own log: the
+    stream ends with no result and exit code 0. Read back as an error, because
+    the failover ladder cannot act on a silent success — it would hand the lead
+    an empty answer."""
+    home = tmp_path / "kimi_home"
+    session_dir = home / "sessions" / "wd_x" / "session_x"
+    (session_dir / "logs").mkdir(parents=True)
+    (session_dir / "logs" / "kimi-code.log").write_text(
+        '2026-09-26T07:21:22.853Z WARN  llm request failed  turnStep=0.1 '
+        'model=kimi-code/k3 errorName=APIStatusError errorMessage="403 '
+        "You've reached your 5-hour usage limit.\" statusCode=403\n",
+        encoding="utf-8",
+    )
+    (home / "session_index.jsonl").write_text(
+        json.dumps({"sessionId": "session_x", "sessionDir": str(session_dir),
+                    "workDir": str(tmp_path)}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FAKE_KIMI_SILENT", "1")
+    adapter = _adapter(tmp_path)
+    adapter.env["KIMI_CODE_HOME"] = str(home)
+
+    events = await _collect(adapter.run_stream("리뷰해줘"))
+
+    assert events[-1].type == "error"
+    assert "5-hour usage limit" in events[-1].text
+    assert not any(event.type == "result" for event in events)

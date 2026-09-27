@@ -175,3 +175,31 @@ def test_complete_worker_result_reaches_replan_dependents_and_synthesis():
         build_synthesis_prompt("요청", [result]),
     ]
     assert all(result_text in prompt for prompt in prompts)
+
+
+def test_plan_level_context_is_parsed():
+    plan = parse_plan(
+        '{"mode":"delegate",'
+        ' "context":{"files":["a.py","b.py"],"notes":"decide() returns a Rung.",'
+        ' "remember":true},'
+        ' "tasks":[{"title":"구현","prompt":"해라"}]}'
+    )
+
+    assert plan.context.files == ("a.py", "b.py")
+    assert plan.context.notes == "decide() returns a Rung."
+    assert plan.context.remember is True
+
+
+def test_a_plan_without_context_has_an_empty_one():
+    plan = parse_plan(DELEGATION)
+
+    assert plan.context.empty
+    assert plan.context.remember is False
+
+
+def test_the_planning_prompt_explains_context():
+    prompt = build_planning_prompt("뭔가 해줘")
+
+    assert '"context"' in prompt
+    assert "read once instead of" in prompt
+    assert "%(" not in prompt  # every key interpolated, none left as a literal

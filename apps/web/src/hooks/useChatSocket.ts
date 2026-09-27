@@ -39,6 +39,10 @@ export type ChatEvent =
       workspace_name?: string;
       from_rung?: string;
       to_rung?: string;
+      /** The divider text for a model switch, composed by the server. */
+      notice?: string;
+      /** Set when the switch happened inside one sub-agent's run. */
+      task_id?: string;
       mode?: string;
       tasks?: {
         id: string;
@@ -76,7 +80,13 @@ export type ChatEvent =
  *  command belonged to which step. */
 export type MessageBlock =
   | { kind: "text"; text: string }
-  | { kind: "tool"; tool: ToolEvent };
+  | { kind: "tool"; tool: ToolEvent }
+  /** Something ANA said about the turn rather than something an agent said in
+   *  it: the divider marking where the work moved to another model. Part of the
+   *  reply's blocks, so it is saved with the turn and comes back with it — it
+   *  used to live only in this tab, and vanished when you opened another
+   *  conversation. */
+  | { kind: "notice"; text: string };
 
 export type ChatMessage = {
   role: "user" | "agent";
@@ -85,8 +95,6 @@ export type ChatMessage = {
   text: string;
   /** Which CLI this message was sent to (user) or produced by (agent). */
   agent: Agent;
-  /** Set on notices the server sent (a failover switch), not on chat content. */
-  notice?: boolean;
   /** The model that actually answered, when the CLI reported one. */
   model?: string;
   blocks?: MessageBlock[];
@@ -160,6 +168,10 @@ export type SubagentTask = {
   cost_usd?: number;
   tokens?: number;
   tools?: ToolEvent[];
+  /** What this sub-agent said and did, in order — the same shape a lead reply
+   *  uses, so one worker's panel reads like the lead's transcript instead of a
+   *  final answer with its work in a separate list. */
+  blocks?: MessageBlock[];
 };
 
 /** One tool call as the governance gate saw it. */
@@ -434,6 +446,7 @@ export function useChatSocket() {
                       tokens: task.tokens,
                       cost_usd: task.cost_usd,
                       tools: task.tools,
+                      blocks: task.blocks,
                     })),
                   }
                 : undefined,
@@ -595,18 +608,34 @@ export function useChatSocket() {
         if (event.type === "tool" && event.tool) {
           const tool = event.tool;
           if (tool.agent_id) {
-            const id = `native:${tool.agent_id}`;
             const current = planRef.current ?? { mode: "delegate", note: "", tasks: [] };
-            const existing = current.tasks.find((task) => task.id === id);
+            // A planned task is told its own id, so its calls land on the card
+            // the plan already drew. A CLI's own sub-agent has no card yet and
+            // gets one under the "native:" id it reports.
+            const existing = current.tasks.find(
+              (task) => task.id === tool.agent_id || task.id === `native:${tool.agent_id}`
+            );
+            const id = existing?.id ?? `native:${tool.agent_id}`;
             const tools = [...(existing?.tools ?? [])];
             const toolIndex = tool.tool_use_id
               ? tools.findIndex((item) => item.tool_use_id === tool.tool_use_id)
               : -1;
             if (toolIndex >= 0) tools[toolIndex] = tool;
             else tools.push(tool);
+            // And in order, beside what the worker said around them: the panel
+            // reads like a transcript, which needs the interleaving.
+            const blocks = [...(existing?.blocks ?? [])];
+            const blockIndex = tool.tool_use_id
+              ? blocks.findIndex(
+                  (block) => block.kind === "tool"
+                    && block.tool.tool_use_id === tool.tool_use_id
+                )
+              : -1;
+            if (blockIndex >= 0) blocks[blockIndex] = { kind: "tool", tool };
+            else blocks.push({ kind: "tool", tool });
             const agent = event.agent ?? "codex";
             const task: SubagentTask = existing
-              ? { ...existing, tools }
+              ? { ...existing, tools, blocks }
               : {
                   id,
                   title: "하위 에이전트",
@@ -616,6 +645,7 @@ export function useChatSocket() {
                   model: modelsRef.current[agent],
                   status: "running",
                   tools,
+                  blocks,
                 };
             planRef.current = {
               ...current,
@@ -716,7 +746,15 @@ export function useChatSocket() {
             ...current,
             tasks: exists
               ? current.tasks.map((item) => item.id === task.id
-                ? { ...item, ...task, tools: task.tools ?? item.tools }
+                ? {
+                    ...item,
+                    ...task,
+                    // A status update carries an empty list until the run is
+                    // over, and an empty list is not news: what the gate and
+                    // the stream have already reported stays.
+                    tools: task.tools?.length ? task.tools : item.tools,
+                    blocks: task.blocks?.length ? task.blocks : item.blocks,
+                  }
                 : item)
               : [...current.tasks, task],
           };
@@ -795,32 +833,58 @@ export function useChatSocket() {
           if (failed) {
             setFailingAgents((prev) => ({ ...prev, [failed]: reason }));
           }
-          if (authFailure && agentMessageIndexRef.current !== null) {
-            const index = agentMessageIndexRef.current;
-            const summary = "인증 오류로 다른 모델로 전환합니다.";
-            setMessages((prev) => prev.map((message, i) => i === index ? {
-              ...message,
-              text: summary,
-              blocks: [...(message.blocks ?? []).filter((block) => block.kind !== "text"),
-                { kind: "text" as const, text: summary }],
-            } : message));
+          // Composed by the server, so the divider on screen is the same
+          // sentence the transcript keeps. The local fallback covers a server
+          // that has not been updated yet.
+          const notice = event.notice
+            ?? `${event.from_rung} → ${event.to_rung} 전환 (${reason})`;
+          // A worker changed model, not the lead: the divider belongs on that
+          // sub-agent's own record, next to what it had already done.
+          if (event.task_id) {
+            const current = planRef.current;
+            const task = current?.tasks.find((item) => item.id === event.task_id);
+            if (current && task) {
+              planRef.current = {
+                ...current,
+                tasks: current.tasks.map((item) => item.id === event.task_id
+                  ? { ...item, blocks: [...(item.blocks ?? []), { kind: "notice" as const, text: notice }] }
+                  : item),
+              };
+              setPlan(planRef.current);
+            }
+            return;
           }
-          // The turn is continuing on another rung, so this is a notice in the
-          // transcript rather than an error: the answer still arrives.
-          messageCountRef.current += 1;
-          const agent = event.agent ?? pendingAgentRef.current;
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "agent",
-              agent,
-              notice: true,
-              text: `${event.from_rung} → ${event.to_rung} 전환 (${reason})`,
-            },
-          ]);
-          // The next text chunk belongs to the retry, not to the partial reply
-          // that was streaming before the switch.
-          agentMessageIndexRef.current = null;
+          // The turn is continuing on another rung, so this is a divider inside
+          // the reply rather than an error: the answer still arrives, and it is
+          // the same turn. Kept in one message for that reason — the server
+          // records one ordered transcript per turn, and a second message here
+          // is what made the restored version look different from the live one.
+          if (agentMessageIndexRef.current === null) {
+            agentMessageIndexRef.current = messageCountRef.current;
+            messageCountRef.current += 1;
+            const agent = event.agent ?? pendingAgentRef.current;
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "agent",
+                text: "",
+                agent,
+                model: modelsRef.current[agent],
+                blocks: [{ kind: "notice", text: notice }],
+              },
+            ]);
+          } else {
+            const index = agentMessageIndexRef.current;
+            setMessages((prev) => {
+              if (!prev[index]) return prev;
+              const next = [...prev];
+              next[index] = {
+                ...next[index],
+                blocks: [...(next[index].blocks ?? []), { kind: "notice" as const, text: notice }],
+              };
+              return next;
+            });
+          }
           // A rung label is "<agent>" or "<agent>/<mode>", so the agent is
           // whatever precedes the slash.
           const rungAgent = event.to_rung?.split("/")[0];

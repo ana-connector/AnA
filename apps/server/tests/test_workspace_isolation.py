@@ -205,3 +205,68 @@ def test_thread_id_frame_carries_the_workspace(client, tmp_path):
     assert frame["type"] == "thread_id"
     assert frame["workspace"].endswith("/ws-frame-1")
     assert str(tmp_path / "sessions") in frame["workspace"]
+
+
+def test_reading_its_own_cli_log_needs_no_approval(client, tmp_path, monkeypatch):
+    """Kimi runs long commands as background tasks and reads the output back out
+    of its own KIMI_CODE_HOME, so every one of them raised an approval card. Two
+    of those were answered by nobody and denied on the approval timeout, which
+    cost that worker ten minutes of its turn to read two log files it was always
+    going to be allowed to read."""
+    # Not under tmp_path: /tmp is exempt from confinement already, so a state
+    # directory there would prove nothing.
+    state = "/home/ana-test/.ana"
+    monkeypatch.setenv("ANA_STATE_DIR", state)
+    session = _register(client, "ws-own-log", str(tmp_path / "sessions" / "t9"))
+    log = f"{state}/kimi_home/sessions/s/agents/main/tasks/bash-1/output.log"
+
+    read = client.post(
+        "/gate/tool-call",
+        headers={"x-ana-gate-token": session.token},
+        json={"tool_name": "Read", "tool_input": {"path": str(log)}},
+    ).json()
+    tailed = _call(client, session.token, f"tail -40 {log} | head -20").json()
+
+    assert read["decision"] == "allow"
+    assert tailed["decision"] == "allow"
+
+
+def test_writing_into_its_own_cli_home_still_asks(client, tmp_path, monkeypatch):
+    """The exemption is for reading. Editing the CLI's own configuration is how
+    an agent would change the hook that screens it."""
+    state = "/home/ana-test/.ana"
+    monkeypatch.setenv("ANA_STATE_DIR", state)
+    client.app.state.gate_registry.approval_timeout = 0.2
+    session = _register(client, "ws-own-write", str(tmp_path / "sessions" / "t10"))
+
+    body = client.post(
+        "/gate/tool-call",
+        headers={"x-ana-gate-token": session.token},
+        json={
+            "tool_name": "Write",
+            "tool_input": {"path": f"{state}/kimi_home/config.toml", "content": "x"},
+        },
+    ).json()
+
+    assert body["decision"] == "deny"  # no answer inside the timeout
+    assert body["rule_id"] == "workspace-escape"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # In every scaffolded Next.js project. It reached the confinement check
+        # as the path `/*` — the whole filesystem — and asked a human about it.
+        'npx create-next-app@latest . --import-alias "@/*" --use-npm --yes',
+        # Shell grouping travelled with the token, so `/dev/null)` did not match
+        # the list of paths not worth asking about.
+        'for p in /proc/[0-9]*; do tr "\\0" " " < $p/cmdline 2>/dev/null; done',
+        # bash's own networking, not a file: how an agent checks a free port.
+        "for port in 8430 3000; do (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; done",
+    ],
+)
+def test_tokens_that_are_not_paths_do_not_ask(client, tmp_path, command):
+    session = _register(client, f"ws-tok-{abs(hash(command)) % 1000}",
+                        str(tmp_path / "sessions" / "t11"))
+
+    assert _call(client, session.token, command).json()["decision"] == "allow"
