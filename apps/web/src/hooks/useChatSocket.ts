@@ -888,7 +888,10 @@ export function useChatSocket() {
           // A rung label is "<agent>" or "<agent>/<mode>", so the agent is
           // whatever precedes the slash.
           const rungAgent = event.to_rung?.split("/")[0];
-          if (rungAgent && isAgentName(rungAgent)) pendingAgentRef.current = rungAgent;
+          if (rungAgent && isAgentName(rungAgent)) {
+            pendingAgentRef.current = rungAgent;
+            setRoute({ agent: rungAgent, reason: notice });
+          }
           return;
         }
 

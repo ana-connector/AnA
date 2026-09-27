@@ -75,6 +75,17 @@ def test_the_last_record_in_a_file_wins(codex_home):
     assert windows["five_hour"]["utilization"] == pytest.approx(0.60)
 
 
+def test_empty_premium_bucket_after_codex_windows_is_skipped(codex_home):
+    premium = json.dumps({"payload": {"rate_limits": {
+        "limit_id": "premium", "primary": None, "secondary": None,
+    }}})
+    _write(codex_home, "rollout-a.jsonl", [_record(31.0, 8.0), premium])
+
+    windows = read_rate_limits(codex_home)
+
+    assert windows["five_hour"]["utilization"] == pytest.approx(0.31)
+
+
 def test_the_most_recently_written_session_wins(codex_home):
     now = time.time()
     _write(codex_home, "rollout-old.jsonl", [_record(90.0, 40.0)], mtime=now - 3600)
