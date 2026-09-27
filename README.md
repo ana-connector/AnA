@@ -618,3 +618,8 @@ python -m venv .venv && .venv/bin/pip install -r apps/server/requirements.txt
 ## 라이선스
 
 ANA는 [GNU Affero General Public License v3.0](LICENSE)으로 배포됩니다.
+
+## Special Thanks
+
+- **AnA** — 선린인터넷고등학교 서버/백엔드 전공동아리
+  ([ana.st](https://ana.st) · [GitHub @sunrin-ana](https://github.com/sunrin-ana))

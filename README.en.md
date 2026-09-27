@@ -635,3 +635,8 @@ Docker daemon is required. Adapter tests run against fake CLIs
 ## License
 
 ANA is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+## Special Thanks
+
+- **AnA** — Server/Backend major club at Sunrin Internet High School
+  ([ana.st](https://ana.st) · [GitHub @sunrin-ana](https://github.com/sunrin-ana))
