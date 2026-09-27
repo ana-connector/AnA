@@ -30,6 +30,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Skeleton } from "@/components/ui/skeleton";
 import { Logo } from "@/components/logo";
 import { WorkspaceEditor } from "@/components/workspace-editor";
+import { shortPath } from "@/lib/format";
 import {
   Sidebar,
   SidebarContent,
@@ -44,12 +45,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-
-function shortPath(path: string | null): string {
-  if (!path) return "—";
-  const parts = path.split("/").filter(Boolean);
-  return parts.length ? `…/${parts[parts.length - 1]}` : path;
-}
 
 /** "1.1M", "19.7K", "840" — a sidebar row has space for a magnitude, not for
  *  a nine-digit number, and the magnitude is what the figure is read for. */
@@ -159,14 +154,11 @@ export function SessionSidebar({
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            {/* The shadcn header pattern: one large menu row carrying the
-                mark and the name. It opens the start page rather than the
-                console: "/" resumes whichever conversation you were last in,
-                which is not what clicking the product's own name means. */}
+            {/* The product mark opens the start page. */}
             <SidebarMenuButton
               size="lg"
-              isActive={pathname === "/start"}
-              render={<Link href="/start" />}
+              isActive={pathname === "/"}
+              render={<Link href="/" />}
             >
               <div className="flex aspect-square size-10 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                 {/* size-6! because the menu button sizes every descendant svg
@@ -191,7 +183,7 @@ export function SessionSidebar({
               <SidebarMenuItem>
                 <SidebarMenuButton
                   isActive={pathname === "/automation"}
-                  render={<a href="/automation" />}
+                  render={<Link href="/automation" />}
                 >
                   <ClockIcon strokeWidth={1.5} />
                   자동화
@@ -278,19 +270,19 @@ export function SessionSidebar({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={pathname === "/settings"} render={<a href="/settings" />}>
+            <SidebarMenuButton isActive={pathname === "/settings"} render={<Link href="/settings" />}>
               <Settings2Icon strokeWidth={1.5} />
               설정
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={pathname === "/tools"} render={<a href="/tools" />}>
+            <SidebarMenuButton isActive={pathname === "/tools"} render={<Link href="/tools" />}>
               <TerminalIcon strokeWidth={1.5} />
               도구 로그
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={pathname === "/secrets"} render={<a href="/secrets" />}>
+            <SidebarMenuButton isActive={pathname === "/secrets"} render={<Link href="/secrets" />}>
               <LockIcon strokeWidth={1.5} />
               시크릿
             </SidebarMenuButton>
@@ -373,12 +365,12 @@ export function SessionSidebar({
               }}
               onDeleted={() => afterDelete(editing.id)}
             />
-            <a
+            <Link
               href={`/workspaces/${encodeURIComponent(editing.id)}`}
               className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
               전체 페이지에서 열기
-            </a>
+            </Link>
           </>
         )}
       </DialogContent>

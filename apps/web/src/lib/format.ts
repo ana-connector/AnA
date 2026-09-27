@@ -53,3 +53,10 @@ export function duration(ms: number): string {
   const rest = seconds % 60;
   return `${minutes}분 ${rest}초`;
 }
+
+/** Keep the folder name visible in narrow project rows. Full path goes in a tooltip. */
+export function shortPath(path: string | null): string {
+  if (!path) return "—";
+  const parts = path.split("/").filter(Boolean);
+  return parts.length ? `…/${parts[parts.length - 1]}` : path;
+}

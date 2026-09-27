@@ -51,6 +51,12 @@ _UUID_RE = re.compile(
 # collide with the row the server maintains.
 SELF_WORKSPACE_ID = "ana-self"
 SELF_WORKSPACE_NAME = "ANA (자기 자신)"
+# The web app uses /[session] for conversations. These top-level paths are
+# pages of their own, so a workspace with one of these ids would be unreachable.
+RESERVED_WORKSPACE_IDS = {
+    SELF_WORKSPACE_ID, "start", "settings", "tools", "secrets",
+    "automation", "workspaces", "icon.svg",
+}
 
 
 class WorkspacePathError(ValueError):
@@ -112,7 +118,7 @@ async def _unique_id(pool: AsyncConnectionPool, base: str) -> str:
         taken = {row[0] for row in await cur.fetchall()}
     # Reserved even when the row does not exist yet: the server registers it on
     # startup, and a user workspace holding the id would make that an error.
-    taken.add(SELF_WORKSPACE_ID)
+    taken.update(RESERVED_WORKSPACE_IDS)
     if base not in taken:
         return base
     for suffix in range(2, 1000):
