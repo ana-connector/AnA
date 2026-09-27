@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import sys
@@ -297,7 +298,9 @@ async def _run_worker(
             if event.type == "text":
                 run.output += event.text
                 if on_text is not None:
-                    on_text(event.text)
+                    update = on_text(event.text)
+                    if inspect.isawaitable(update):
+                        await update
             elif event.type == "result":
                 # The result event is the CLI's final answer. Streaming text
                 # can contain earlier progress messages, or miss a final

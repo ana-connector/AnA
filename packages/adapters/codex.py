@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import signal
 from typing import AsyncIterator, Optional
 
 from packages.adapters.base import AdapterEvent, AgentAdapter
@@ -191,6 +193,10 @@ class CodexAdapter(AgentAdapter):
             # holding a long agent message or a full command-execution
             # payload exceeds asyncio's 64KiB default line limit.
             limit=10 * 1024 * 1024,
+            # npm's wrapper starts the native CLI and its code-mode host.
+            # They must share a process group so cancellation releases the
+            # thread-store writer lock held by the native child.
+            start_new_session=True,
         )
 
         assert self._process.stdout is not None
@@ -333,13 +339,24 @@ class CodexAdapter(AgentAdapter):
                 )
 
     async def terminate(self) -> None:
-        if self._process is not None and self._process.returncode is None:
-            self._process.terminate()
+        process = self._process
+        if process is None:
+            return
+        # The wrapper can exit while its native child still owns the session.
+        # Signal the group even then; a missing group simply means it ended.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if process.returncode is None:
             try:
-                await asyncio.wait_for(self._process.wait(), timeout=5)
+                await asyncio.wait_for(process.wait(), timeout=5)
             except asyncio.TimeoutError:
-                self._process.kill()
-                await self._process.wait()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await process.wait()
 
 
 _MISSING_ROLLOUT = "no rollout found"

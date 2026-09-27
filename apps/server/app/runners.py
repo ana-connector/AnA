@@ -210,10 +210,25 @@ class TurnRunner:
         """Stops the turn in flight, leaving the runner and its queue alone."""
         task = self.current_turn_task
         if task is None or task.done():
+            for delegation in list(self.gate_session.active_delegations):
+                delegation.cancel()
             return False
         self.cancel_requested.set()
+        for agent_task in self.gate_session.native_agents.values():
+            if agent_task.get("status") == "running":
+                agent_task.update(status="error", error="사용자가 중지함")
         task.cancel()
+        for delegation in list(self.gate_session.active_delegations):
+            delegation.cancel()
         return True
+
+    async def _stop_adapters(self) -> None:
+        # An automatic turn's requested agent is "auto", while its actual
+        # adapter is keyed by its CLI name. Workers have separate keys too.
+        await asyncio.gather(
+            *(adapter.terminate() for adapter in list(self.adapters.values())),
+            return_exceptions=True,
+        )
 
     async def _run_turn(self, prompt: str, agent: str, plan_mode: bool) -> None:
         # Session id continuity across turns comes from the checkpointed graph
@@ -265,6 +280,19 @@ class TurnRunner:
                     if not self.cancel_requested.is_set():
                         raise  # the runner itself is being closed
                     self.cancel_requested.clear()
+                    await self._stop_adapters()
+                    if self.gate_session.active_delegations:
+                        await asyncio.gather(
+                            *list(self.gate_session.active_delegations),
+                            return_exceptions=True,
+                        )
+                    for agent_task in self.gate_session.native_agents.values():
+                        if agent_task.get("error") == "사용자가 중지함":
+                            await self.emit({
+                                "type": "subagent", "text": "", "session_id": None,
+                                "is_error": True, "agent": agent_task.get("agent"),
+                                "task": dict(agent_task),
+                            })
                     await self.emit(
                         {
                             "type": "cancelled",
@@ -305,12 +333,16 @@ class TurnRunner:
             return
         self.closed = True
         self.sinks.clear()
+        for delegation in list(self.gate_session.active_delegations):
+            delegation.cancel()
         self.relay_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self.relay_task
-        for adapter in list(self.adapters.values()):
-            with contextlib.suppress(Exception):
-                await adapter.terminate()
+        await self._stop_adapters()
+        if self.gate_session.active_delegations:
+            await asyncio.gather(
+                *list(self.gate_session.active_delegations), return_exceptions=True
+            )
         self.gate_registry.unregister(self.gate_session.token)
 
 

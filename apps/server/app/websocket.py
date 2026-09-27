@@ -679,16 +679,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 )
                 continue
             if frame.kind == "cancel":
-                agent = runner.current_turn_agent
-                if runner.cancel_current():
-                    # Cancelling the await unwinds the adapter's async
-                    # generator, but the CLI subprocess it spawned is a separate
-                    # OS process and outlives that unwinding unless it is killed
-                    # explicitly.
-                    if agent is not None and agent in runner.adapters:
-                        with contextlib.suppress(Exception):
-                            await runner.adapters[agent].terminate()
-                else:
+                if not runner.cancel_current():
                     # Nothing in flight: still answer, so a client whose UI
                     # thinks a turn is running can reset it.
                     with contextlib.suppress(Exception):
@@ -913,18 +904,25 @@ async def _build_runner(
         return built
 
     async def delegate_worker(title: str, prompt: str) -> dict:
-        return await run_routed_task(
-            title, prompt, worker_factory=worker_factory,
-            workspace_dir=workspace_dir, usage_tracker=app.state.usage_tracker,
-            native_agents=gate_session.native_agents, send=gate_session.send,
-            secrets=registered_secrets,
-            # Same clock the gate touches on every tool call: what ends a
-            # delegated worker is silence, not a fixed budget.
-            activity=gate_session.activity,
-            # Names the worker's branch and worktree, so two browser tabs on the
-            # same workspace cannot pick the same one.
-            thread_id=thread_id,
-        )
+        current = asyncio.current_task()
+        if current is not None:
+            gate_session.active_delegations.add(current)
+        try:
+            return await run_routed_task(
+                title, prompt, worker_factory=worker_factory,
+                workspace_dir=workspace_dir, usage_tracker=app.state.usage_tracker,
+                native_agents=gate_session.native_agents, send=gate_session.send,
+                secrets=registered_secrets,
+                # Same clock the gate touches on every tool call: what ends a
+                # delegated worker is silence, not a fixed budget.
+                activity=gate_session.activity,
+                # Names the worker's branch and worktree, so two browser tabs on the
+                # same workspace cannot pick the same one.
+                thread_id=thread_id,
+            )
+        finally:
+            if current is not None:
+                gate_session.active_delegations.discard(current)
 
     gate_session.delegate_worker = delegate_worker
 

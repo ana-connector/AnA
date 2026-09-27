@@ -97,6 +97,46 @@ async def test_a_turn_finishes_with_nobody_attached():
 
 
 @pytest.mark.asyncio
+async def test_cancel_auto_stops_routed_cli_and_delegated_worker():
+    hold = asyncio.Event()
+    lead = FakeAdapter()
+    worker = FakeAdapter()
+    runner = _runner(
+        FakeGraph([TEXT, RESULT], hold=hold),
+        adapters={"codex": lead, "worker/codex/one": worker},
+    )
+    cancelled = asyncio.Event()
+
+    async def sink(frame):
+        if frame.get("type") == "cancelled":
+            cancelled.set()
+
+    async def delegation():
+        await asyncio.Event().wait()
+
+    runner.attach(sink)
+    await runner.submit("long job", "auto", False)
+    for _ in range(200):
+        if runner.current_turn_task is not None and runner.current_turn_task.done() is False:
+            break
+        await asyncio.sleep(0.01)
+    delegated = asyncio.create_task(delegation())
+    runner.gate_session.active_delegations.add(delegated)
+    task = {"id": "native:routed:one", "agent": "codex", "status": "running"}
+    runner.gate_session.native_agents["routed:one"] = task
+
+    assert runner.cancel_current()
+    await asyncio.wait_for(cancelled.wait(), timeout=2)
+
+    assert delegated.cancelled()
+    assert task["status"] == "error"
+    assert task["error"] == "사용자가 중지함"
+    assert lead.terminated == 1
+    assert worker.terminated == 1
+    await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_frames_from_a_detached_turn_are_replayed_on_return():
     hold = asyncio.Event()
     graph = FakeGraph([TEXT, RESULT], hold=hold)

@@ -1,4 +1,6 @@
 import json
+import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -121,6 +123,38 @@ async def test_run_stream_resumes_with_session_id(tmp_path):
         "resume",
         "prior-thread",
     ]
+
+
+async def test_terminate_stops_native_child_process(tmp_path):
+    child_pid_file = tmp_path / "child.pid"
+    wrapper = tmp_path / "wrapper.py"
+    wrapper.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "open(sys.argv[1], 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    adapter = _adapter(tmp_path)
+    adapter._extra_args_prefix = [str(wrapper), str(child_pid_file)]
+    running = asyncio.create_task(_collect(adapter.run_stream("ping")))
+    try:
+        for _ in range(200):
+            if child_pid_file.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert child_pid_file.exists()
+        child_pid = int(child_pid_file.read_text())
+        await adapter.terminate()
+        await asyncio.wait_for(running, timeout=3)
+        # A reaped process may linger briefly as a zombie, but it cannot hold
+        # the Codex writer lock or continue work.
+        proc_status = f"/proc/{child_pid}/status"
+        assert not os.path.exists(proc_status) or "State:\tZ" in open(proc_status).read()
+    finally:
+        if not running.done():
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
 
 
 async def test_run_stream_yields_error_on_non_zero_exit(tmp_path):
