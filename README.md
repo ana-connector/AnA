@@ -2,7 +2,7 @@
 
 **한국어** | [English](README.en.md)
 
-AnA is Not Agent.
+> AnA is Not Agent.
 
 AnA는 에이전트 CLI를 감싸는 오케스트레이터입니다. **Claude Code CLI**
 (`claude`)와 **Codex CLI**(`codex`)를 구동하고, 메시지마다 더 잘 맞는 쪽으로
@@ -15,6 +15,11 @@ AnA는 에이전트 CLI를 감싸는 오케스트레이터입니다. **Claude Co
 - **스택**: Python (FastAPI + LangGraph + Postgres/pgvector) · TypeScript
   (Next.js + shadcn/ui) · Docker Compose
 - **설계 문서**: `docs/plans/`
+
+<p align="center">
+  <img src="docs/images/start-page.png" width="49%" alt="시작 화면: 최근 워크스페이스 목록과 새 워크스페이스 만들기">
+  <img src="docs/images/planner-worker.png" width="49%" alt="Planner-Worker: 리드가 하위 에이전트 5개에 작업을 나눠 실행하는 모습">
+</p>
 
 ## 실행
 
@@ -66,18 +71,18 @@ cd apps/web && NEXT_PUBLIC_WS_PORT=8100 npm run dev -- -p 3005 -H 0.0.0.0
 
 ### 환경 변수
 
-| 변수 | 의미 |
-|---|---|
-| `CLAUDE_AUTH_MODE` | `claude` 에이전트의 시작 인증 모드: `pro`(`~/.claude`의 구독 로그인) 또는 `api`(`TAPIE_API_KEY`). 설정하지 않으면 `api`이므로, TAPIE를 쓰지 않는다면 `pro`로 설정하세요 |
-| `CLAUDE_MODEL`, `CLAUDE_EFFORT` | 선택적 고정값. 비우면 CLI 기본값 |
-| `CODEX_MODEL`, `CODEX_EFFORT` | `codex`의 선택적 고정값. 비우면 CLI 기본값 |
-| `KIMI_MODEL`, `KIMI_EFFORT` | `kimi`의 선택적 고정값. 비우면 CLI 기본값 |
-| `CODEX_SANDBOX` | `read-only` \| `workspace-write` \| `danger-full-access`. 비우면 `--dangerously-bypass-approvals-and-sandbox` |
-| `ANA_WORKSPACE_DIR` | 두 CLI가 작업하는 디렉터리 |
-| `ANA_ALLOWED_ORIGINS` | `/ws/chat`을 열 수 있는 origin 목록 (쉼표 구분) |
-| `NEXT_PUBLIC_WS_URL` | WebSocket URL 전체 재정의. 비우면 페이지 자신의 호스트에서 유도 |
-| `NEXT_PUBLIC_WS_PORT` | 위 유도에 쓰는 포트 (기본값 `8100`) |
-| `POSTGRES_PASSWORD`, `DATABASE_URL` | 메모리/체크포인트 데이터베이스 |
+| 변수                                | 의미                                                                                                                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE_AUTH_MODE`                  | `claude` 에이전트의 시작 인증 모드: `pro`(`~/.claude`의 구독 로그인) 또는 `api`(`TAPIE_API_KEY`). 설정하지 않으면 `api`이므로, TAPIE를 쓰지 않는다면 `pro`로 설정하세요 |
+| `CLAUDE_MODEL`, `CLAUDE_EFFORT`     | 선택적 고정값. 비우면 CLI 기본값                                                                                                                                        |
+| `CODEX_MODEL`, `CODEX_EFFORT`       | `codex`의 선택적 고정값. 비우면 CLI 기본값                                                                                                                              |
+| `KIMI_MODEL`, `KIMI_EFFORT`         | `kimi`의 선택적 고정값. 비우면 CLI 기본값                                                                                                                               |
+| `CODEX_SANDBOX`                     | `read-only` \| `workspace-write` \| `danger-full-access`. 비우면 `--dangerously-bypass-approvals-and-sandbox`                                                           |
+| `ANA_WORKSPACE_DIR`                 | 두 CLI가 작업하는 디렉터리                                                                                                                                              |
+| `ANA_ALLOWED_ORIGINS`               | `/ws/chat`을 열 수 있는 origin 목록 (쉼표 구분)                                                                                                                         |
+| `NEXT_PUBLIC_WS_URL`                | WebSocket URL 전체 재정의. 비우면 페이지 자신의 호스트에서 유도                                                                                                         |
+| `NEXT_PUBLIC_WS_PORT`               | 위 유도에 쓰는 포트 (기본값 `8100`)                                                                                                                                     |
+| `POSTGRES_PASSWORD`, `DATABASE_URL` | 메모리/체크포인트 데이터베이스                                                                                                                                          |
 
 두 CLI는 기본적으로 자동 승인 모드로 실행됩니다(`claude`는
 `--dangerously-skip-permissions`, `codex`는
@@ -105,11 +110,11 @@ cd apps/web && NEXT_PUBLIC_WS_PORT=8100 npm run dev -- -p 3005 -H 0.0.0.0
 
 자체 호스팅이라 아무것도 머신 밖으로 나가지 않습니다:
 
-| 서비스 | URL | 알 수 있는 것 |
-|---|---|---|
-| Grafana | http://localhost:3200 (admin / `GRAFANA_PASSWORD`, 기본값 `admin`) | 분당 턴 수, 턴 지연, 규칙별 게이트 판정, 페일오버, 승인 대기, 비용과 토큰 |
-| Prometheus | http://localhost:9090 | `server:8000/metrics`에서 15초마다 수집하는 원시 `ana_*` 메트릭 |
-| Langfuse | http://localhost:3100 (`LANGFUSE_USER_EMAIL` / `LANGFUSE_USER_PASSWORD`) | 턴당 트레이스 하나: 프롬프트 구성, 각 CLI 시도, 단계(rung), 토큰, 비용 |
+| 서비스     | URL                                                                      | 알 수 있는 것                                                             |
+| ---------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Grafana    | http://localhost:3200 (admin / `GRAFANA_PASSWORD`, 기본값 `admin`)       | 분당 턴 수, 턴 지연, 규칙별 게이트 판정, 페일오버, 승인 대기, 비용과 토큰 |
+| Prometheus | http://localhost:9090                                                    | `server:8000/metrics`에서 15초마다 수집하는 원시 `ana_*` 메트릭           |
+| Langfuse   | http://localhost:3100 (`LANGFUSE_USER_EMAIL` / `LANGFUSE_USER_PASSWORD`) | 턴당 트레이스 하나: 프롬프트 구성, 각 CLI 시도, 단계(rung), 토큰, 비용    |
 
 대시보드와 데이터 소스는 `ops/`에서 프로비저닝되고, Langfuse는 첫 시작 때
 조직·프로젝트·API 키를 스스로 만듭니다(`docker-compose.yml`의
@@ -169,30 +174,30 @@ API의 `GET /metrics`는 Prometheus 형식을 직접 제공하므로 다른 곳�
 패턴 매칭은 샌드박스가 아닙니다. 작정한 에이전트는 패턴에 없는 파일을 읽을 수
 있으며, 실제로 경계를 만드는 것은 여전히 컨테이너와 워크스페이스 제한입니다.
 
-| 변수 | 의미 |
-|---|---|
-| `ANA_GOVERNANCE` | `off`면 예전의 우회 동작으로 돌아갑니다. 그 외(미설정 포함)는 게이트를 켠 상태로 둡니다 |
-| `ANA_GOVERNANCE_RULES` | 규칙 집합 경로 (기본값 `config/governance.yaml`) |
-| `ANA_GOVERNANCE_MODE` | `normal`(기본값) 또는 `yolo`. 설정 → 권한 스위치의 시작 위치입니다. 저장된 선택이 이 값보다 우선하므로 UI에서 바꾼 것이 재시작 후에도 유지됩니다 |
-| `ANA_USAGE_PROBE` | `off`면 사용량 동기화 버튼이 Claude CLI의 윈도를 읽기 위해 짧은 턴을 실행하지 않습니다. Codex는 계속 자체 로그로 동기화합니다 |
-| `ANA_USAGE_PROBE_TIMEOUT_SECONDS` | 동기화가 그 탐지 턴을 포기하기까지 기다리는 시간 (기본값 60) |
-| `ANA_APPROVAL_TIMEOUT_SECONDS` | 승인 카드가 기다리는 시간. 지나면 호출이 거부됩니다 (기본값 300) |
-| `ANA_QUESTION_TIMEOUT_SECONDS` | 에이전트가 직접 한 질문이 답을 기다리는 시간 (기본값 900). 시간 초과는 실패가 아니라 하나의 결과입니다. 에이전트는 가정을 밝히고 계속 진행합니다 |
-| `CODEX_SANDBOX` | Codex 자체 샌드박스 모드. Docker에서는 비워 두세요. codex는 bubblewrap으로 샌드박스를 만드는데 컨테이너 안에서는 시작할 수 없습니다("bwrap: No permissions to create a new namespace"). 훅은 여전히 실행되고 차단하므로, 게이트와 컨테이너가 계속 강제 경계가 됩니다 |
-| `ANA_WORKSPACE_ROOT` | 새 워크스페이스가 만들어지는 루트 (기본값 `$ANA_WORKSPACE_DIR/sessions`) |
-| `ANA_SELF_WORKSPACE` | AnA 자체 체크아웃의 호스트 절대 경로. `ana-self` 워크스페이스로 등록됩니다. 비어 있거나 디렉터리가 아니면 재귀 워크스페이스가 나타나지 않습니다 |
-| `ANA_ROUTING_RULES` | 라우팅 규칙 경로 (기본값 `config/routing.yaml`) |
-| `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` / `ANA_MONTHLY_TOKEN_BUDGET` | CLI가 자체 윈도를 보고하지 않을 때 상태 바가 추정에 쓰는 예산. 에이전트별: `ANA_<AGENT>_FIVE_HOUR_TOKEN_BUDGET`, `_WEEKLY_`, `_MONTHLY_` |
-| `ANA_TAPIE_FIVE_HOUR_USD_BUDGET` / `ANA_TAPIE_MONTHLY_USD_BUDGET` | TAPIE는 토큰이 아니라 달러로 제한됩니다. 기본값은 5시간 롤링 $50, 월 $1500 |
-| `ANA_BACKGROUND_TURNS` | `off`면 턴의 수명을 요청한 연결에 묶습니다(예전 동작). 그 외에는 브라우저가 떠나도 계속 실행합니다 |
-| `ANA_RUNNER_IDLE_SECONDS` | 마지막 브라우저가 떠나고 실행 중인 것이 없을 때 대화의 러너(큐, 게이트 토큰, CLI 하위 프로세스)를 유지하는 시간 (기본값 900) |
-| `ANA_PLANNER_TIMEOUT_SECONDS` | 계획 호출이 *아무것도* 내놓지 않은 채 버틸 수 있는 시간. 지나면 ANA가 다음 단계로 넘어갑니다 (기본값 60). 벽시계가 아니라 침묵 예산이라, 계획을 계속 스트리밍하는 리드는 건드리지 않습니다 |
-| `ANA_PLANNER_TOTAL_TIMEOUT_SECONDS` | 모든 단계에 걸친 계획 단계 전체의 상한 (기본값 600). 말은 계속하지만 결론을 내지 못하는 반대 경우를 위한 것입니다 |
-| `ANA_PLAN_ROUNDS` | 한 턴이 쓸 수 있는 계획 라운드 수: 첫 계획에 더해 그만큼 확장할 기회 (기본값 2, 1이면 한 번만 계획) |
-| `ANA_SECRET_KEY` | 저장된 시크릿을 암호화하는 키. **반드시 설정하세요.** 없으면 프로세스마다 무작위 키를 써서, 재시작할 때마다 저장된 시크릿을 모두 읽을 수 없게 됩니다. 이름은 목록에 남고 에이전트는 키가 없다고 보고합니다. 키를 바꿔도 기존 행에 같은 일이 생깁니다 |
-| `ANA_MAX_THREAD_COST_USD` / `ANA_MAX_THREAD_TOKENS` | 스레드당 서킷 브레이커 예산 (기본값 5.0 / 2,000,000) |
-| `ANA_RATE_LIMIT_UTILIZATION` | "한도에 도달"로 간주하는 윈도 사용률 (기본값 0.95) |
-| `ANA_FAILOVER_COOLDOWN_SECONDS` | 스레드가 우선 모델을 다시 시도하기 전까지 대체 모델에 머무는 시간 (기본값 900) |
+| 변수                                                                                  | 의미                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANA_GOVERNANCE`                                                                      | `off`면 예전의 우회 동작으로 돌아갑니다. 그 외(미설정 포함)는 게이트를 켠 상태로 둡니다                                                                                                                                                                              |
+| `ANA_GOVERNANCE_RULES`                                                                | 규칙 집합 경로 (기본값 `config/governance.yaml`)                                                                                                                                                                                                                     |
+| `ANA_GOVERNANCE_MODE`                                                                 | `normal`(기본값) 또는 `yolo`. 설정 → 권한 스위치의 시작 위치입니다. 저장된 선택이 이 값보다 우선하므로 UI에서 바꾼 것이 재시작 후에도 유지됩니다                                                                                                                     |
+| `ANA_USAGE_PROBE`                                                                     | `off`면 사용량 동기화 버튼이 Claude CLI의 윈도를 읽기 위해 짧은 턴을 실행하지 않습니다. Codex는 계속 자체 로그로 동기화합니다                                                                                                                                        |
+| `ANA_USAGE_PROBE_TIMEOUT_SECONDS`                                                     | 동기화가 그 탐지 턴을 포기하기까지 기다리는 시간 (기본값 60)                                                                                                                                                                                                         |
+| `ANA_APPROVAL_TIMEOUT_SECONDS`                                                        | 승인 카드가 기다리는 시간. 지나면 호출이 거부됩니다 (기본값 300)                                                                                                                                                                                                     |
+| `ANA_QUESTION_TIMEOUT_SECONDS`                                                        | 에이전트가 직접 한 질문이 답을 기다리는 시간 (기본값 900). 시간 초과는 실패가 아니라 하나의 결과입니다. 에이전트는 가정을 밝히고 계속 진행합니다                                                                                                                     |
+| `CODEX_SANDBOX`                                                                       | Codex 자체 샌드박스 모드. Docker에서는 비워 두세요. codex는 bubblewrap으로 샌드박스를 만드는데 컨테이너 안에서는 시작할 수 없습니다("bwrap: No permissions to create a new namespace"). 훅은 여전히 실행되고 차단하므로, 게이트와 컨테이너가 계속 강제 경계가 됩니다 |
+| `ANA_WORKSPACE_ROOT`                                                                  | 새 워크스페이스가 만들어지는 루트 (기본값 `$ANA_WORKSPACE_DIR/sessions`)                                                                                                                                                                                             |
+| `ANA_SELF_WORKSPACE`                                                                  | AnA 자체 체크아웃의 호스트 절대 경로. `ana-self` 워크스페이스로 등록됩니다. 비어 있거나 디렉터리가 아니면 재귀 워크스페이스가 나타나지 않습니다                                                                                                                      |
+| `ANA_ROUTING_RULES`                                                                   | 라우팅 규칙 경로 (기본값 `config/routing.yaml`)                                                                                                                                                                                                                      |
+| `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` / `ANA_MONTHLY_TOKEN_BUDGET` | CLI가 자체 윈도를 보고하지 않을 때 상태 바가 추정에 쓰는 예산. 에이전트별: `ANA_<AGENT>_FIVE_HOUR_TOKEN_BUDGET`, `_WEEKLY_`, `_MONTHLY_`                                                                                                                             |
+| `ANA_TAPIE_FIVE_HOUR_USD_BUDGET` / `ANA_TAPIE_MONTHLY_USD_BUDGET`                     | TAPIE는 토큰이 아니라 달러로 제한됩니다. 기본값은 5시간 롤링 $50, 월 $1500                                                                                                                                                                                           |
+| `ANA_BACKGROUND_TURNS`                                                                | `off`면 턴의 수명을 요청한 연결에 묶습니다(예전 동작). 그 외에는 브라우저가 떠나도 계속 실행합니다                                                                                                                                                                   |
+| `ANA_RUNNER_IDLE_SECONDS`                                                             | 마지막 브라우저가 떠나고 실행 중인 것이 없을 때 대화의 러너(큐, 게이트 토큰, CLI 하위 프로세스)를 유지하는 시간 (기본값 900)                                                                                                                                         |
+| `ANA_PLANNER_TIMEOUT_SECONDS`                                                         | 계획 호출이 _아무것도_ 내놓지 않은 채 버틸 수 있는 시간. 지나면 ANA가 다음 단계로 넘어갑니다 (기본값 60). 벽시계가 아니라 침묵 예산이라, 계획을 계속 스트리밍하는 리드는 건드리지 않습니다                                                                           |
+| `ANA_PLANNER_TOTAL_TIMEOUT_SECONDS`                                                   | 모든 단계에 걸친 계획 단계 전체의 상한 (기본값 600). 말은 계속하지만 결론을 내지 못하는 반대 경우를 위한 것입니다                                                                                                                                                    |
+| `ANA_PLAN_ROUNDS`                                                                     | 한 턴이 쓸 수 있는 계획 라운드 수: 첫 계획에 더해 그만큼 확장할 기회 (기본값 2, 1이면 한 번만 계획)                                                                                                                                                                  |
+| `ANA_SECRET_KEY`                                                                      | 저장된 시크릿을 암호화하는 키. **반드시 설정하세요.** 없으면 프로세스마다 무작위 키를 써서, 재시작할 때마다 저장된 시크릿을 모두 읽을 수 없게 됩니다. 이름은 목록에 남고 에이전트는 키가 없다고 보고합니다. 키를 바꿔도 기존 행에 같은 일이 생깁니다                 |
+| `ANA_MAX_THREAD_COST_USD` / `ANA_MAX_THREAD_TOKENS`                                   | 스레드당 서킷 브레이커 예산 (기본값 5.0 / 2,000,000)                                                                                                                                                                                                                 |
+| `ANA_RATE_LIMIT_UTILIZATION`                                                          | "한도에 도달"로 간주하는 윈도 사용률 (기본값 0.95)                                                                                                                                                                                                                   |
+| `ANA_FAILOVER_COOLDOWN_SECONDS`                                                       | 스레드가 우선 모델을 다시 시도하기 전까지 대체 모델에 머무는 시간 (기본값 900)                                                                                                                                                                                       |
 
 ### 워크스페이스
 
@@ -261,17 +266,17 @@ AnA 자체 체크아웃을 마운트하면 목록에 평범한 워크스페이�
   않고 교체합니다.
 
 이 기능에는 Docker 소켓이 필요하며, 이는 **호스트 root와 동등**합니다.
-`ANA_WORKSPACE_CONTAINERS=on`이고 *동시에* 소켓이 마운트되어 있어야 켜집니다.
+`ANA_WORKSPACE_CONTAINERS=on`이고 _동시에_ 소켓이 마운트되어 있어야 켜집니다.
 그렇지 않으면 턴 실행 시점에 실패하는 대신 UI에서 스위치를 사용할 수 없음으로
 표시합니다.
 
-| 변수 | 의미 |
-|---|---|
-| `ANA_WORKSPACE_CONTAINERS` | `on`이면 기능 활성화 |
-| `ANA_WORKSPACE_IMAGE` | 기본 이미지 (두 CLI가 모두 들어 있는 `ana-server:latest`) |
-| `ANA_WORKSPACE_NETWORK` | 워크스페이스 컨테이너가 참여하는 네트워크 (`ana_default`) |
-| `ANA_CONTAINER_GATE_URL` | 워크스페이스 컨테이너 안에서 본 게이트 URL |
-| `DOCKER_GID` | 호스트 Docker 소켓의 그룹 ID (서버는 uid 1000으로 실행) |
+| 변수                       | 의미                                                      |
+| -------------------------- | --------------------------------------------------------- |
+| `ANA_WORKSPACE_CONTAINERS` | `on`이면 기능 활성화                                      |
+| `ANA_WORKSPACE_IMAGE`      | 기본 이미지 (두 CLI가 모두 들어 있는 `ana-server:latest`) |
+| `ANA_WORKSPACE_NETWORK`    | 워크스페이스 컨테이너가 참여하는 네트워크 (`ana_default`) |
+| `ANA_CONTAINER_GATE_URL`   | 워크스페이스 컨테이너 안에서 본 게이트 URL                |
+| `DOCKER_GID`               | 호스트 Docker 소켓의 그룹 ID (서버는 uid 1000으로 실행)   |
 
 ### 에이전트가 사용자에게 묻기
 
@@ -331,10 +336,10 @@ Pro 구독 대신 키로 TAPIE 엔드포인트에 인증합니다. `claude`의 �
 에이전트인 이유는, 라우팅이 묻는 것은 언제나 "어느 계정에 여유가 있는가"이고 이
 둘은 서로 다른 계정으로 과금되기 때문입니다.
 
-| 변수 | 의미 |
-| --- | --- |
-| `TAPIE_API_KEY` | 키. 이 이름이 생기기 전에 키가 있던 `ANTHROPIC_API_KEY_SAVED`도 계속 읽습니다 |
-| `TAPIE_BASE_URL` | 엔드포인트 (기본값 `https://panel.tapie.kr/api/claude-code`) |
+| 변수             | 의미                                                                          |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `TAPIE_API_KEY`  | 키. 이 이름이 생기기 전에 키가 있던 `ANTHROPIC_API_KEY_SAVED`도 계속 읽습니다 |
+| `TAPIE_BASE_URL` | 엔드포인트 (기본값 `https://panel.tapie.kr/api/claude-code`)                  |
 
 - **키가 없으면 고장 난 네 번째가 아니라 에이전트가 셋입니다.** 키가 없으면
   시작할 때 어댑터를 건너뛰고, 이를 가리키는 래더 단계는 `KeyError('tapie')` 대신
@@ -383,18 +388,18 @@ Discord 프런트엔드는 아닙니다. Discord에서 턴을 시작하거나 �
   필요한 부분은 identify, heartbeat, resume, 디스패치 이벤트 하나뿐입니다.
   `ask_user`가 MCP에 대해 한 선택과 같습니다.
 
-| 변수 | 의미 |
-| --- | --- |
-| `ANA_DISCORD_BOT_TOKEN` | 봇 토큰. 없으면 브리지 전체가 꺼지고 클라이언트를 시작하지 않습니다 |
-| `ANA_DISCORD_CHANNEL_ID` | 요청과 턴 요약을 받는 채널. 다른 채널의 상호작용은 무시합니다 |
+| 변수                           | 의미                                                                                                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANA_DISCORD_BOT_TOKEN`        | 봇 토큰. 없으면 브리지 전체가 꺼지고 클라이언트를 시작하지 않습니다                                                                                              |
+| `ANA_DISCORD_CHANNEL_ID`       | 요청과 턴 요약을 받는 채널. 다른 채널의 상호작용은 무시합니다                                                                                                    |
 | `ANA_DISCORD_ALLOWED_USER_IDS` | 답할 수 있는 Discord 사용자 ID 목록 (쉼표 구분). 비어 있으면 아무도 답할 수 없습니다. 한 사람만 쓰는 경우를 위해 단수형 `ANA_DISCORD_ALLOWED_USER_ID`도 읽습니다 |
-| `ANA_DISCORD_TURN_SUMMARIES` | `off`면 턴이 끝날 때 에이전트의 최종 답을 올리지 않습니다 |
+| `ANA_DISCORD_TURN_SUMMARIES`   | `off`면 턴이 끝날 때 에이전트의 최종 답을 올리지 않습니다                                                                                                        |
 
 설정: <https://discord.com/developers/applications>에서 애플리케이션을 만들고,
 봇을 추가해 토큰을 `ANA_DISCORD_BOT_TOKEN`에 넣은 뒤, `bot` 스코프와 해당 채널에
 메시지를 보낼 권한으로 서버에 초대합니다. 권한이 필요한(privileged) 인텐트는 필요
 없습니다. 상호작용은 인텐트와 관계없이 전달됩니다. 본인의 사용자 ID는 Discord의
-*사용자 ID 복사*(개발자 모드 켜기)로 얻습니다.
+_사용자 ID 복사_(개발자 모드 켜기)로 얻습니다.
 
 ### 시크릿
 
@@ -468,15 +473,15 @@ shadcn/ui 컴포넌트(`base-nova` 스타일, Base UI 프리미티브)로 만들
 전체를 불러옵니다. `$ANA_STATE_DIR/skills/`에 같은 이름의 파일을 두면 기본
 제공 파일을 덮어씁니다.
 
-| 스킬 | 용도 |
-|---|---|
-| `code-review` | 변경 사항의 정확성을 검토하고 발견한 문제만 보고 |
-| `git-commit` | diff를 읽고 하나의 의도로 커밋, Conventional Commits |
-| `github-pr` | PR / 이슈 열기 또는 처리 |
-| `db-inspect` | AnA 자체 메모리 데이터베이스 읽기 |
-| `ponytail` | 새 코드보다 기존 것, 표준 라이브러리와 플랫폼 기능을 먼저 재사용하고 가장 짧게 동작하는 diff ([DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail), MIT) |
-| `kill-ai-slop` | 기계적인 기본 UI와 문구 습관(그라데이션, 이모지, 배지 남발, AI 말투)을 찾아 제거 ([yetone/kill-ai-slop](https://github.com/yetone/kill-ai-slop)) |
-| `caveman` | 보고서를 기술적 핵심만 남기고 압축하되 부정문과 숫자는 그대로 유지 ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman)) |
+| 스킬           | 용도                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `code-review`  | 변경 사항의 정확성을 검토하고 발견한 문제만 보고                                                                                                                          |
+| `git-commit`   | diff를 읽고 하나의 의도로 커밋, Conventional Commits                                                                                                                      |
+| `github-pr`    | PR / 이슈 열기 또는 처리                                                                                                                                                  |
+| `db-inspect`   | AnA 자체 메모리 데이터베이스 읽기                                                                                                                                         |
+| `ponytail`     | 새 코드보다 기존 것, 표준 라이브러리와 플랫폼 기능을 먼저 재사용하고 가장 짧게 동작하는 diff ([DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail), MIT) |
+| `kill-ai-slop` | 기계적인 기본 UI와 문구 습관(그라데이션, 이모지, 배지 남발, AI 말투)을 찾아 제거 ([yetone/kill-ai-slop](https://github.com/yetone/kill-ai-slop))                          |
+| `caveman`      | 보고서를 기술적 핵심만 남기고 압축하되 부정문과 숫자는 그대로 유지 ([JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman))                                    |
 
 마지막 세 개는 작업 방식 스킬입니다. 워커가 어떤 도구를 쓸 수 있는지가 아니라
 어떻게 만들고 쓰는지를 바꾸므로, MCP 요구 사항이 없고 모든 작업에 적용됩니다.
@@ -549,11 +554,11 @@ shadcn/ui 컴포넌트(`base-nova` 스타일, Base UI 프리미티브)로 만들
 아닙니다. 지시문은 매 턴 비용이 들고, 같은 말이라도 영어가 토큰을 눈에 띄게 적게
 씁니다.
 
-| 한국어 | 영어 |
-|---|---|
-| 리드의 최종 답 | 리드와 워커의 역할 지시문 |
-| 작업 제목, 계획, 모든 UI 문자열 | 작업 프롬프트, 계획·종합 프롬프트 |
-| `ask_user`가 사용자에게 하는 질문 | CLI 간 핸드오프 요약, 검증 재시도 |
+| 한국어                                    | 영어                                                 |
+| ----------------------------------------- | ---------------------------------------------------- |
+| 리드의 최종 답                            | 리드와 워커의 역할 지시문                            |
+| 작업 제목, 계획, 모든 UI 문자열           | 작업 프롬프트, 계획·종합 프롬프트                    |
+| `ask_user`가 사용자에게 하는 질문         | CLI 간 핸드오프 요약, 검증 재시도                    |
 | 승인 카드 설명 (`config/governance.yaml`) | 게이트 거부 사유, 범위 제한, 스킬 지시문과 스킬 목록 |
 
 그래서 일부는 일부러 두 번 존재합니다. 게이트 거부에는 행동해야 하는 에이전트를
