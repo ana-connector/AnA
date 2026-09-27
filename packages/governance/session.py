@@ -116,7 +116,8 @@ class GateSession:
     pending_native_titles: list[str] = field(default_factory=list)
     # Bound by the WebSocket runner: a routed worker launched on demand by the
     # lead's delegate MCP tool, using the current worker ladder.
-    delegate_worker: Optional[Callable[[str, str], Awaitable[dict]]] = None
+    delegate_worker: Optional[Callable[[str, str, str], Awaitable[dict]]] = None
+    turn_generation: int = 0
     # Delegate MCP requests run as separate HTTP tasks from the lead turn.
     active_delegations: set[asyncio.Task] = field(default_factory=set)
     # Called when a request this session raised is over, whoever ended it.

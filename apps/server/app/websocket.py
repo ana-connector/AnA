@@ -55,7 +55,7 @@ from packages.orchestrator.workspaces import ensure_workspace
 from packages.observability.metrics import active_sessions
 from packages.orchestrator.handoff import AGENTS
 from packages.orchestrator.routing import AUTO
-from apps.server.app.delegation import run_routed_task
+from apps.server.app.delegation import DelegationManager, run_routed_task
 from packages.orchestrator.settings import apply_workspace_prompt, read_auth_mode, system_prompt_for
 from packages.orchestrator.timeline import TurnTimeline
 
@@ -903,11 +903,10 @@ async def _build_runner(
         adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built
         return built
 
-    async def delegate_worker(title: str, prompt: str) -> dict:
-        current = asyncio.current_task()
-        if current is not None:
-            gate_session.active_delegations.add(current)
-        try:
+    delegations = DelegationManager(gate_session.active_delegations)
+
+    async def delegate_worker(title: str, prompt: str, task_id: str = "") -> dict:
+        async def spawn() -> dict:
             return await run_routed_task(
                 title, prompt, worker_factory=worker_factory,
                 workspace_dir=workspace_dir, usage_tracker=app.state.usage_tracker,
@@ -920,9 +919,10 @@ async def _build_runner(
                 # same workspace cannot pick the same one.
                 thread_id=thread_id,
             )
-        finally:
-            if current is not None:
-                gate_session.active_delegations.discard(current)
+
+        return await delegations.request(
+            gate_session.turn_generation, title, prompt, spawn, task_id
+        )
 
     gate_session.delegate_worker = delegate_worker
 

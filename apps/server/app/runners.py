@@ -235,6 +235,7 @@ class TurnRunner:
         # state, not from anything held here — which is also why a turn can
         # outlive the connection that asked for it.
         timeline = TurnTimeline()
+        self.gate_session.turn_generation += 1
         self.gate_session.timeline = timeline
         self.gate_session.native_agents.clear()
         self.gate_session.pending_native_titles.clear()

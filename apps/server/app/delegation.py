@@ -1,4 +1,5 @@
 """Run lead-requested tasks through the worker routing ladder."""
+import asyncio
 import contextlib
 import uuid
 from typing import Awaitable, Callable, Optional
@@ -25,6 +26,52 @@ from packages.orchestrator.breaker import (
 )
 from packages.orchestrator.cooldown import label_for, shared as shared_cooldowns, usable
 from packages.orchestrator.routing import WORKER, decide, load_routing_table
+
+
+class DelegationManager:
+    """One worker per request in a turn, even if an MCP caller times out.
+
+    MCP clients have their own tool-call deadline. A long worker cannot be
+    awaited in one call: when that deadline fires, the lead may retry while
+    the first worker is still running. Keep the task on the server and return
+    a stable ID after a short wait so later calls observe the same result.
+    """
+
+    def __init__(self, active: set[asyncio.Task], poll_seconds: float = 15.0):
+        self.active = active
+        self.poll_seconds = poll_seconds
+        self.by_id: dict[str, asyncio.Task] = {}
+        self.by_request: dict[tuple[int, str, str], str] = {}
+
+    async def request(
+        self, generation: int, title: str, prompt: str,
+        spawn: Callable[[], Awaitable[dict]], task_id: str = "",
+    ) -> dict:
+        if task_id:
+            task = self.by_id.get(task_id)
+            if task is None:
+                return {"status": "error", "error": "알 수 없는 하위 작업 ID입니다."}
+        else:
+            key = (generation, title, prompt)
+            task_id = self.by_request.get(key) or uuid.uuid4().hex
+            task = self.by_id.get(task_id)
+            if task is None:
+                task = asyncio.create_task(spawn(), name=f"delegate:{task_id}")
+                self.by_request[key] = task_id
+                self.by_id[task_id] = task
+                self.active.add(task)
+                task.add_done_callback(self.active.discard)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(task), self.poll_seconds)
+        except asyncio.TimeoutError:
+            return {"status": "running", "task_id": task_id}
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise
+            return {"status": "error", "task_id": task_id, "error": "하위 작업이 중지됐습니다."}
+        except Exception as exc:
+            return {"status": "error", "task_id": task_id, "error": str(exc)}
+        return {**result, "task_id": task_id}
 
 
 async def run_routed_task(
