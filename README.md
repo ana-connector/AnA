@@ -635,4 +635,4 @@ Docker daemon is required. Adapter tests run against fake CLIs
 
 ## License
 
-ANA is licensed under the [GNU General Public License v3.0](LICENSE).
+ANA is licensed under the [GNU Affero General Public License v3.0](LICENSE).
