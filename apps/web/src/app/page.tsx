@@ -455,7 +455,7 @@ export default function ChatPage() {
                     <PlanGraph
                       plan={plan}
                       onSelectTask={setOpenTask}
-                      autoCollapse={leadAnswering}
+                      autoCollapse={leadAnswering && !plan.tasks.some((task) => task.status === "running")}
                     />
                   </MessageScrollerItem>
                 )}

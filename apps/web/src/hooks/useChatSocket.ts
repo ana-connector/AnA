@@ -911,6 +911,23 @@ export function useChatSocket() {
 
         if (event.type === "cancelled") {
           setStatus(null);
+          const cancelledPlan = planRef.current;
+          if (cancelledPlan) {
+            const index = agentMessageIndexRef.current;
+            if (index === null) {
+              messageCountRef.current += 1;
+              setMessages((prev) => [...prev, {
+                role: "agent", text: "", agent: pendingAgentRef.current,
+                plan: cancelledPlan,
+              }]);
+            } else {
+              setMessages((prev) => prev.map((message, at) =>
+                at === index ? { ...message, plan: cancelledPlan } : message
+              ));
+            }
+          }
+          planRef.current = null;
+          setPlan(null);
           agentMessageIndexRef.current = null;
           setStreaming(false);
           return;

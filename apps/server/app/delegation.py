@@ -68,6 +68,10 @@ async def run_routed_task(
                     "is_error": task["status"] == "error",
                     "agent": task["agent"], "task": dict(task)})
 
+    # The card should exist while the worker's worktree is being prepared,
+    # not only after its CLI has started or completed.
+    await announce()
+
     # Same isolation a planned worker gets (apps/server/app/graph.py): its own
     # git worktree on its own branch, merged back when it finishes. Until now a
     # delegated worker edited the session workspace directly, so it and the lead
@@ -156,6 +160,9 @@ async def _run_ladder(
             attribute(adapter, agent_id)
             if activity is not None:
                 activity.start(agent_id)
+            async def report_text(text: str) -> None:
+                timeline_blocks.append_text(task.setdefault("blocks", []), text)
+                await announce()
             # Watched rather than timed: the lead used to wait a fixed 30
             # minutes on this call, which cut working workers off mid-task and
             # waited the full half hour on ones that had already died quietly.
@@ -166,9 +173,7 @@ async def _run_ladder(
                     # Streamed to the card as it arrives, so the worker's own
                     # narration is visible while it works and survives a run
                     # that never reaches a result.
-                    on_text=lambda text: timeline_blocks.append_text(
-                        task.setdefault("blocks", []), text
-                    ),
+                    on_text=report_text,
                     tracker=activity,
                     key=agent_id,
                 ),

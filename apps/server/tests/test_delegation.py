@@ -63,7 +63,7 @@ async def test_delegation_uses_worker_route_and_shows_korean_title(tmp_path, mon
 
     assert seen == [("codex", "gpt-6-sol", str(tmp_path))]
     assert result == {"status": "done", "output": "목록을 확인했습니다.", "agent": "codex"}
-    assert [frame["task"]["status"] for frame in frames] == ["running", "done"]
+    assert [frame["task"]["status"] for frame in frames] == ["running", "running", "done"]
     assert frames[-1]["task"]["title"] == "저장소 조회"
     assert next(iter(tasks.values()))["model"] == "gpt-6-sol"
     assert any(part.startswith("ANA_GATE_AGENT_ID=routed:")
@@ -160,6 +160,11 @@ async def test_a_delegated_worker_that_goes_quiet_returns_what_it_did(tmp_path, 
     assert "활동이 없어" in result["error"]
     # What it managed to say, not nothing.
     assert result["output"] == "스캐폴딩을 시작합니다."
+    assert any(
+        frame["task"]["status"] == "running"
+        and frame["task"]["blocks"] == [{"kind": "text", "text": "스캐폴딩을 시작합니다."}]
+        for frame in frames
+    ), "partial worker narration should reach the UI before the worker finishes"
     assert frames[-1]["task"]["status"] == "timeout"
     assert frames[-1]["task"]["blocks"] == [
         {"kind": "text", "text": "스캐폴딩을 시작합니다."}

@@ -117,6 +117,8 @@ class GateSession:
     # Bound by the WebSocket runner: a routed worker launched on demand by the
     # lead's delegate MCP tool, using the current worker ladder.
     delegate_worker: Optional[Callable[[str, str], Awaitable[dict]]] = None
+    # Delegate MCP requests run as separate HTTP tasks from the lead turn.
+    active_delegations: set[asyncio.Task] = field(default_factory=set)
     # Called when a request this session raised is over, whoever ended it.
     # TurnRunner binds it to "drop the buffered card and tell the browser", so
     # a question answered from a phone stops being offered in the tab.
