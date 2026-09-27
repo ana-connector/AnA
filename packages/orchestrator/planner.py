@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from packages.governance.subagent_scope import Scope
+from packages.orchestrator.context import MAX_FILES as MAX_CONTEXT_FILES
+from packages.orchestrator.context import SharedContext
+from packages.orchestrator.context import parse as parse_context
 from packages.orchestrator.handoff import AGENTS
 
 DIRECT = "direct"
@@ -53,7 +56,11 @@ rules. Prefer execute for one investigation, fix, command, commit or other
 straightforward task, even if it needs several tool calls.
 
 If independent tasks clearly benefit from parallel work or isolation, delegate:
-{"mode": "delegate", "tasks": [
+{"mode": "delegate",
+ "context": {"files": ["packages/orchestrator/routing.py", "config/routing.yaml"],
+             "notes": "decide() returns a Rung(agent, model, effort).",
+             "remember": false},
+ "tasks": [
   {"id": "t1", "title": "짧은 제목", "needs": [],
    "prompt": "a self-contained instruction for this task alone",
    "scope": {"mode": "write", "paths": []}, "verify": "pytest -q tests/test_x.py"},
@@ -78,6 +85,21 @@ Rules:
   - For code changes use the test, build or lint command. Leave it empty if there
     is none — do not invent a command that does not exist.
   - Do not attach one to investigation or explanation tasks.
+- `context` is what **every** task in this plan is told before its own
+  instruction (optional). ANA reads the files itself and puts the excerpts in
+  front of each worker's prompt, so a file listed here is read once instead of
+  once per sub-agent.
+  - `files`: workspace-relative paths the tasks will all need. Name the ones you
+    have already read this turn — the workers have not seen this conversation.
+    At most %(max_context_files)d; large files are excerpted, not pasted whole.
+  - `notes`: what you already know that the workers would otherwise have to
+    find out — an API signature, where something lives, a decision already made.
+    English, and short.
+  - `remember: true` when the notes describe the **project** rather than this
+    request. ANA keeps those in the workspace and hands them to later turns.
+    Leave it false for working notes about this one request.
+  - Do not list a file no task needs, and do not use this to re-send the user's
+    request: each `prompt` still has to stand on its own.
 - The outermost `verify` runs **once, after every task has finished and merged**
   (optional). Per-task checks each pass on their own branch, so put a command
   here if there is one that shows the whole thing still works.
@@ -145,7 +167,8 @@ Something the results revealed still has to be done:
 
 Rules:
 - Same task format as the original plan: no `agent`, Korean `title`, English `prompt`,
-  optional `scope`, `verify` and `skill`.
+  optional `scope`, `verify` and `skill`. A plan-level `context` works here too
+  and is worth setting when the results named files the next tasks all need.
 - Ids already used, which you may name in `needs` but must not reuse:
   %(existing_ids)s
 - `needs` may reference a finished task; its result is attached automatically.
@@ -199,6 +222,11 @@ class Plan:
     # each pass on their own branch; this is the one that catches two of them
     # being fine separately and broken together.
     verify: str = ""
+    # What every task of this plan is told before its own instruction: the
+    # files the lead already read and the notes it already has. One read for
+    # the whole fan-out instead of one per worker
+    # (packages/orchestrator/context.py).
+    context: SharedContext = field(default_factory=SharedContext)
 
     @property
     def delegating(self) -> bool:
@@ -226,7 +254,11 @@ def max_concurrency() -> int:
 
 
 def build_planning_prompt(prompt: str, limit: Optional[int] = None) -> str:
-    return PLAN_INSTRUCTIONS % {"max_tasks": limit or max_tasks(), "prompt": prompt}
+    return PLAN_INSTRUCTIONS % {
+        "max_tasks": limit or max_tasks(),
+        "max_context_files": MAX_CONTEXT_FILES,
+        "prompt": prompt,
+    }
 
 
 def plan_rounds() -> int:
@@ -505,4 +537,5 @@ def parse_plan(
         tasks=tasks,
         note=f"{dropped}개 작업은 상한/형식 때문에 제외" if dropped > 0 else "",
         verify=turn_verify.strip()[:500] if isinstance(turn_verify, str) else "",
+        context=parse_context(payload.get("context")),
     )

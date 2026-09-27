@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 from packages.governance.subagent_scope import Scope
+from packages.orchestrator.activity import ActivityTracker
 from packages.orchestrator.timeline import TurnTimeline
 from packages.remote.notifier import NullNotifier, RemoteNotifier
 
@@ -104,6 +105,11 @@ class GateSession:
     # from another thread leaves the waiter parked until its timeout.
     pending: dict[str, "_Pending"] = field(default_factory=dict)
     timeline: Optional[TurnTimeline] = None
+    # When each running sub-agent last did anything, so a supervisor can tell a
+    # worker that is thinking from one that has died. Lives here because the two
+    # halves are in different places: the gate sees the tool calls, the turn's
+    # watchdogs do the giving up (packages/orchestrator/activity.py).
+    activity: ActivityTracker = field(default_factory=ActivityTracker)
     native_agents: dict[str, dict] = field(default_factory=dict)
     # Native Agent/Task calls report a human description before their later
     # SubagentStart hook reports only a generic agent_type.

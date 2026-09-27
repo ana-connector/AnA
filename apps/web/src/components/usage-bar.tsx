@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleDotIcon } from "lucide-react";
+import { CircleDotIcon, RefreshCwIcon } from "lucide-react";
 import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
-import { apiBase } from "@/lib/api";
+import { apiBase, syncUsage } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { notify } from "@/lib/notify";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Window = {
@@ -103,6 +104,7 @@ export function UsageBar({
   failingAgents?: Record<string, string>;
 }) {
   const [usage, setUsage] = useState<UsageSnapshot>({});
+  const [syncing, setSyncing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -135,12 +137,57 @@ export function UsageBar({
     };
   }, [refresh]);
 
+  // Claude only states its windows while a turn runs, so "now" costs one short
+  // turn (see apps/server/app/usage_sync.py). A button, therefore, and not part
+  // of the poll above.
+  const sync = async () => {
+    setSyncing(true);
+    try {
+      const results = await syncUsage();
+      await refresh();
+      const stale = results.filter((result) => !result.refreshed);
+      if (stale.length === 0) {
+        notify.success("사용량 동기화됨", "공급자가 보고한 실제 수치입니다.");
+      } else {
+        // Named rather than swallowed: the number on screen is still the old
+        // one for those agents, and the probe may have cost something anyway.
+        notify.info(
+          "일부만 동기화됨",
+          stale.map((result) => `${AGENT_NAME[result.agent] ?? result.agent}: ${result.reason ?? "갱신 없음"}`).join(" · "),
+        );
+      }
+    } catch (e) {
+      notify.error("동기화 실패", e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const agents = Object.entries(usage);
 
   return (
     // Generous vertical padding: this is the last row on screen, and a tight
     // one reads as clipped against the window edge.
     <footer className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              onClick={() => void sync()}
+              disabled={syncing}
+              aria-label="사용량 즉시 동기화"
+              className="-m-1 rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCwIcon className={cn("size-3.5", syncing && "animate-spin")} />
+            </button>
+          }
+        />
+        <TooltipContent>
+          사용량 즉시 동기화 · Claude는 짧은 턴을 한 번 돌려 실제 수치를 받아옵니다
+        </TooltipContent>
+      </Tooltip>
+
       {agents.length === 0 ? (
         <span>아직 집계된 사용량이 없습니다</span>
       ) : (

@@ -11,9 +11,13 @@ Controlled by environment variables:
   FAKE_KIMI_EXIT        process exit code (default 0)
   FAKE_KIMI_STDERR      text written to stderr
   FAKE_KIMI_ARGS_FILE   file to dump argv into, for argv assertions
+  FAKE_KIMI_SILENT      emit no assistant message (a refused request)
+  FAKE_KIMI_ORPHAN      seconds a leaked child keeps stdout/stderr open after
+                        this process exits, as kimi's unreaped MCP servers do
 """
 import json
 import os
+import subprocess
 import sys
 
 
@@ -42,10 +46,19 @@ def main() -> None:
                                 "items": ["첫 번째 작업", "두 번째 작업"]})}}],
         }))
         print(json.dumps({"role": "tool", "tool_call_id": "swarm_1", "content": "완료"}))
-    print(json.dumps({
-        "role": "assistant",
-        "content": os.environ.get("FAKE_KIMI_TEXT", "안녕"),
-    }))
+    orphan = os.environ.get("FAKE_KIMI_ORPHAN")
+    if orphan:
+        # Inherits this process's stdout and stderr and outlives it, which is
+        # what keeps those pipes from reaching EOF when the CLI is gone.
+        subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep({float(orphan)})"],
+            start_new_session=True,
+        )
+    if not os.environ.get("FAKE_KIMI_SILENT"):
+        print(json.dumps({
+            "role": "assistant",
+            "content": os.environ.get("FAKE_KIMI_TEXT", "안녕"),
+        }))
     session_id = os.environ.get("FAKE_KIMI_SESSION", "session_fake")
     print(json.dumps({
         "role": "meta",

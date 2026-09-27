@@ -76,12 +76,15 @@ const STARTERS = [
  *  headed "도구 1회" — a turn that ran eight commands looked like eight
  *  one-command turns. Grouping only merges neighbours, so the ordering that
  *  matters is untouched. */
-function groupBlocks(
-  blocks: MessageBlock[]
-): ({ kind: "text"; text: string } | { kind: "tools"; tools: ToolEvent[] })[] {
-  const grouped: ({ kind: "text"; text: string } | { kind: "tools"; tools: ToolEvent[] })[] = [];
+type Grouped =
+  | { kind: "text"; text: string }
+  | { kind: "notice"; text: string }
+  | { kind: "tools"; tools: ToolEvent[] };
+
+function groupBlocks(blocks: MessageBlock[]): Grouped[] {
+  const grouped: Grouped[] = [];
   for (const block of blocks) {
-    if (block.kind === "text") {
+    if (block.kind === "text" || block.kind === "notice") {
       grouped.push(block);
       continue;
     }
@@ -90,6 +93,37 @@ function groupBlocks(
     else grouped.push({ kind: "tools", tools: [block.tool] });
   }
   return grouped;
+}
+
+/** One agent's record — text it wrote, calls the gate screened, dividers ANA
+ *  inserted — in the order it happened. Used for the lead's reply and, by the
+ *  sub-agent panel, for one worker's run: the same thing happened in both, so
+ *  reading them should not be two different experiences. */
+function BlockList({
+  blocks,
+  defaultToolsOpen,
+}: {
+  blocks: MessageBlock[];
+  defaultToolsOpen?: boolean;
+}) {
+  return (
+    <>
+      {groupBlocks(blocks).map((block, index) =>
+        block.kind === "tools" ? (
+          <ToolCalls key={index} tools={block.tools} defaultOpen={defaultToolsOpen} />
+        ) : block.kind === "notice" ? (
+          // ANA talking about the turn, not an agent talking in it.
+          <Marker key={index} variant="separator">
+            <MarkerContent>{block.text}</MarkerContent>
+          </Marker>
+        ) : (
+          block.text.trim().length > 0 && (
+            <Markdown key={index}>{block.text}</Markdown>
+          )
+        )
+      )}
+    </>
+  );
 }
 
 export default function ChatPage() {
@@ -312,13 +346,7 @@ export default function ChatPage() {
                     // a reply streams is the behavior people expect, and the
                     // jump-to-latest button covers the rest.
                   >
-                    {message.notice ? (
-                      // A failover notice is the system talking, not the
-                      // agent — a marker, not a bubble.
-                      <Marker variant="separator">
-                        <MarkerContent>{message.text}</MarkerContent>
-                      </Marker>
-                    ) : message.role === "user" ? (
+                    {message.role === "user" ? (
                       // What you said is a message in a conversation: short,
                       // attributable, and worth setting apart from the page.
                       <Message align="end">
@@ -386,25 +414,16 @@ export default function ChatPage() {
                             </Tooltip>
                           ) : null}
                         </div>
-                        {groupBlocks(
-                          message.blocks ?? [{ kind: "text" as const, text: message.text }]
-                        ).map((block, blockIndex) =>
-                          block.kind === "text" ? (
-                            block.text.trim().length > 0 && (
-                              <Markdown key={blockIndex}>{block.text}</Markdown>
-                            )
-                          ) : (
-                            <ToolCalls
-                              key={blockIndex}
-                              tools={block.tools}
-                              // The turn in flight keeps its card open, so you
-                              // can watch what the agent is doing.
-                              defaultOpen={
-                                streaming && index === messages.length - 1 ? true : undefined
-                              }
-                            />
-                          )
-                        )}
+                        <BlockList
+                          blocks={
+                            message.blocks ?? [{ kind: "text" as const, text: message.text }]
+                          }
+                          // The turn in flight keeps its tool card open, so you
+                          // can watch what the agent is doing.
+                          defaultToolsOpen={
+                            streaming && index === messages.length - 1 ? true : undefined
+                          }
+                        />
                         {message.plan && (
                           <PlanGraph
                             plan={message.plan}
@@ -539,39 +558,62 @@ export default function ChatPage() {
           </SheetHeader>
 
           {shownTask && (
-            <div className="flex min-w-0 flex-col gap-3 px-4 pb-4">
+            // A conversation, because that is what it was: the lead sent this
+            // worker an instruction and the worker answered. Read the same way
+            // the main transcript is — the instruction as a message from the one
+            // who gave it, the worker's own words as body text, its commands
+            // where they happened — so nothing has to be learned twice.
+            <div className="flex min-w-0 flex-col gap-4 px-4 pb-4">
               {shownTask.prompt && (
-                <section className="flex min-w-0 flex-col gap-1">
-                  <h3 className="text-xs font-medium text-muted-foreground">받은 지시</h3>
-                  {/* The instruction stays in a box: it is quoted material, not
-                      this panel's own text. */}
-                  <div className="rounded-md border border-border bg-muted/50 px-3 py-2">
-                    <Markdown>{shownTask.prompt}</Markdown>
-                  </div>
-                </section>
+                <Message align="end">
+                  <MessageContent>
+                    <Bubble align="end" variant="default">
+                      <BubbleContent>
+                        <span className="whitespace-pre-wrap">{shownTask.prompt}</span>
+                      </BubbleContent>
+                    </Bubble>
+                    <span className="mt-1 block text-right text-[11px] text-muted-foreground">
+                      대장 에이전트의 지시
+                    </span>
+                  </MessageContent>
+                </Message>
               )}
 
-              {shownTask.tools?.length ? (
-                <section className="flex min-w-0 flex-col gap-1">
-                  <h3 className="text-xs font-medium text-muted-foreground">
-                    도구 호출 {shownTask.tools.length}건
-                  </h3>
-                  <ToolCalls tools={shownTask.tools} />
-                </section>
-              ) : null}
+              <div className="flex min-w-0 flex-col gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>
+                    {shownTask.model ?? models[shownTask.agent] ?? shownTask.agent}
+                  </span>
+                </div>
 
-              <section className="flex min-w-0 flex-col gap-1">
-                <h3 className="text-xs font-medium text-muted-foreground">결과</h3>
+                {/* What the worker said and ran, interleaved. A worker ANA gave
+                    up on has no final answer, and this is the whole record of
+                    what it did get done — which is exactly the run someone
+                    opens this panel to read. */}
+                {shownTask.blocks?.length ? (
+                  <BlockList
+                    blocks={shownTask.blocks}
+                    defaultToolsOpen={shownTask.status === "running" ? true : undefined}
+                  />
+                ) : shownTask.tools?.length ? (
+                  // Older turns recorded the calls without their ordering.
+                  <ToolCalls tools={shownTask.tools} />
+                ) : null}
+
                 {shownTask.output ? (
-                  // What the worker answered, as body text for the same reason
-                  // the lead's reply is: it is the document, not an aside.
                   <Markdown>{shownTask.output}</Markdown>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     {shownTask.error || "작업 결과를 기다리는 중…"}
                   </p>
                 )}
-              </section>
+
+                {shownTask.output && shownTask.error ? (
+                  // Both: a worker that was cut off left work behind *and* a
+                  // reason it stopped.
+                  <p className="text-sm text-destructive">{shownTask.error}</p>
+                ) : null}
+              </div>
             </div>
           )}
         </SheetContent>

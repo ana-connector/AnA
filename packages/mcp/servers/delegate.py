@@ -25,6 +25,23 @@ TOOL = {
 }
 
 
+# The lead's wait on a worker is no longer a deadline. ANA decides when a
+# worker is finished or gone — it watches the worker's activity and answers as
+# soon as either happens (packages/orchestrator/activity.py) — so this only has
+# to outlast a long, healthy task. The old value here was 1800: a worker three
+# commands from committing was reported to the lead as a timeout at the
+# half-hour mark, and the lead then redid its work by hand.
+_DEFAULT_TIMEOUT_SECONDS = 86400.0
+
+
+def _timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("ANA_DELEGATE_HTTP_TIMEOUT",
+                                             _DEFAULT_TIMEOUT_SECONDS)))
+    except ValueError:
+        return _DEFAULT_TIMEOUT_SECONDS
+
+
 def _call(arguments: dict) -> dict:
     title = str(arguments.get("title") or "").strip()
     prompt = str(arguments.get("prompt") or "").strip()
@@ -41,11 +58,19 @@ def _call(arguments: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=1800) as response:
+        with urllib.request.urlopen(request, timeout=_timeout()) as response:
             result = json.load(response)
     except Exception as exc:  # The lead needs a tool result it can explain.
         return {"content": [{"type": "text", "text": f"worker request failed: {exc}"}], "isError": True}
-    message = result.get("output") or result.get("error") or "Worker returned no output"
+    # An error carries the worker's partial output when it left any: a worker
+    # ANA gave up on has usually done real work, and "failed" on its own is what
+    # sent the lead off to repeat it.
+    if result.get("status") == "done":
+        message = result.get("output") or "Worker returned no output"
+    else:
+        message = "\n\n".join(
+            part for part in (result.get("error"), result.get("output")) if part
+        ) or "Worker returned no output"
     return {"content": [{"type": "text", "text": message}], "isError": result.get("status") != "done"}
 
 

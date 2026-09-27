@@ -26,9 +26,14 @@ from packages.orchestrator.breaker import (
 )
 from packages.governance.secrets import mask as mask_secrets
 from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
-from packages.orchestrator import verification, worktrees
+from packages.orchestrator import context as shared_context, verification, worktrees
 from packages.observability.metrics import record_failover, record_subagent, record_turn
 from packages.observability.tracing import Tracer
+from packages.orchestrator.cooldown import (
+    label_for,
+    shared as shared_cooldowns,
+    usable,
+)
 from packages.orchestrator.handoff import build_handoff_prompt
 from packages.orchestrator.routing import (
     EFFORTS,
@@ -56,6 +61,11 @@ from packages.orchestrator.supervisor import (
     WorkerRun,
     run_tasks,
     summarize,
+)
+from packages.orchestrator import timeline as timeline_blocks
+from packages.orchestrator.activity import (
+    idle_timeout_seconds,
+    wall_timeout_seconds,
 )
 
 # A disabled tracer, used when no caller wired one in (tests, single-agent
@@ -161,19 +171,133 @@ def _tokens_from_usage(usage: Optional[dict]) -> int:
     return total
 
 
-async def _run_worker(adapter, prompt: str) -> WorkerRun:
+def _with_cards(results: list[dict], cards: dict) -> list[dict]:
+    """The turn's sub-agents as the transcript should keep them.
+
+    A planned task appears in `results`; its live card is where its tool calls
+    and narration accumulated, so the two are merged rather than both listed.
+    The merge also rescues the record of a worker that was given up on — its
+    result has no tools or blocks of its own, and dropping the card would leave
+    the panel empty for exactly the run someone wants to read. Cards that match
+    no result are the CLIs' own sub-agents and pass through unchanged."""
+    merged = []
+    by_id = {card.get("id"): card for card in cards.values()}
+    for result in results:
+        card = by_id.get(result.get("id"))
+        if card is not None:
+            result = {
+                **result,
+                "tools": result.get("tools") or card.get("tools") or [],
+                "blocks": result.get("blocks") or card.get("blocks") or [],
+            }
+        merged.append(result)
+    claimed = {result.get("id") for result in results}
+    merged.extend(card for card in cards.values() if card.get("id") not in claimed)
+    return merged
+
+
+def _timeline_blocks(configurable: dict) -> Optional[list]:
+    """The lead turn's ordered transcript, when a caller wired one."""
+    timeline = configurable.get("timeline")
+    return timeline.blocks if timeline is not None else None
+
+
+def _switch_notice(from_rung: str, to_rung: str, text: str) -> str:
+    """The one-line divider that marks where a turn changed models.
+
+    Written by the server so the live divider and the restored one are the same
+    sentence: the browser used to compose this itself, which is why reopening a
+    conversation showed a transcript with the switch silently removed."""
+    reason = "인증 오류" if is_auth_failure(text or "") else ""
+    if not reason and is_usage_limit(text or ""):
+        reason = "사용량 한도"
+    if not reason:
+        reason = " ".join((text or "오류").split())[:120] or "오류"
+    return f"{from_rung} → {to_rung} 전환 ({reason})"
+
+
+def _failover_frame(
+    writer,
+    *,
+    text: str,
+    agent: str,
+    from_rung: str,
+    to_rung: str,
+    session_id=None,
+    task_id=None,
+    blocks: Optional[list] = None,
+) -> None:
+    """Records the switch where it belongs and tells the browser about it.
+
+    `blocks` is the transcript the notice is part of — the lead turn's timeline,
+    or one sub-agent's card when a worker is the thing that moved."""
+    record_failover(from_rung, to_rung)
+    notice = _switch_notice(from_rung, to_rung, text)
+    if blocks is not None:
+        timeline_blocks.append_notice(blocks, notice)
+    frame = {
+        "type": "failover",
+        "text": text,
+        "session_id": session_id,
+        "is_error": False,
+        "agent": agent,
+        "from_rung": from_rung,
+        "to_rung": to_rung,
+        # Sent rather than derived in the browser, so the divider on screen and
+        # the divider in the saved transcript cannot drift apart.
+        "notice": notice,
+    }
+    if task_id is not None:
+        frame["task_id"] = task_id
+    writer(frame)
+
+
+def attribute(adapter, agent_id: str) -> None:
+    """Tells this worker's CLI which card its tool calls belong to.
+
+    The hook reads ANA_GATE_AGENT_ID and passes it to the gate, which is how a
+    sub-agent's commands land on its own card rather than the lead's — and how
+    the idle watchdog knows which worker just did something."""
+    env = getattr(adapter, "env", None)
+    if isinstance(env, dict):
+        env["ANA_GATE_AGENT_ID"] = agent_id
+    # docker exec does not inherit this process's environment, so a worker
+    # running inside the workspace container has to be handed the value.
+    prefix = getattr(adapter, "command_prefix", None)
+    if isinstance(prefix, list) and prefix[:2] == ["docker", "exec"]:
+        prefix[-1:-1] = ["-e", f"ANA_GATE_AGENT_ID={agent_id}"]
+
+
+async def _run_worker(
+    adapter,
+    prompt: str,
+    *,
+    on_text=None,
+    tracker=None,
+    key: Optional[str] = None,
+) -> WorkerRun:
     """One sub-agent: a fresh CLI session (never resumed) that answers exactly
     one task. Errors are returned, not raised — the supervisor turns them into
-    a task result so the other workers keep going."""
+    a task result so the other workers keep going.
+
+    `on_text` receives the worker's narration as it streams, so its card can
+    show what it is saying while it works rather than only a final answer that a
+    cut-off run never produces. Every event also marks the worker as alive for
+    the idle watchdog: a CLI that streams text between tool calls is working
+    even while the gate sees nothing."""
     run = WorkerRun(adapter=adapter)
     try:
         async for event in adapter.run_stream(prompt, session_id=None):
+            if tracker is not None:
+                tracker.touch(key)
             # Reported once, usually on the first frame; kept so the task can
             # say which model did the work rather than only which CLI.
             if getattr(event, "model", None):
                 run.model = event.model
             if event.type == "text":
                 run.output += event.text
+                if on_text is not None:
+                    on_text(event.text)
             elif event.type == "result":
                 # The result event is the CLI's final answer. Streaming text
                 # can contain earlier progress messages, or miss a final
@@ -200,11 +324,20 @@ async def _run_worker(adapter, prompt: str) -> WorkerRun:
     return run
 
 
-async def _work_the_task(task, prompt, base_prompt, cwd, worker_route, worker_factory, writer):
+async def _work_the_task(
+    task, prompt, base_prompt, cwd, worker_route, worker_factory, writer,
+    *, card=None, tracker=None,
+):
     """Runs one task's worker, re-dispatching once when ANA's own check fails.
 
     Split out of the fan-out so the caller can wrap it in a `finally` that
-    always merges and removes the worktree."""
+    always merges and removes the worktree.
+
+    `card` is the live task record the browser is watching: the worker's
+    narration is appended to it as it streams, and its gate-screened tool calls
+    land there too (the CLI is told which card it is, see delegation.attribute),
+    so a planned sub-agent's panel shows the same ordered record a lead turn
+    does instead of a bare final answer."""
     run = None
     checked = None
     rungs = load_routing_table().rungs_for(WORKER)
@@ -213,32 +346,50 @@ async def _work_the_task(task, prompt, base_prompt, cwd, worker_route, worker_fa
          if (rung.agent, rung.model) == (worker_route.agent, worker_route.model)),
         -1,
     )
-    routes = [worker_route] + (rungs[selected + 1:] if selected >= 0 else [])
+    # Same as the delegate path: a rung resting off a usage limit is skipped
+    # instead of asked once per task (packages/orchestrator/cooldown.py).
+    routes = usable([worker_route] + (rungs[selected + 1:] if selected >= 0 else []))
+    cooldowns = shared_cooldowns()
     for attempt in range(verification.max_retries() + 1):
         for index, route in enumerate(routes):
+            adapter = worker_factory(route.agent, route.model, route.effort, task.scope, cwd)
+            attribute(adapter, task.id)
+            if tracker is not None:
+                tracker.start(task.id)
             run = await _run_worker(
-                worker_factory(route.agent, route.model, route.effort, task.scope, cwd),
+                adapter,
                 prompt,
+                on_text=(
+                    (lambda text: timeline_blocks.append_text(
+                        card.setdefault("blocks", []), text
+                    ))
+                    if card is not None
+                    else None
+                ),
+                tracker=tracker,
+                key=task.id,
             )
             run.extras["agent"] = route.agent
             if not run.model:
                 run.model = route.model
-            if not run.failed or not is_recoverable_failure(f"{run.error}\n{run.output}"):
+            combined = f"{run.error}\n{run.output}"
+            if run.failed and (is_usage_limit(combined) or is_auth_failure(combined)):
+                cooldowns.trip(
+                    label_for(route.agent, route.model), reason=(run.error or "")[:200]
+                )
+            if not run.failed or not is_recoverable_failure(combined):
                 break
             if index + 1 < len(routes):
                 next_route = routes[index + 1]
-                record_failover(
-                    f"{route.agent}/{route.model}",
-                    f"{next_route.agent}/{next_route.model}",
+                _failover_frame(
+                    writer,
+                    text=run.error or run.output,
+                    agent=next_route.agent,
+                    from_rung=f"{route.agent}/{route.model}",
+                    to_rung=f"{next_route.agent}/{next_route.model}",
+                    task_id=task.id,
+                    blocks=card.setdefault("blocks", []) if card is not None else None,
                 )
-                writer({
-                    "type": "failover", "text": run.error or run.output,
-                    "session_id": None, "is_error": False,
-                    "agent": next_route.agent,
-                    "from_rung": f"{route.agent}/{route.model}",
-                    "to_rung": f"{next_route.agent}/{next_route.model}",
-                    "task_id": task.id,
-                })
         if run.failed:
             break
         if not task.verify:
@@ -428,13 +579,14 @@ async def _plan_with_failover(configurable, agent, model, effort, writer, tracer
             last_error = str(exc)
         if index + 1 < len(chain):
             next_label = chain[index + 1].label
-            record_failover(rung.label, next_label)
-            writer({
-                "type": "failover", "text": last_error,
-                "session_id": None, "is_error": False,
-                "agent": rung.agent, "from_rung": rung.label,
-                "to_rung": next_label,
-            })
+            _failover_frame(
+                writer,
+                text=last_error,
+                agent=rung.agent,
+                from_rung=rung.label,
+                to_rung=next_label,
+                blocks=_timeline_blocks(configurable),
+            )
     raise _PlanningLimit(last_error or "all planning models are unavailable")
 
 
@@ -806,6 +958,30 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             # Per workspace, not per turn: two conversations open on the same
             # folder merge into the same git index.
             merge_lock = worktrees.merge_lock_for(workspace_dir or ".")
+            # Read once, for the whole fan-out. The files the lead named are
+            # excerpted here and put in front of every worker's instruction, so
+            # five workers on the same job stop opening the same files to find
+            # out what they are looking at
+            # (packages/orchestrator/context.py). Excerpts come from the
+            # workspace itself — what the lead saw — not from a worker's
+            # worktree, which is a checkout of HEAD.
+            context_block = shared_context.render(
+                plan.context,
+                workspace_dir,
+                remembered=shared_context.recall(workspace_dir),
+            )
+            # Notes about the project, not about this request, outlive the turn.
+            # Only when the lead said so; see SharedContext.remember.
+            shared_context.remember(
+                workspace_dir, plan.context, title=state["prompt"][:80]
+            )
+            # Who is alive, as the gate and the adapters report it. None in
+            # tests that wire no gate session, which simply means no watchdog.
+            activity = gate_session.activity if gate_session is not None else None
+            # The live cards the browser is watching. A planned worker now gets
+            # one too, so its own tool calls and narration land on its panel
+            # instead of in the middle of the lead's transcript.
+            cards = configurable.get("native_agents")
 
             async def run_worker(task, upstream=()):
                 # Workers do the actual work, so they get the worker ladder —
@@ -833,20 +1009,37 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     for need in task.needs
                     if need in finished and need not in {r.task.id for r in upstream}
                 ]
-                base_prompt = build_handoff_prompt(
-                    build_task_prompt(task, carried + [r.as_dict() for r in upstream]),
-                    incoming_agent=worker_route.agent,
-                    previous_agent="lead",
-                    turns=await recent_turns(pool, thread_id=thread_id, limit=2),
+                base_prompt = shared_context.attach(
+                    build_handoff_prompt(
+                        build_task_prompt(task, carried + [r.as_dict() for r in upstream]),
+                        incoming_agent=worker_route.agent,
+                        previous_agent="lead",
+                        turns=await recent_turns(pool, thread_id=thread_id, limit=2),
+                    ),
+                    context_block,
                 )
 
                 prompt = base_prompt
                 run = None
                 checked = None
                 merged = None
+                card = None
+                if cards is not None:
+                    card = cards.setdefault(task.id, {
+                        "id": task.id,
+                        "title": task.title,
+                        "agent": worker_route.agent,
+                        "model": worker_route.model,
+                        "status": "running",
+                        "output": "",
+                        "prompt": task.prompt,
+                        "tools": [],
+                        "blocks": [],
+                    })
                 try:
                     run, checked = await _work_the_task(
-                        task, prompt, base_prompt, cwd, worker_route, worker_factory, writer
+                        task, prompt, base_prompt, cwd, worker_route, worker_factory, writer,
+                        card=card, tracker=activity,
                     )
                 finally:
                     if tree is not None:
@@ -890,6 +1083,11 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                         "branch": merged.branch,
                         "reason": merged.reason,
                     }
+                if card is not None and run is not None:
+                    # Carried onto the task result, so the record survives the
+                    # turn: the card itself is cleared when the next one starts.
+                    run.extras["tools"] = list(card.get("tools") or [])
+                    run.extras["blocks"] = list(card.get("blocks") or [])
                 if run is not None and not run.model:
                     # The CLI said nothing about its model (a pinned default,
                     # or a run that failed before reporting), so the task shows
@@ -920,9 +1118,15 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                         round_tasks,
                         run_worker,
                         max_concurrency=max_concurrency(),
-                        timeout_seconds=float(
-                            os.environ.get("ANA_SUBAGENT_TIMEOUT_SECONDS", 600)
-                        ),
+                        # Silence, not elapsed time: a worker three commands
+                        # from finishing must not be killed for having taken a
+                        # while, and one that died in its first second must not
+                        # hold its slot for the rest of a fixed budget. The old
+                        # wall clock is still available, and now off by default
+                        # (see packages/orchestrator/activity.py).
+                        idle_timeout_seconds=idle_timeout_seconds(),
+                        timeout_seconds=wall_timeout_seconds(),
+                        tracker=activity,
                         on_update=announce,
                     )
                 results.extend(round_results)
@@ -1113,17 +1317,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     break
                 failed_over = True
                 failover_reason = str(exc)
-                record_failover(rung.label, skip_to.label)
-                writer(
-                    {
-                        "type": "failover",
-                        "text": failover_reason,
-                        "session_id": session_id,
-                        "is_error": False,
-                        "agent": rung.agent,
-                        "from_rung": rung.label,
-                        "to_rung": skip_to.label,
-                    }
+                _failover_frame(
+                    writer,
+                    text=failover_reason,
+                    agent=rung.agent,
+                    from_rung=rung.label,
+                    to_rung=skip_to.label,
+                    session_id=session_id,
+                    blocks=_timeline_blocks(configurable),
                 )
                 continue
             # Held in a name the finally block can still read if this attempt
@@ -1199,17 +1400,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
 
             failed_over = True
             failover_reason = outcome.error_text or "usage limit reached"
-            record_failover(rung.label, follow_up.label)
-            writer(
-                {
-                    "type": "failover",
-                    "text": failover_reason,
-                    "session_id": session_id,
-                    "is_error": False,
-                    "agent": rung.agent,
-                    "from_rung": rung.label,
-                    "to_rung": follow_up.label,
-                }
+            _failover_frame(
+                writer,
+                text=failover_reason,
+                agent=rung.agent,
+                from_rung=rung.label,
+                to_rung=follow_up.label,
+                session_id=session_id,
+                blocks=_timeline_blocks(configurable),
             )
             caught_exc = None  # recovered by moving down the chain
             for_error_text = ""
@@ -1265,7 +1463,9 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     "rung": used_rung.label,
                     "model": turn_model,
                     "tokens": turn_tokens + subagent_tokens,
-                    "subagents": subagent_results + list(configurable.get("native_agents", {}).values()),
+                    "subagents": _with_cards(
+                        subagent_results, configurable.get("native_agents", {})
+                    ),
                     "failed_over": failed_over,
                     "blocks": configurable["timeline"].blocks if configurable.get("timeline") else [],
                 },

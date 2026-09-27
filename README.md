@@ -32,6 +32,13 @@ Ports are 3005 / 8100 / 15432 rather than the usual 3000 / 8000 / 5432,
 because unrelated services already hold those on this machine. Inside the
 Compose network the services still talk over 3000 / 8000 / 5432.
 
+The usage row at the bottom of the chat has a refresh button. `POST /usage/sync`
+re-reads the providers' real figures on demand: Codex's come off its own rollout
+log for nothing, and Claude only emits its windows while a turn streams, so the
+button runs one short tool-free prompt to collect them — a few hundred tokens,
+recorded like any other turn. When a half cannot be refreshed the toast says
+which one and why, rather than leaving a stale number looking fresh.
+
 Both CLIs run inside the server container and authenticate from your host
 config, which Compose mounts read-write: `~/.claude` and `~/.codex`. Log in on
 the host first (`claude`, `codex login`) — the mounts are also where each CLI
@@ -135,10 +142,41 @@ refuses UPDATE, DELETE and TRUNCATE at the database level).
 Editing `config/governance.yaml` takes effect without a restart. Rules are
 matched in order, so explicit allowances go above broader blocks.
 
+### YOLO mode
+
+설정 → 권한 has one switch. On, AnA answers every approval card with "allow"
+itself instead of raising it, so nothing waits for a human. It is read on each
+tool call, not per connection, so switching it back is immediate.
+
+What it does **not** relax, because the gate returns on all of these before it
+would ever ask anyone:
+
+- every `deny` rule in `config/governance.yaml` — `rm -rf`, `sudo`,
+  `drop table`, `shutdown`, disk writes;
+- the **credential files**, denied by their own two rules at the top of the rule
+  set: `.env` and `.env.*`, `.secrets`, `~/.ssh/**`, `~/.aws/**`,
+  `~/.claude/.credentials.json`, `.npmrc`, `*.pem`, `*.key`, `id_rsa*`. Both a
+  file tool's path and a shell command that would print one are matched.
+  `.env.example`, `.env.sample` and `.env.template` are exempt — they hold
+  placeholders, and `cp .env.example .env` is this repository's own setup step;
+- a command carrying the *value* of a stored secret (the secret scan);
+- the session workspace and each sub-agent's own scope;
+- MCP scope partitioning.
+
+The audit log records these as approved by `yolo`, never by `user`: a row
+claiming a person approved something nobody saw would be worse than no row.
+
+Pattern matching is not a sandbox. A determined agent can read a file the
+patterns do not name, and the container plus the workspace confinement is still
+what actually bounds it.
+
 | Variable | Meaning |
 |---|---|
 | `ANA_GOVERNANCE` | `off` restores the old bypass behavior; anything else (including unset) keeps the gate on |
 | `ANA_GOVERNANCE_RULES` | Path to the rule set (default `config/governance.yaml`) |
+| `ANA_GOVERNANCE_MODE` | `normal` (default) or `yolo`, the starting position for the switch in 설정 → 권한. The stored choice wins over this, so a change made in the UI outlives a restart |
+| `ANA_USAGE_PROBE` | `off` stops the usage sync button from running the short Claude turn it uses to read that CLI's windows. Codex still syncs from its own log |
+| `ANA_USAGE_PROBE_TIMEOUT_SECONDS` | How long that probe may take before the sync gives up on it (default 60) |
 | `ANA_APPROVAL_TIMEOUT_SECONDS` | How long an approval card waits before the call is denied (default 300) |
 | `ANA_QUESTION_TIMEOUT_SECONDS` | How long the agent's own question waits for an answer (default 900). A timeout is a result, not a failure: the agent states its assumption and carries on |
 | `CODEX_SANDBOX` | Codex's own sandbox mode. Leave unset under Docker: codex sandboxes through bubblewrap, which cannot start in a container ("bwrap: No permissions to create a new namespace"). The hook still runs and still denies, so the gate plus the container stays the enforcement boundary |
@@ -472,14 +510,41 @@ CLI sessions, then hands their results back to the lead to synthesize one
 answer. The chat draws the fan-out with React Flow as each worker starts and
 finishes.
 
-- Workers share the thread's workspace and gate token, so every tool call they
-  make is screened and confined exactly like the lead's.
+- Workers share the thread's gate token, so every tool call they make is
+  screened and confined exactly like the lead's. What they do not share is the
+  *directory*: each gets its own `git worktree` under `.ana/worktrees/` when the
+  workspace is a repository, and AnA merges the branches back one at a time as
+  the workers finish. A conflict is reported, never resolved — the branch is
+  left in place and the task result names it. This now covers delegated workers
+  (the lead's `run_task` tool) as well as planned ones; a plain directory has
+  nothing to branch from, so its workers share it as before.
+- **The lead reads the shared files once, not once per worker.** A plan may carry
+  a `context` — the workspace-relative files every task needs, plus notes the
+  lead already has — and AnA excerpts those files itself and puts them in front
+  of every worker's instruction. Five sub-agents on five slices of one job used
+  to each open the same files to work out what they were looking at. Notes the
+  lead marks `remember` are kept in the workspace, in `.ana/context.md`, and are
+  handed to later turns and to delegated workers, which have no plan of their
+  own (`packages/orchestrator/context.py`).
 - If a worker hits a session or usage limit, AnA retries that task on the next
   worker model in `config/routing.yaml`.
 - `ANA_MAX_SUBAGENTS` (default 5) caps concurrency; extra tasks queue.
-- `ANA_SUBAGENT_TIMEOUT_SECONDS` (default 600) bounds each worker. A timeout or
-  an error is a task result, not a turn failure — the lead is told what failed
-  and still answers.
+- Workers are bounded by silence, not by elapsed time. `ANA_SUBAGENT_IDLE_TIMEOUT_SECONDS`
+  (default 300) is how long a worker may report nothing — no tool call, no
+  output — before AnA gives up on it, and time spent waiting for a human to
+  answer an approval or a question does not count. A worker still working keeps
+  working however long the task takes; one that died quietly is noticed in
+  minutes instead of at the end of a fixed budget.
+- `ANA_SUBAGENT_TIMEOUT_SECONDS` is an optional hard ceiling on a worker's total
+  runtime, **off by default**. It used to default to 600 (and the lead's own wait
+  on a delegated worker was a fixed 1800), which cut working sub-agents off
+  mid-task: one had already committed its work when its budget expired, and the
+  lead — told only "timeout" — redid the verification by hand.
+- A timeout or an error is a task result, not a turn failure: the lead is told
+  what failed, gets whatever the worker produced before it stopped, and answers.
+- A rung that refuses for lack of capacity (a spent 5-hour window, a bad
+  credential) rests for `ANA_RUNG_COOLDOWN_SECONDS` (default 900) instead of
+  being asked again by every following task.
 - Planning is off for ordinary turns; `ANA_PLANNER=on` enables the explicit
   planner and worker flow. If a lead reaches a session limit while planning, replanning, or
   synthesizing, AnA switches models and preserves the worker results.

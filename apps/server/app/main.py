@@ -24,7 +24,8 @@ from apps.server.app import scheduler
 from apps.server.app.runners import RunnerRegistry
 from apps.server.app.gate import router as gate_router
 from apps.server.app.graph import build_graph
-from apps.server.app.websocket import allowed_origins, router as chat_router
+from apps.server.app.usage_sync import sync_usage
+from apps.server.app.websocket import allowed_origins, build_adapter, router as chat_router
 from packages.governance import audit
 from packages.governance.audit import run_audit_migrations
 from packages.governance.secrets import SecretCipher, run_secret_migrations
@@ -52,7 +53,10 @@ from packages.orchestrator.schedules import (
 )
 from packages.orchestrator.settings import (
     AUTH_MODES,
+    GOVERNANCE_MODES,
     read_auth_mode,
+    read_governance_mode,
+    write_governance_mode,
     read_routing_structured,
     write_routing_structured,
     read_routing,
@@ -351,6 +355,8 @@ class SettingsUpdate(BaseModel):
     # "pro" (subscription) or "api" (key + base URL) — the two modes
     # ~/.bashrc defines. Changing it used to mean editing .env and restarting.
     auth_mode: str | None = None
+    # "normal" or "yolo": whether approvals still reach a human.
+    governance_mode: str | None = None
 
 
 class RoutingRung(BaseModel):
@@ -534,6 +540,8 @@ async def get_settings() -> dict:
         "system_prompt": read_system_prompt(),
         "auth_mode": read_auth_mode(),
         "auth_modes": list(AUTH_MODES),
+        "governance_mode": read_governance_mode(),
+        "governance_modes": list(GOVERNANCE_MODES),
     }
 
 
@@ -552,6 +560,11 @@ async def put_settings(body: SettingsUpdate) -> dict:
             write_auth_mode(body.auth_mode)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.governance_mode is not None:
+        try:
+            write_governance_mode(body.governance_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Takes effect on the next WebSocket connection: the adapters for an open
     # conversation were built with the mode that was current when it started.
     return {
@@ -559,6 +572,10 @@ async def put_settings(body: SettingsUpdate) -> dict:
         "routing": read_routing(),
         "system_prompt": read_system_prompt(),
         "auth_mode": read_auth_mode(),
+        # Unlike the others this one takes effect on the very next tool call:
+        # the gate reads it per call, not per connection.
+        "governance_mode": read_governance_mode(),
+        "governance_modes": list(GOVERNANCE_MODES),
     }
 
 
@@ -576,6 +593,21 @@ async def usage(request: Request) -> dict:
             "codex", read_codex_rate_limits()
         )
     return {"agents": request.app.state.usage_tracker.snapshot()}
+
+
+@app.post("/usage/sync")
+async def sync_usage_now(request: Request) -> dict:
+    """Re-read the providers' real usage figures now, rather than at the next turn.
+
+    Codex's come off its own rollout log for nothing. Claude only emits its
+    windows while a turn streams, so this runs one short tool-free prompt to
+    collect them — a few hundred tokens, recorded like any other turn. See
+    apps/server/app/usage_sync.py; `ANA_USAGE_PROBE=off` skips that half."""
+    results = await sync_usage(
+        request.app.state.usage_tracker,
+        lambda: build_adapter(role="lead"),
+    )
+    return {"synced": results, "agents": request.app.state.usage_tracker.snapshot()}
 
 
 class UsageEstimateUpdate(BaseModel):

@@ -95,3 +95,15 @@ def isolated_workspace_root(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(root))
     monkeypatch.setenv("ANA_WORKSPACE_DIR", str(root))
     return root
+
+
+@pytest.fixture(autouse=True)
+def forget_rung_cooldowns():
+    """Cooldowns are process-wide on purpose (a spent window is spent for every
+    worker), which in a test run means one test's refusal would steer another
+    test's routing."""
+    from packages.orchestrator.cooldown import shared
+
+    shared().clear()
+    yield
+    shared().clear()

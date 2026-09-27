@@ -14,6 +14,7 @@ import { PageShell } from "@/components/page-shell";
 import { RoutingEditor } from "@/components/routing-editor";
 import { UsageEstimateEditor } from "@/components/usage-estimate-editor";
 import { CapabilityPanel } from "@/components/capability-panel";
+import { GovernanceMode } from "@/components/governance-mode";
 
 
 /** Settings the user should be able to change without touching the repo.
@@ -102,6 +103,7 @@ export default function SettingsPage() {
             <TabsTrigger value="prompt">시스템 프롬프트</TabsTrigger>
             <TabsTrigger value="usage">사용량</TabsTrigger>
             <TabsTrigger value="capabilities">MCP · 스킬</TabsTrigger>
+            <TabsTrigger value="permissions">권한</TabsTrigger>
           </TabsList>
 
           <TabsContent value="routing">
@@ -138,6 +140,13 @@ export default function SettingsPage() {
 
           <TabsContent value="capabilities">
             <CapabilityPanel />
+          </TabsContent>
+
+          <TabsContent value="permissions">
+            {/* Its own save, like the routing ladder: a switch that decides
+                whether anything gets asked at all should not be waiting on the
+                header's save button. */}
+            <GovernanceMode />
           </TabsContent>
         </Tabs>
       )}

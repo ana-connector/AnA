@@ -175,6 +175,20 @@ def with_instructions(system_prompt: Optional[str], scope: Optional[Scope]) -> O
     return f"{system_prompt}\n\n{text}" if system_prompt else text
 
 
+def reads_only(tool_name: str, tool_input: dict) -> bool:
+    """Whether this call only looks at things.
+
+    The same judgement a read-only scope makes, exported because the gate needs
+    it for a different question: whether a path outside the workspace is being
+    read or written. Reading one is routine; writing one is not."""
+    if _is_mutating(tool_name):
+        return False
+    if _normalize_name(tool_name) in SHELL_TOOLS:
+        command = tool_input.get("command")
+        return _writing_segment(command if isinstance(command, str) else "") is None
+    return True
+
+
 def violation(
     tool_name: str,
     tool_input: dict,

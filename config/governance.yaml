@@ -13,6 +13,39 @@
 default_action: allow
 
 rules:
+  # --- credential files (first, so nothing below can allow them) -----------
+  # These two are the floor: they are `deny`, and the gate returns on a deny
+  # before it would ever ask a human, so they hold in YOLO mode too (see
+  # packages/orchestrator/settings.py). Placed above the `git status/diff`
+  # allowance on purpose — `git diff .env` prints a tracked .env.
+  #
+  # `.env.example`, `.env.sample` and `.env.template` are exempt: they exist
+  # precisely to be read, they carry placeholders rather than values, and this
+  # repository's own setup step is `cp .env.example .env`.
+  #
+  # Matched against the path *fields* of a file tool's input rather than the
+  # whole thing, so writing documentation that mentions `.env`, or a compose
+  # file whose `env_file:` names it, is not mistaken for reading it.
+  - id: secret-file-read
+    description: "자격증명 파일을 열려 한다. 이 파일들은 YOLO 모드에서도 막힌다"
+    category: credential-exfiltration
+    action: deny
+    tools: []
+    patterns:
+      - '"(?:file_path|path|notebook_path|target_file|directory)"\s*:\s*"[^"]*(?:\.env\b(?!\.example|\.sample|\.template)|\.secrets\b|\.ssh/|\.aws/|\.credentials\.json|\.npmrc\b|\.pem\b|\.key\b|id_rsa)'
+  # The shell reaches the same files without a path field. Only commands that
+  # can *print* a file are listed: `cp .env.example .env` copies a placeholder
+  # file and reveals nothing, and denying it would block the documented setup.
+  # `git diff`/`show`/`log`/`grep` are in the list because the allowance below
+  # lets those through by name, and `git diff .env` prints a tracked .env.
+  - id: secret-file-read-shell
+    description: "셸로 자격증명 파일 내용을 읽으려 한다"
+    category: credential-exfiltration
+    action: deny
+    tools: [Bash]
+    patterns:
+      - '\b(?:cat|bat|less|more|head|tail|nl|od|xxd|strings|base64|grep|rg|ack|awk|sed|cut|tee|dd|curl|wget|scp|rsync|source|export|python|python3|node|ruby|perl|git\s+(?:diff|show|log|grep))\b[^|;&]*(?:\.env\b(?!\.example|\.sample|\.template)|\.secrets\b|\.ssh/|\.aws/|\.credentials\.json|\.npmrc\b|\.pem\b|\.key\b|id_rsa)'
+
   # --- explicit allowances (must precede the blocks below) -----------------
   - id: git-status-and-read
     description: "저장소 상태를 읽기만 하는 git 명령"
@@ -50,21 +83,43 @@ rules:
       - 'ANA_GOVERNANCE_RULES'
 
   # --- filesystem destruction ---------------------------------------------
+  # `rm -rf build`, `rm -rf node_modules`: ordinary development, and the blanket
+  # deny below turned each one into a sequence of retries — an agent told "no"
+  # splits the command up and tries the pieces one at a time, spending minutes
+  # of its turn discovering the same rule four times. Confined to plainly
+  # relative targets: nothing absolute, no `~`, no `..`, no shell operators, no
+  # globs. Anything else still falls through to the deny.
+  - id: fs-recursive-delete-in-workspace
+    description: "작업 폴더 안의 상대 경로만 재귀 삭제한다"
+    category: allowlist
+    action: allow
+    tools: [Bash]
+    patterns:
+      # The second lookahead keeps `rm -rf .` out of it: emptying the workspace
+      # itself is the one recursive delete inside it still worth a human.
+      - '^(?!.*\.\.)(?!.*(?:^|\s)\.\/?(?:\s|$))\s*rm\s+(?:-[rRf]+\s+|--recursive\s+|--force\s+)+(?:(?![-/~])[\w.@+=][\w.@+=/-]*\s*)+$'
   - id: fs-recursive-force-delete
     description: "재귀·강제 삭제다. 지운 파일은 되돌릴 수 없다"
     category: filesystem-destruction
     action: deny
     tools: [Bash]
     patterns:
-      - '\brm\b[^|;&]*\s-[a-z]*r[a-z]*f|\brm\b[^|;&]*\s-[a-z]*f[a-z]*r'
-      - '\brm\b[^|;&]*--recursive[^|;&]*--force'
+      # (?<![\w-]) and not \b: `\brm\b` also matches the `rm` inside
+      # `docker run --rm`, which is a flag that removes a container, not a
+      # command that deletes files.
+      - '(?<![\w-])rm\b[^|;&]*\s-[a-z]*r[a-z]*f|(?<![\w-])rm\b[^|;&]*\s-[a-z]*f[a-z]*r'
+      - '(?<![\w-])rm\b[^|;&]*--recursive[^|;&]*--force'
   - id: fs-delete-outside-workspace
     description: "워크스페이스 밖 시스템 경로를 지우거나 비우려 한다"
     category: filesystem-destruction
     action: ask
     tools: [Bash]
     patterns:
-      - '\b(rm|shred|truncate)\b[^|;&]*\s/(etc|usr|var|boot|home|root|bin|sbin|lib)\b'
+      # Same fix, and it mattered more here: a judge sandbox is built out of
+      # `docker run --rm -v /home/...:/box`, so every container the worker ran
+      # raised an approval card about deleting /home. One of those was answered
+      # by nobody and denied on the timeout five minutes later.
+      - '(?<![\w-])(rm|shred|truncate)\b[^|;&]*\s/(etc|usr|var|boot|home|root|bin|sbin|lib)\b'
   - id: fs-disk-format
     description: "디스크 장치에 직접 쓴다. 파티션·파일시스템이 사라진다"
     category: filesystem-destruction

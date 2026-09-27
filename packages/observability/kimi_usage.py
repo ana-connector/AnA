@@ -18,6 +18,7 @@ Claude's usage payload, cached input is not already inside `inputOther`.
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -87,6 +88,45 @@ def read_session_tokens(
         "cache_read_input_tokens": usage.get("inputCacheRead"),
         "cache_creation_input_tokens": usage.get("inputCacheCreation"),
     }
+
+
+LOG_FILENAME = "kimi-code.log"
+# A refusal the CLI never puts on stderr looks like:
+#   WARN llm request failed turnStep=0.1 model=kimi-code/k3 ... errorMessage="403
+#   You've reached your 5-hour usage limit. ..." statusCode=403
+_LOG_ERROR_RE = re.compile(r'errorMessage="((?:[^"\\]|\\.)*)"')
+
+
+def read_last_error(
+    session_id: str, kimi_home: Optional[os.PathLike | str] = None
+) -> Optional[str]:
+    """The last request failure the CLI recorded for this session, if any.
+
+    Kimi reports a refused request (an exhausted 5-hour window, a bad key) only
+    in its own log: stdout ends without a result and stderr can be empty, so a
+    turn that never ran looked exactly like a turn that answered with nothing.
+    ANA reads the log back for the same reason it reads the token counts there —
+    it is the only place the CLI says what happened."""
+    directory = session_dir(session_id, kimi_home)
+    if directory is None:
+        return None
+    logs = sorted(
+        (path for path in directory.rglob(LOG_FILENAME) if path.is_file()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in logs:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if " WARN " not in line and " ERROR " not in line:
+                continue
+            match = _LOG_ERROR_RE.search(line)
+            if match:
+                return match.group(1).encode().decode("unicode_escape", errors="replace")
+    return None
 
 
 def _last_usage(directory: Path) -> Optional[dict]:
