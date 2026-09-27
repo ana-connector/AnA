@@ -271,6 +271,32 @@ async def test_budget_breaker_starts_one_rung_down(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_auto_route_ignores_old_thread_budget(db_pool, tmp_path, monkeypatch):
+    rules = tmp_path / "routing.yaml"
+    rules.write_text("lead:\n  - agent: codex\n    model: gpt-6-astra\n", encoding="utf-8")
+    monkeypatch.setenv("ANA_ROUTING_RULES", str(rules))
+    codex = WorkingAdapter("codex")
+    claude = WorkingAdapter("claude")
+
+    def factory(agent, auth_mode=None, model=None, effort=None):
+        return codex if agent == "codex" else claude
+
+    graph = build_graph(InMemorySaver())
+    config = _config(db_pool, factory, "fo-auto-budget",
+                     breaker=BreakerConfig(max_thread_cost_usd=1.0))
+    frames, values = await _run(graph, config, agent="auto", values={
+        "total_cost_usd": 5.0,
+        "failover_rung": "claude",
+        "failover_tripped_at": time.time(),
+    })
+
+    assert codex.calls
+    assert claude.calls == []
+    assert values["agent"] == "codex"
+    assert next(frame for frame in frames if frame["type"] == "route")["agent"] == "codex"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_warning_trips_the_breaker_even_on_success(db_pool):
     warning = RateLimitWarningAdapter()
     api = WorkingAdapter("tapie")

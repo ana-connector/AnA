@@ -108,7 +108,10 @@ def _last_rate_limits(path: Path) -> Optional[dict]:
         except json.JSONDecodeError:
             continue
         found = _find_rate_limits(record)
-        if found:
+        # A rollout may end with a different limit bucket (for example
+        # "premium") whose primary and secondary windows are null. Keep
+        # looking for the last usable Codex snapshot in that same file.
+        if found and _windows(found):
             return found
     return None
 

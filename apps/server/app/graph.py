@@ -919,7 +919,8 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
          planning_failed_over, planning_failover_reason, planning_rung) = await _plan_with_failover(
             configurable, agent, lead_model, lead_effort, writer, tracer, trace,
             state["prompt"],
-            start_rung=breaker.rung_label if breaker.active(breaker_config.cooldown_seconds) else None,
+            start_rung=(breaker.rung_label if route.explicit
+                        and breaker.active(breaker_config.cooldown_seconds) else None),
         )
         if agent != routed_agent:
             augmented_prompt = build_handoff_prompt(
@@ -1234,7 +1235,13 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
 
     # A thread that already crossed its budget starts one rung down instead of
     # spending another turn proving the limit is still there.
-    budget_reason = thread_budget_exceeded(breaker_config, total_cost_usd, total_tokens)
+    # Auto routing already chooses by each provider's current usage window.
+    # A lifetime thread total must not silently replace that choice with the
+    # next fixed failover rung (which may itself be nearly exhausted).
+    budget_reason = (
+        thread_budget_exceeded(breaker_config, total_cost_usd, total_tokens)
+        if route.explicit else None
+    )
     tried: list[str] = []
     start_index = 0
     if planning_rung and planning_failed_over:
@@ -1242,7 +1249,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             if rung.label == planning_rung:
                 start_index = index
                 break
-    elif breaker.active(breaker_config.cooldown_seconds):
+    elif route.explicit and breaker.active(breaker_config.cooldown_seconds):
         # Still inside the cooldown: keep using what we fell back to, and skip
         # the rungs above it. Once the cooldown expires the next turn starts
         # from the preferred rung again — that is the automatic recovery.
@@ -1263,7 +1270,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     in_flight: Optional[_TurnOutcome] = None
     failover_reason = (
         breaker.reason
-        if breaker.active(breaker_config.cooldown_seconds)
+        if route.explicit and breaker.active(breaker_config.cooldown_seconds)
         else (planning_failover_reason or budget_reason or "")
     )
 
