@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { RepeatIcon, SaveIcon, TriangleAlertIcon } from "lucide-react";
+import { ArchiveIcon, ArchiveRestoreIcon, RepeatIcon, SaveIcon, TriangleAlertIcon } from "lucide-react";
 import { forgetWorkspace, updateWorkspace, type WorkspaceSummary } from "@/lib/api";
 import {
   AlertDialog,
@@ -78,6 +78,19 @@ export function WorkspaceEditor({
     }
   };
 
+  /** Archiving is the answer to "I am done with this project" that deleting was
+   *  being used for. Nothing is destroyed: the row, the folder and every turn
+   *  stay, and the workspace is still openable from the archive. */
+  const setArchived = async (archived: boolean) => {
+    try {
+      await updateWorkspace(workspace.id, { archived });
+      setError(null);
+      await onSaved();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const savePrompt = async () => {
     try {
       await updateWorkspace(workspace.id, { system_prompt: systemPrompt });
@@ -145,6 +158,29 @@ export function WorkspaceEditor({
             프롬프트 저장
           </Button>
         </Field>
+      </FieldGroup>
+
+      <FieldGroup>
+        <Field orientation="horizontal">
+          <Button size="sm" variant="outline" onClick={() => void setArchived(!workspace.archived)}>
+            {workspace.archived ? (
+              <>
+                <ArchiveRestoreIcon data-icon="inline-start" />
+                보관 해제
+              </>
+            ) : (
+              <>
+                <ArchiveIcon data-icon="inline-start" />
+                보관하기
+              </>
+            )}
+          </Button>
+        </Field>
+        <FieldDescription>
+          {workspace.archived
+            ? "목록 맨 아래 보관함에 있다. 해제하면 다시 위 목록으로 올라온다."
+            : "사이드바 맨 아래 보관함으로 옮긴다. 대화와 폴더는 그대로 남고 언제든 다시 열 수 있다."}
+        </FieldDescription>
       </FieldGroup>
 
       <WorkspaceSettings

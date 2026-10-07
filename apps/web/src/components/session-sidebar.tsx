@@ -5,6 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
+  ArchiveIcon,
+  ChevronDownIcon,
   ClockIcon,
   LockIcon,
   MoonIcon,
@@ -31,6 +33,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Logo } from "@/components/logo";
 import { WorkspaceEditor } from "@/components/workspace-editor";
 import { shortPath } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
   Sidebar,
   SidebarContent,
@@ -83,6 +86,9 @@ export function SessionSidebar({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<WorkspaceSummary | null>(null);
   const [filter, setFilter] = useState("");
+  // Archived workspaces are collapsed by default: the point of archiving one
+  // is that you are not working on it now.
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +124,11 @@ export function SessionSidebar({
     );
   }, [workspaces, filter]);
 
+  // The filter applies to both lists, so searching still finds something you
+  // archived — it just stays under the archive heading.
+  const active = useMemo(() => visible.filter((item) => !item.archived), [visible]);
+  const archived = useMemo(() => visible.filter((item) => item.archived), [visible]);
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim()) return;
@@ -142,8 +153,40 @@ export function SessionSidebar({
   const afterDelete = async (deletedId: string) => {
     setEditing(null);
     const remaining = await refresh();
-    if (deletedId === workspaceId) onOpenWorkspace(remaining[0]?.id ?? null);
+    if (deletedId !== workspaceId) return;
+    // Prefer somewhere you are actually working: landing in the archive after
+    // a delete says the wrong thing about where you are.
+    const next = remaining.find((item) => !item.archived) ?? remaining[0];
+    onOpenWorkspace(next?.id ?? null);
   };
+
+  /** One row, shared by the live list and the archive: the same workspace with
+   *  the same controls, listed under a different heading. */
+  const row = (item: WorkspaceSummary) => (
+    <SidebarMenuItem key={item.id}>
+      <SidebarMenuButton
+        isActive={item.id === workspaceId}
+        onClick={() => onOpenWorkspace(item.id)}
+        className="h-auto py-1.5"
+        title={`${item.id}\n${item.path}`}
+      >
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate text-xs">{item.name}</span>
+          <span className="truncate text-[11px] text-muted-foreground">
+            {shortPath(item.path)}
+            {item.total_tokens > 0 ? ` · ${compactTokens(item.total_tokens)}` : " · 새 대화"}
+          </span>
+        </div>
+      </SidebarMenuButton>
+      <SidebarMenuAction
+        showOnHover
+        title="워크스페이스 설정"
+        onClick={() => setEditing(item)}
+      >
+        <SettingsIcon strokeWidth={1.5} />
+      </SidebarMenuAction>
+    </SidebarMenuItem>
+  );
 
   return (
     <>
@@ -233,38 +276,49 @@ export function SessionSidebar({
               <p className="px-2 py-3 text-xs text-muted-foreground">
                 「{filter}」와 맞는 워크스페이스 없음
               </p>
+            ) : active.length === 0 ? (
+              // Everything left is archived, so the list is not empty — it is
+              // just all under the heading below.
+              <p className="px-2 py-3 text-xs text-muted-foreground">
+                모두 보관함에 있음
+              </p>
             ) : (
-              <SidebarMenu className="gap-1">
-                {visible.map((item) => (
-                  <SidebarMenuItem key={item.id}>
-                    <SidebarMenuButton
-                      isActive={item.id === workspaceId}
-                      onClick={() => onOpenWorkspace(item.id)}
-                      className="h-auto py-1.5"
-                      title={`${item.id}\n${item.path}`}
-                    >
-                      <div className="flex min-w-0 flex-col gap-0.5">
-                        <span className="truncate text-xs">{item.name}</span>
-                        <span className="truncate text-[11px] text-muted-foreground">
-                          {shortPath(item.path)}
-                          {item.total_tokens > 0 ? ` · ${compactTokens(item.total_tokens)}` : " · 새 대화"}
-                        </span>
-                      </div>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      showOnHover
-                      title="워크스페이스 설정"
-                      onClick={() => setEditing(item)}
-                    >
-                      <SettingsIcon strokeWidth={1.5} />
-                    </SidebarMenuAction>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
+              <SidebarMenu className="gap-1">{active.map(row)}</SidebarMenu>
             )}
 
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* The archive sits at the bottom and stays shut: these are workspaces
+            you put away, so they should cost a click to see and no space
+            otherwise. Hidden entirely when nothing is archived — an empty
+            heading is furniture. */}
+        {archived.length > 0 && (
+          <SidebarGroup className="mt-auto">
+            <SidebarGroupContent>
+              <button
+                type="button"
+                onClick={() => setArchiveOpen((previous) => !previous)}
+                aria-expanded={archiveOpen}
+                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              >
+                <ChevronDownIcon
+                  className={cn(
+                    "size-3.5 shrink-0 transition-transform",
+                    !archiveOpen && "-rotate-90"
+                  )}
+                />
+                <ArchiveIcon strokeWidth={1.5} className="size-3.5 shrink-0" />
+                <span>보관함</span>
+                <span className="ml-auto tabular-nums opacity-70">{archived.length}</span>
+              </button>
+
+              {archiveOpen && (
+                <SidebarMenu className="gap-1 pt-1">{archived.map(row)}</SidebarMenu>
+              )}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
       <SidebarFooter>

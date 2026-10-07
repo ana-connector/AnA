@@ -187,6 +187,8 @@ export type WorkspaceSummary = {
   container_image: string | null;
   container_ports: PortMapping[];
   system_prompt: string;
+  /** Out of the main sidebar list, but still registered and still openable. */
+  archived: boolean;
 };
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -229,6 +231,7 @@ export async function updateWorkspace(
     container_image?: string | null;
     container_ports?: PortMapping[];
     system_prompt?: string;
+    archived?: boolean;
   }
 ): Promise<void> {
   const response = await fetch(`${apiBase()}/workspaces/${encodeURIComponent(id)}`, {

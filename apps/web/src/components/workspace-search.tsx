@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FolderIcon, SearchIcon } from "lucide-react";
+import { ArchiveIcon, FolderIcon, SearchIcon } from "lucide-react";
 import { fetchWorkspaces, type WorkspaceSummary } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { shortPath } from "@/lib/format";
@@ -122,7 +122,10 @@ export function WorkspaceSearch({
                   // never reached by the keyboard.
                   onSelect={() => select(item.id)}
                 >
-                  <FolderIcon />
+                  {/* Archived ones are still searchable — finding one is the
+                      reason you would open this — but say so, or the row looks
+                      like it is in the list above. */}
+                  {item.archived ? <ArchiveIcon /> : <FolderIcon />}
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
                   <span className="max-w-[20%] min-w-0 shrink truncate font-mono text-[11px] text-muted-foreground" title={item.path}>
                     {shortPath(item.path)}
