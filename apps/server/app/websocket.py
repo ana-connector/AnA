@@ -56,7 +56,12 @@ from packages.observability.metrics import active_sessions
 from packages.orchestrator.handoff import AGENTS
 from packages.orchestrator.routing import AUTO
 from apps.server.app.delegation import DelegationManager, run_routed_task
-from packages.orchestrator.settings import apply_workspace_prompt, read_auth_mode, system_prompt_for
+from packages.orchestrator.settings import (
+    apply_workspace_prompt,
+    commit_co_author_trailer,
+    read_auth_mode,
+    system_prompt_for,
+)
 from packages.orchestrator.timeline import TurnTimeline
 
 router = APIRouter()
@@ -143,7 +148,12 @@ def build_adapter(
     if gate_token is not None and gate_enabled():
         env = with_gate(env, GATE_URL, gate_token)
         settings_path = str(
-            write_claude_settings(ANA_STATE_DIR, python_executable=sys.executable)
+            write_claude_settings(
+                ANA_STATE_DIR,
+                python_executable=sys.executable,
+                # The same trailer the role instructions ask every CLI for.
+                commit_attribution=commit_co_author_trailer(),
+            )
         )
         # Only when this build has the flag; passing it to a build without it
         # aborts the run outright.

@@ -101,6 +101,31 @@ def test_claude_settings_file_registers_the_hook(tmp_path):
     assert entry["type"] == "command"
     assert entry["command"].startswith("/usr/bin/python3 ")
     assert entry["command"].endswith("hook.py")
+    # No trailer asked for: the CLI keeps its own default.
+    assert "attribution" not in settings
+
+
+def test_claude_settings_file_replaces_the_cli_commit_trailer(tmp_path):
+    trailer = "Co-Authored-By: AnA <holy9unjinx@gmail.com>"
+    path = write_claude_settings(tmp_path, commit_attribution=trailer)
+
+    settings = json.loads(Path(path).read_text())
+    assert settings["attribution"] == {"commit": trailer}
+
+
+def test_every_role_is_told_the_commit_trailer(monkeypatch, tmp_path):
+    from packages.orchestrator.settings import commit_co_author_trailer, system_prompt_for
+
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("ANA_COMMIT_CO_AUTHOR", raising=False)
+    trailer = "Co-Authored-By: AnA <holy9unjinx@gmail.com>"
+    assert commit_co_author_trailer() == trailer
+    for agent, role in (("claude", "lead"), ("codex", "worker"), ("kimi", "worker")):
+        assert trailer in system_prompt_for(agent, role)
+
+    monkeypatch.setenv("ANA_COMMIT_CO_AUTHOR", "")
+    assert commit_co_author_trailer() == ""
+    assert "Co-Authored-By" not in system_prompt_for("claude", "lead")
 
 
 def test_codex_home_carries_hooks_and_links_credentials(tmp_path):
