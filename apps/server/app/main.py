@@ -72,6 +72,7 @@ from packages.orchestrator.workspaces import (
     ensure_self_workspace,
     get_workspace,
     set_container_settings,
+    set_workspace_archived,
     set_workspace_system_prompt,
     forget_workspace,
     list_workspaces,
@@ -241,6 +242,9 @@ class WorkspaceRename(BaseModel):
     container_image: str | None = None
     container_ports: list | None = None
     system_prompt: str | None = None
+    # Archiving only moves the workspace out of the main list; the row, the
+    # folder and the conversation all stay.
+    archived: bool | None = None
 
 
 @app.get("/workspaces")
@@ -278,6 +282,9 @@ async def patch_workspace(request: Request, workspace_id: str, body: WorkspaceRe
         touched = await set_workspace_system_prompt(
             pool, workspace_id, body.system_prompt
         ) or touched
+
+    if body.archived is not None:
+        touched = await set_workspace_archived(pool, workspace_id, body.archived) or touched
 
     if (
         body.container_enabled is not None

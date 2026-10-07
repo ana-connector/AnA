@@ -21,6 +21,7 @@ from packages.orchestrator.workspaces import (
     list_workspaces,
     rename_workspace,
     run_workspace_migrations,
+    set_workspace_archived,
     set_workspace_system_prompt,
     slugify,
 )
@@ -203,6 +204,35 @@ async def test_workspace_system_prompt_is_isolated_and_listed(workspace_pool, tm
     rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
     assert rows[first.id]["system_prompt"] == "Use concise answers"
     assert rows[second.id]["system_prompt"] == ""
+
+
+@pytest.mark.asyncio
+async def test_archiving_hides_nothing_but_the_flag(workspace_pool, tmp_path, monkeypatch):
+    """Archiving is a label, not a delete: the row, its path and its
+    conversation all survive, and unarchiving puts it back."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    kept = await create_workspace(workspace_pool, name="Kept")
+    put_away = await create_workspace(workspace_pool, name="Put away")
+
+    assert (await get_workspace(workspace_pool, put_away.id)).archived is False
+    assert await set_workspace_archived(workspace_pool, put_away.id, True)
+
+    stored = await get_workspace(workspace_pool, put_away.id)
+    assert stored.archived is True
+    assert stored.path == put_away.path and stored.name == put_away.name
+
+    rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
+    # Still listed — the sidebar splits the list, the server does not.
+    assert rows[put_away.id]["archived"] is True
+    assert rows[kept.id]["archived"] is False
+
+    assert await set_workspace_archived(workspace_pool, put_away.id, False)
+    assert (await get_workspace(workspace_pool, put_away.id)).archived is False
+
+
+@pytest.mark.asyncio
+async def test_archiving_an_unknown_workspace_reports_it(workspace_pool):
+    assert await set_workspace_archived(workspace_pool, "no-such-workspace", True) is False
 
 
 @pytest.fixture

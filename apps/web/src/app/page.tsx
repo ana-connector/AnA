@@ -56,7 +56,9 @@ export default function StartPage() {
 
   // Most recently worked in first: this list is for picking up where you left
   // off, unlike the sidebar's, which is sorted by name for finding things.
-  const recent = useMemo(() => [...(workspaces ?? [])]
+  // Archived ones are left out — "resume this" is the one thing they are not.
+  const recent = useMemo(() => (workspaces ?? [])
+    .filter((item) => !item.archived)
     .sort((a, b) =>
       (b.last_turn_at ?? b.last_used_at).localeCompare(a.last_turn_at ?? a.last_used_at)
     )

@@ -36,6 +36,10 @@ ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_enabled BOOLEAN NOT NU
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_image TEXT;
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_ports JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS system_prompt TEXT NOT NULL DEFAULT '';
+-- Archived workspaces stay registered and keep their conversation; they are
+-- only moved out of the main list. The alternative for a project you are done
+-- with was deleting it, which destroys the turns.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;
 """
 
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
@@ -72,6 +76,7 @@ class Workspace:
     container_image: Optional[str] = None
     container_ports: tuple = ()
     system_prompt: str = ""
+    archived: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -82,6 +87,7 @@ class Workspace:
             "container_image": self.container_image,
             "container_ports": list(self.container_ports),
             "system_prompt": self.system_prompt,
+            "archived": self.archived,
         }
 
 
@@ -219,6 +225,7 @@ def _row_to_workspace(row) -> Workspace:
         container_image=row[4],
         container_ports=tuple(row[5] or ()),
         system_prompt=row[6] or "",
+        archived=bool(row[7]),
     )
 
 
@@ -226,7 +233,8 @@ async def get_workspace(pool: AsyncConnectionPool, workspace_id: str) -> Optiona
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
-            SELECT id, name, path, container_enabled, container_image, container_ports, system_prompt
+            SELECT id, name, path, container_enabled, container_image, container_ports,
+                   system_prompt, archived
             FROM workspaces WHERE id = %s
             """,
             (workspace_id,),
@@ -265,6 +273,22 @@ async def set_workspace_system_prompt(
         cur = await conn.execute(
             "UPDATE workspaces SET system_prompt = %s WHERE id = %s",
             (prompt, workspace_id),
+        )
+        return cur.rowcount > 0
+
+
+async def set_workspace_archived(
+    pool: AsyncConnectionPool, workspace_id: str, archived: bool
+) -> bool:
+    """Moves a workspace into or out of the archive.
+
+    Nothing else changes: the row, the folder, the conversation and its turns
+    all stay, and opening an archived workspace still works. Archiving is about
+    the list being a list of what you are working on now — deleting was the only
+    way to shorten it, and that destroys the conversation."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE workspaces SET archived = %s WHERE id = %s", (archived, workspace_id)
         )
         return cur.rowcount > 0
 
@@ -409,7 +433,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             """
             SELECT w.id, w.name, w.path, w.last_used_at,
                    w.container_enabled, w.container_image, w.container_ports,
-                   w.system_prompt,
+                   w.system_prompt, w.archived,
                    COUNT(t.id) AS turn_count,
                    MAX(t.created_at) AS last_turn_at,
                    (ARRAY_AGG(t.agent ORDER BY t.created_at DESC, t.id DESC)
@@ -426,7 +450,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             LEFT JOIN turns t ON t.thread_id = w.id
             GROUP BY w.id, w.name, w.path, w.last_used_at,
                      w.container_enabled, w.container_image, w.container_ports,
-                     w.system_prompt
+                     w.system_prompt, w.archived
             ORDER BY lower(w.name), w.id
             LIMIT %s
             """,
@@ -443,10 +467,11 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             "container_image": r[5],
             "container_ports": list(r[6] or ()),
             "system_prompt": r[7] or "",
-            "turn_count": r[8],
-            "last_turn_at": r[9].isoformat() if r[9] else None,
-            "last_agent": r[10],
-            "total_tokens": int(r[11] or 0),
+            "archived": bool(r[8]),
+            "turn_count": r[9],
+            "last_turn_at": r[10].isoformat() if r[10] else None,
+            "last_agent": r[11],
+            "total_tokens": int(r[12] or 0),
         }
         for r in rows
     ]
