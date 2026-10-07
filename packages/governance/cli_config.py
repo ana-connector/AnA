@@ -38,11 +38,22 @@ def _hook_entry(python_executable: str) -> dict:
     }
 
 
-def write_claude_settings(directory: os.PathLike | str, python_executable: str = "python3") -> Path:
-    """Writes the `--settings` file for one session and returns its path."""
+def write_claude_settings(
+    directory: os.PathLike | str,
+    python_executable: str = "python3",
+    commit_attribution: str | None = None,
+) -> Path:
+    """Writes the `--settings` file for one session and returns its path.
+
+    `commit_attribution` replaces the Claude CLI's own commit trailer
+    ("Co-Authored-By: Claude …"), which it adds whatever the system prompt
+    says; "" removes it. None leaves the CLI's default alone."""
+    settings = _hook_entry(python_executable)
+    if commit_attribution is not None:
+        settings["attribution"] = {"commit": commit_attribution}
     return atomic.write_text(
         Path(directory) / "claude_settings.json",
-        json.dumps(_hook_entry(python_executable), indent=2),
+        json.dumps(settings, indent=2),
     )
 
 

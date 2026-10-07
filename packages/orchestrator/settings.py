@@ -308,6 +308,30 @@ scope of that task. Report in English — the lead writes the user's answer.
 """
 
 
+DEFAULT_COMMIT_CO_AUTHOR = "AnA <holy9unjinx@gmail.com>"
+
+
+def commit_co_author_trailer() -> str:
+    """The one co-author line every agent's commits carry, or "" for none.
+
+    One identity for the orchestrator rather than one per CLI: the Claude CLI
+    signs as whichever model ran, Codex and Kimi sign nothing, and a history
+    signed four different ways says nothing about who did the work.
+    `ANA_COMMIT_CO_AUTHOR` overrides it; set it empty to add no trailer."""
+    co_author = os.environ.get("ANA_COMMIT_CO_AUTHOR", DEFAULT_COMMIT_CO_AUTHOR).strip()
+    return f"Co-Authored-By: {co_author}" if co_author else ""
+
+
+def _commit_rule() -> str:
+    trailer = commit_co_author_trailer()
+    if not trailer:
+        return ""
+    return (
+        "When you create a git commit, end the message with this exact trailer "
+        f"line and add no other Co-Authored-By lines:\n{trailer}"
+    )
+
+
 def system_prompt_for(agent: str, role: str = "lead") -> Optional[str]:
     """The prompt as each CLI takes it.
 
@@ -319,6 +343,9 @@ def system_prompt_for(agent: str, role: str = "lead") -> Optional[str]:
     what the lead may do is a fact about this system, not a preference to be
     overridden by accident."""
     parts = [LEAD_INSTRUCTIONS if role == "lead" else WORKER_INSTRUCTIONS]
+    commit_rule = _commit_rule()
+    if commit_rule:
+        parts.append(commit_rule)
     configured = read_system_prompt().strip()
     if configured:
         parts.append(configured)
