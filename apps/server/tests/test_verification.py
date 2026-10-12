@@ -43,9 +43,14 @@ async def test_a_command_the_rules_forbid_never_runs(tmp_path):
 async def test_an_ask_verdict_is_refused_too(tmp_path):
     """No human is watching a verification command, so "ask the user" is not
     an answer this path can use."""
-    result = await verification.verify("curl https://example.com", str(tmp_path))
+    command = "git push --dry-run"
+    verdict = verification.load_ruleset().evaluate("Bash", {"command": command})
+    assert verdict.action == "ask"
+
+    result = await verification.verify(command, str(tmp_path))
 
     assert not result.ran
+    assert "git-push" in result.reason
 
 
 async def test_a_hanging_command_is_killed(tmp_path, monkeypatch):
