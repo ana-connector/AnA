@@ -193,6 +193,20 @@ async def test_graph_state_survives_a_fresh_checkpointer_instance(db_pool):
     assert state.values["session_id"] == "cli-sid-1"
 
 
+FAILED_TURN_NOTICE = "요청을 완료하지 못했습니다. 서버 오류 기록을 확인해 주세요."
+
+
+async def _stored_error(pool, prompt: str):
+    """The failure reason the turn row keeps in its meta."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT meta->>'error' FROM turns WHERE prompt = %s ORDER BY id DESC LIMIT 1",
+            (prompt,),
+        )
+        row = await cur.fetchone()
+    return row[0] if row else None
+
+
 class ErrorOnlyAdapter(AgentAdapter):
     """Yields only a type="error" AdapterEvent (no result) — simulates a
     non-zero CLI exit. Unlike RaisingAdapter below, this is a well-formed
@@ -236,16 +250,19 @@ async def test_error_only_turn_still_reaches_transcript_and_does_not_poison_sess
     ):
         pass
 
-    # (a) transcript.append was called with the error's text as the response
+    # (a) transcript.append was called: the response is the notice the user
+    # saw, and the CLI's own reason is kept beside it rather than lost.
     transcript.append.assert_called_once()
     _, kwargs = transcript.append.call_args
-    assert kwargs["response"] == "claude: command not found"
+    assert kwargs["response"] == FAILED_TURN_NOTICE
+    assert kwargs["error"] == "claude: command not found"
     assert kwargs["prompt"] == "hello error"
 
-    # (b) a row was stored for that turn
+    # (b) a row was stored for that turn, and it remembers why it failed
     stored = await search_similar_turns(db_pool, embedding_model, "hello error", limit=1)
     assert stored[0]["prompt"] == "hello error"
-    assert stored[0]["response"] == "claude: command not found"
+    assert stored[0]["response"] == FAILED_TURN_NOTICE
+    assert await _stored_error(db_pool, "hello error") == "claude: command not found"
 
     # (c) session_id is NOT poisoned by the error event's session_id
     state = await graph.aget_state(config)
@@ -296,12 +313,13 @@ async def test_mid_turn_exception_still_reaches_transcript_before_propagating(db
 
     transcript.append.assert_called_once()
     _, kwargs = transcript.append.call_args
-    assert "boom" in kwargs["response"]
+    assert kwargs["response"] == FAILED_TURN_NOTICE
+    assert "boom" in kwargs["error"]
     assert kwargs["prompt"] == "hello raises"
 
     stored = await search_similar_turns(db_pool, embedding_model, "hello raises", limit=1)
     assert stored[0]["prompt"] == "hello raises"
-    assert "boom" in stored[0]["response"]
+    assert "boom" in await _stored_error(db_pool, "hello raises")
 
 
 class NeverYieldsAdapter(AgentAdapter):
