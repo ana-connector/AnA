@@ -608,12 +608,17 @@ packages/memory        Postgres/pgvector 턴 저장과 회상
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r apps/server/requirements.txt
-.venv/bin/python -m pytest
+for f in apps/server/tests/test_*.py; do .venv/bin/python -m pytest "$f" -q; done
 ```
 
 테스트는 일회용 `pgvector/pgvector:pg16` 컨테이너를 띄우므로 Docker 데몬이
 동작해야 합니다. 어댑터 테스트는 가짜 CLI(`apps/server/tests/fixtures/`)로
 실행되며 실제 모델을 호출하지 않습니다.
+
+파일마다 따로 실행하는 이유는 메모리입니다. 전체를 한 프로세스로 돌리면 6GB
+안팎에서 메모리 부족으로 종료될 수 있습니다. AnA 서버 컨테이너 안에서 돌려도
+테스트 DB는 같은 Docker 네트워크로 붙고, 서버의 `ANA_*` 설정은 테스트에
+영향을 주지 않습니다.
 
 ## 로드맵
 
