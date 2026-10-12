@@ -364,11 +364,38 @@ async def test_worker_final_result_replaces_intermediate_text_for_lead(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_a_crashed_worker_cli_falls_over_to_the_next_rung(db_pool):
+    """A worker CLI that exits with an error is unavailable, whatever the
+    reason — the task moves down the worker ladder like it does on a limit."""
+    lead = ScriptedAdapter([
+        '{"mode":"delegate","tasks":[{"title":"구현","prompt":"implement"}]}',
+        DONE_JSON, "완료",
+    ])
+    attempted = []
+
+    def worker_factory(agent, model=None, effort=None, scope=None, worker_workspace=None):
+        attempted.append((agent, model))
+        return FailingWorker() if len(attempted) == 1 else ScriptedAdapter(["성공"], label=agent)
+
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, _config(db_pool, lead, worker_factory, "ma-crash"))
+
+    assert len(attempted) == 2
+    assert attempted[0] != attempted[1]
+    assert any(f["type"] == "failover" and f["task_id"] == "t1" for f in frames)
+    result = next(f["task"] for f in frames if f["type"] == "subagent" and f["task"]["status"] == "done")
+    assert result["agent"] == attempted[1][0]
+    assert values["response_text"] == "완료"
+
+
+@pytest.mark.asyncio
 async def test_a_failing_worker_still_produces_an_answer(db_pool):
     lead = ScriptedAdapter([PLAN_JSON, DONE_JSON, "일부 실패를 포함한 답변"])
 
+    # Every rung fails, so the task ends in error after the ladder runs out —
+    # one failing CLI alone now just moves the task to the next one.
     def worker_factory(agent: str, model=None, effort=None, scope=None, worker_workspace=None):
-        return FailingWorker() if agent == "codex" else ScriptedAdapter(["ok"], label=agent)
+        return FailingWorker()
 
     graph = build_graph(InMemorySaver())
     frames, values = await _run(graph, _config(db_pool, lead, worker_factory, "ma-3"))

@@ -380,7 +380,9 @@ async def _work_the_task(
                 cooldowns.trip(
                     label_for(route.agent, route.model), reason=(run.error or "")[:200]
                 )
-            if not run.failed or not is_recoverable_failure(combined):
+            # A failed worker CLI goes to the next rung whatever the reason;
+            # only limits and bad credentials also rest the rung (above).
+            if not run.failed:
                 break
             if index + 1 < len(routes):
                 next_route = routes[index + 1]
@@ -1387,8 +1389,21 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 [r.label for r in chain],
                 (outcome.error_text or "")[:120],
             )
+            # Any failed attempt moves down the chain, not only a usage limit or
+            # a bad credential: a CLI that crashed or exited non-zero (Kimi does
+            # this) is just as unavailable, and the next rung still gets the
+            # handoff brief. That needs a different CLI to move to, though —
+            # with one pre-built adapter every rung is the same process, and
+            # retrying it under another name only repeats the failure.
+            # Cancellation never reaches here: it is a BaseException and
+            # leaves through the finally block.
+            can_switch_cli = bool(
+                configurable.get("adapter_factory") or configurable.get("adapters")
+            )
             follow_up = next_rung(chain, tried) if (
-                outcome.usage_limited or is_auth_failure(outcome.error_text)
+                can_switch_cli
+                or outcome.usage_limited
+                or is_auth_failure(outcome.error_text)
             ) else None
             if follow_up is None:
                 # Either an ordinary failure (report it as-is) or the chain is

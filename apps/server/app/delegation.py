@@ -21,7 +21,6 @@ from packages.orchestrator import timeline as timeline_blocks
 from packages.orchestrator import worktrees
 from packages.orchestrator.breaker import (
     is_auth_failure,
-    is_recoverable_failure,
     is_usage_limit,
 )
 from packages.orchestrator.cooldown import label_for, shared as shared_cooldowns, usable
@@ -263,7 +262,10 @@ async def _run_ladder(
             # About the account, not this task: the next worker should start one
             # rung further down instead of finding out the same way.
             cooldowns.trip(label_for(route.agent, route.model), reason=error[:200])
-        if index + 1 < len(routes) and is_recoverable_failure(combined):
+        # A CLI error goes to the next rung whatever its reason. A timeout does
+        # not: the worker may already have committed, and a second model
+        # redoing the task from scratch would apply it twice.
+        if index + 1 < len(routes) and not (idle_for or ran_for):
             next_route = routes[index + 1]
             record_failover(f"{route.agent}/{route.model}",
                             f"{next_route.agent}/{next_route.model}")
