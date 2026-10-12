@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCwIcon } from "lucide-react";
 import { apiBase } from "@/lib/api";
 import { timeAgo, timeExact } from "@/lib/format";
@@ -71,21 +71,35 @@ export default function ToolLogPage() {
   const [verdict, setVerdict] = useState<string>("all");
   const [selected, setSelected] = useState<AuditEvent | null>(null);
   const [failed, setFailed] = useState(false);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiBase()}/audit?limit=200`);
+  const refresh = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetch(`${apiBase()}/audit?limit=200`).then((response) => {
       if (!response.ok) throw new Error(String(response.status));
-      setEvents(((await response.json()) as { events: AuditEvent[] }).events);
-      setFailed(false);
-    } catch {
-      setEvents([]);
-      setFailed(true);
-    }
+      return response.json() as Promise<{ events: AuditEvent[] }>;
+    }).then(
+      (body) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setEvents(body.events);
+        setFailed(false);
+      },
+      () => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setEvents([]);
+        setFailed(true);
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh]);
 
   // One row per tool call. The log keeps both the "pending" row and the

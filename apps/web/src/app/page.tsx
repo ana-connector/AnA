@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createWorkspace, fetchWorkspaces, type WorkspaceSummary } from "@/lib/api";
@@ -24,17 +24,28 @@ export default function StartPage() {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const refresh = useCallback(async () => {
-    try {
-      setWorkspaces(await fetchWorkspaces());
-    } catch {
-      setWorkspaces([]);
-    }
+  const refresh = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetchWorkspaces().then(
+      (items) => {
+        if (loadState.current.mounted && loadState.current.request === request) setWorkspaces(items);
+      },
+      () => {
+        if (loadState.current.mounted && loadState.current.request === request) setWorkspaces([]);
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh]);
 
   const open = useCallback((id: string) => {

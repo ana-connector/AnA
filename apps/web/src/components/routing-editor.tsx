@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, XIcon } from "lucide-react";
 import { apiBase } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -87,31 +87,44 @@ export function RoutingEditor() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadState = useRef({ mounted: false, request: 0 });
 
   const load = useCallback(async () => {
-    try {
-      const body = await (await fetch(`${apiBase()}/routing`)).json();
-      setLadders({ lead: body.lead, workers: body.workers ?? {} });
-      setVocabulary({
-        agents: body.agents,
-        efforts: body.efforts,
-        models: body.models ?? {},
-        windows: body.windows,
-        windowsByAgent: body.windows_by_agent ?? {},
-      });
-    } catch (e) {
-      setError(String(e));
-    }
-    try {
-      const body = await (await fetch(`${apiBase()}/usage`)).json();
-      setUsage(body.agents ?? {});
-    } catch {
-      // The ladder is editable without live usage; it just reads flatter.
-    }
+    const request = ++loadState.current.request;
+    await fetch(`${apiBase()}/routing`).then((response) => response.json()).then(
+      (body) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setLadders({ lead: body.lead, workers: body.workers ?? {} });
+        setVocabulary({
+          agents: body.agents,
+          efforts: body.efforts,
+          models: body.models ?? {},
+          windows: body.windows,
+          windowsByAgent: body.windows_by_agent ?? {},
+        });
+      },
+      (e) => {
+        if (loadState.current.mounted && loadState.current.request === request) setError(String(e));
+      },
+    );
+    await fetch(`${apiBase()}/usage`).then((response) => response.json()).then(
+      (body) => {
+        if (loadState.current.mounted && loadState.current.request === request) setUsage(body.agents ?? {});
+      },
+      () => {
+        // The ladder is editable without live usage; it just reads flatter.
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void load();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [load]);
 
   const save = async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { PlusIcon, TrashIcon } from "lucide-react";
 import { apiBase } from "@/lib/api";
 import { timeAgo, timeExact } from "@/lib/format";
@@ -46,26 +46,39 @@ export default function SecretsPage() {
   // Whether what is stored here survives a restart. It does not when
   // ANA_SECRET_KEY is unset: the cipher takes a random key per process.
   const [keyPersistent, setKeyPersistent] = useState(true);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiBase()}/secrets`);
+  const refresh = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetch(`${apiBase()}/secrets`).then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = (await response.json()) as {
+      return response.json() as Promise<{
         secrets: SecretRow[];
         key_persistent?: boolean;
-      };
-      setSecrets(body.secrets);
-      setKeyPersistent(body.key_persistent !== false);
-      setError(null);
-    } catch (e) {
-      setSecrets([]);
-      setError(String(e));
-    }
+      }>;
+    }).then(
+      (body) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setSecrets(body.secrets);
+        setKeyPersistent(body.key_persistent !== false);
+        setError(null);
+      },
+      (e) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setSecrets([]);
+        setError(String(e));
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh]);
 
   const submit = async (event: FormEvent) => {

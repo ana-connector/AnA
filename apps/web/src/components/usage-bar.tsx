@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleDotIcon, RefreshCwIcon } from "lucide-react";
 import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
 import { apiBase, syncUsage } from "@/lib/api";
@@ -105,19 +105,33 @@ export function UsageBar({
 }) {
   const [usage, setUsage] = useState<UsageSnapshot>({});
   const [syncing, setSyncing] = useState(false);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiBase()}/usage`);
-      if (!response.ok) return;
-      setUsage(((await response.json()) as { agents: UsageSnapshot }).agents);
-    } catch {
-      // A missing status bar is not worth surfacing an error for.
-    }
+  const refresh = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetch(`${apiBase()}/usage`).then((response) => {
+      if (!response.ok) return null;
+      return response.json() as Promise<{ agents: UsageSnapshot }>;
+    }).then(
+      (body) => {
+        if (body && loadState.current.mounted && loadState.current.request === request) {
+          setUsage(body.agents);
+        }
+      },
+      () => {
+        // A missing status bar is not worth surfacing an error for.
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh, refreshKey]);
 
   // The windows move while a turn runs, and a turn runs for minutes. Without

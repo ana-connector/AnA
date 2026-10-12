@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -92,24 +92,38 @@ export function SessionSidebar({
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const refresh = useCallback(async (): Promise<WorkspaceSummary[]> => {
-    try {
-      const items = await fetchWorkspaces();
-      setWorkspaces(items);
-      return items;
-    } catch {
-      setWorkspaces([]);
-      return [];
-    }
+  const refresh = useCallback((): Promise<WorkspaceSummary[]> => {
+    const request = ++loadState.current.request;
+    return fetchWorkspaces().then(
+      (items) => {
+        if (loadState.current.mounted && loadState.current.request === request) setWorkspaces(items);
+        return items;
+      },
+      () => {
+        if (loadState.current.mounted && loadState.current.request === request) setWorkspaces([]);
+        return [];
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh, reloadKey]);
 
   useEffect(() => {
-    void fetchWorkspaceCapabilities().then((caps) => setSelfWorkspaceId(caps.self_workspace));
+    let active = true;
+    void fetchWorkspaceCapabilities().then((caps) => {
+      if (active) setSelfWorkspaceId(caps.self_workspace);
+    });
+    return () => { active = false; };
   }, []);
 
   const visible = useMemo(() => {
