@@ -1026,7 +1026,14 @@ export function useChatSocket(initialThreadId: string) {
   );
 
   const cancel = useCallback(() => {
-    socketRef.current?.send(JSON.stringify({ type: "cancel" }));
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(JSON.stringify({ type: "cancel" }));
+    } catch {
+      return false;
+    }
+    return true;
   }, []);
 
   /** Sends the user's answers back to the agent that asked. Removed locally
@@ -1045,12 +1052,20 @@ export function useChatSocket(initialThreadId: string) {
   }, []);
 
   const answerApproval = useCallback((requestId: string, decision: "allow" | "deny") => {
-    socketRef.current?.send(
-      JSON.stringify({ type: "approval", request_id: requestId, decision })
-    );
+    // Only removed once the frame is actually on the wire: a send on a closing
+    // socket is silently dropped, and dropping the card too would show the
+    // request as answered while the gate goes on to deny it on timeout.
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(JSON.stringify({ type: "approval", request_id: requestId, decision }));
+    } catch {
+      return false;
+    }
     // Removed locally rather than on an ack: the gate answers the CLI, not the
     // browser, so this frame is the last the UI hears of this request.
     setApprovals((prev) => prev.filter((a) => a.request_id !== requestId));
+    return true;
   }, []);
 
   return {
