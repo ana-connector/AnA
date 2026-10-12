@@ -1446,8 +1446,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             response_text = response_text or in_flight.response_text
             session_id = session_id or in_flight.session_id
             cost_usd = cost_usd if cost_usd is not None else in_flight.cost_usd
+        failure_reason = ""
         if caught_exc is not None or for_error_text:
             reason = for_error_text or str(caught_exc)
+            # The user gets the notice below; the transcript and the turn row
+            # keep the cause. Only the notice used to be stored, so a failed
+            # turn's record said "check the server log" and nothing else, while
+            # the log itself held the first 120 characters of the reason.
+            failure_reason = reason
             final_response = (
                 "인증 오류로 요청을 완료하지 못했습니다. 다른 모델도 사용할 수 있는지 확인해 주세요."
                 if is_auth_failure(reason) else
@@ -1471,9 +1477,11 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         # before it reaches the transcript file and the turns table, which are
         # what later turns retrieve and what anyone reading the history sees.
         final_response = mask_secrets(final_response, configurable.get("secrets") or [])
+        failure_reason = mask_secrets(failure_reason, configurable.get("secrets") or [])
         if caught_exc is not None or final_response:
             transcript.append(
-                session_id=session_id or "", prompt=state["prompt"], response=final_response, cost_usd=cost_usd
+                session_id=session_id or "", prompt=state["prompt"], response=final_response,
+                cost_usd=cost_usd, error=failure_reason or None,
             )
             await store_turn(
                 pool, embedding_model,
@@ -1487,6 +1495,8 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 meta={
                     "rung": used_rung.label,
                     "model": turn_model,
+                    # Present only on a failed turn; see failure_reason above.
+                    **({"error": failure_reason} if failure_reason else {}),
                     "tokens": turn_tokens + subagent_tokens,
                     "subagents": _with_cards(
                         subagent_results, configurable.get("native_agents", {})

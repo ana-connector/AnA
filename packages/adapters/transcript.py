@@ -18,6 +18,7 @@ class TranscriptLogger:
         prompt: str,
         response: str,
         cost_usd: Optional[float] = None,
+        error: Optional[str] = None,
     ) -> None:
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -26,6 +27,11 @@ class TranscriptLogger:
             "response": response,
             "cost_usd": cost_usd,
         }
+        # A failed turn's `response` is the notice the user saw; this is why it
+        # failed. Kept apart so the notice stays readable and the cause stays
+        # findable.
+        if error:
+            record["error"] = error
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
