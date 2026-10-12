@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ClockIcon, PlayIcon, TrashIcon } from "lucide-react";
 import {
   createSchedule,
@@ -62,23 +62,37 @@ export default function AutomationPage() {
   const [cron, setCron] = useState("0 9 * * *");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const refresh = useCallback(async () => {
-    try {
-      setSchedules(await fetchSchedules());
-    } catch (e) {
-      setSchedules([]);
-      setError(String(e));
-    }
+  const refresh = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetchSchedules().then(
+      (items) => {
+        if (loadState.current.mounted && loadState.current.request === request) setSchedules(items);
+      },
+      (e) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setSchedules([]);
+        setError(String(e));
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh]);
 
   useEffect(() => {
+    let active = true;
     void fetchWorkspaces()
       .then((items) => {
+        if (!active) return;
         setWorkspaces(items);
         // Whichever conversation was last open: the workspace is nearly always
         // the one you were just in.
@@ -88,6 +102,7 @@ export default function AutomationPage() {
         );
       })
       .catch(() => {});
+    return () => { active = false; };
   }, []);
 
   const submit = async (event: FormEvent) => {

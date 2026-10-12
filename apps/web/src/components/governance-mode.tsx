@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ShieldAlertIcon, ShieldCheckIcon } from "lucide-react";
 import { fetchSettings, saveSettings } from "@/lib/api";
 import {
@@ -33,19 +33,32 @@ export function GovernanceMode() {
   const [mode, setMode] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const load = useCallback(async () => {
-    try {
-      const settings = await fetchSettings();
-      setMode(settings.governance_mode ?? NORMAL);
-    } catch (e) {
-      setMode(NORMAL);
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  const load = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetchSettings().then(
+      (settings) => {
+        if (loadState.current.mounted && loadState.current.request === request) {
+          setMode(settings.governance_mode ?? NORMAL);
+        }
+      },
+      (e) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setMode(NORMAL);
+        setError(e instanceof Error ? e.message : String(e));
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void load();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [load]);
 
   const store = async (next: string) => {

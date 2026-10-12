@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, use } from "react";
+import { useCallback, useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -23,18 +23,33 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
   const router = useRouter();
   const [workspace, setWorkspace] = useState<WorkspaceSummary | null | undefined>(undefined);
   const [selfWorkspaceId, setSelfWorkspaceId] = useState<string | null>(null);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const load = useCallback(async () => {
-    const all = await fetchWorkspaces();
-    setWorkspace(all.find((w) => w.id === id) ?? null);
+  const load = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetchWorkspaces().then((all) => {
+      if (loadState.current.mounted && loadState.current.request === request) {
+        setWorkspace(all.find((w) => w.id === id) ?? null);
+      }
+    });
   }, [id]);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void load();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [load]);
 
   useEffect(() => {
-    void fetchWorkspaceCapabilities().then((caps) => setSelfWorkspaceId(caps.self_workspace));
+    let active = true;
+    void fetchWorkspaceCapabilities().then((caps) => {
+      if (active) setSelfWorkspaceId(caps.self_workspace);
+    });
+    return () => { active = false; };
   }, []);
 
   if (workspace === undefined) {

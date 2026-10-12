@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SaveIcon } from "lucide-react";
 import { fetchSettings, saveSettings } from "@/lib/api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -32,20 +32,32 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const loadState = useRef({ mounted: false, request: 0 });
 
-  const load = useCallback(async () => {
-    try {
-      const settings = await fetchSettings();
-      setRouting(settings.routing);
-      setSystemPrompt(settings.system_prompt);
-    } catch (e) {
-      setRouting("");
-      setError(String(e));
-    }
+  const load = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetchSettings().then(
+      (settings) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setRouting(settings.routing);
+        setSystemPrompt(settings.system_prompt);
+      },
+      (e) => {
+        if (!loadState.current.mounted || loadState.current.request !== request) return;
+        setRouting("");
+        setError(String(e));
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void load();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [load]);
 
   const save = async () => {

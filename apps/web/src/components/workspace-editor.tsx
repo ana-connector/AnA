@@ -184,6 +184,7 @@ export function WorkspaceEditor({
       </FieldGroup>
 
       <WorkspaceSettings
+        key={workspace.id}
         workspace={workspace}
         onSaved={() => void onSaved()}
         onForget={() => setConfirming(true)}

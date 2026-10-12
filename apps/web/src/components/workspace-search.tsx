@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArchiveIcon, FolderIcon, SearchIcon } from "lucide-react";
 import { fetchWorkspaces, type WorkspaceSummary } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ export function WorkspaceSearch({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const loadState = useRef({ mounted: false, request: 0 });
   const matches = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return workspaces.filter((item) =>
@@ -45,16 +46,26 @@ export function WorkspaceSearch({
     onOpenWorkspace(id);
   }, [onOpenWorkspace]);
 
-  const refresh = useCallback(async () => {
-    try {
-      setWorkspaces(await fetchWorkspaces());
-    } catch {
-      // The sidebar already reports a list that cannot be loaded.
-    }
+  const refresh = useCallback(() => {
+    const request = ++loadState.current.request;
+    return fetchWorkspaces().then(
+      (items) => {
+        if (loadState.current.mounted && loadState.current.request === request) setWorkspaces(items);
+      },
+      () => {
+        // The sidebar already reports a list that cannot be loaded.
+      },
+    );
   }, []);
 
   useEffect(() => {
+    const state = loadState.current;
+    state.mounted = true;
     void refresh();
+    return () => {
+      state.mounted = false;
+      state.request++;
+    };
   }, [refresh, reloadKey]);
 
   useEffect(() => {

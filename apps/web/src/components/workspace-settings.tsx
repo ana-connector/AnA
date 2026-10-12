@@ -47,21 +47,56 @@ export function WorkspaceSettings({
    *  removal is not a one-click thing. */
   onForget: () => void;
 }) {
-  const [enabled, setEnabled] = useState(workspace.container_enabled);
-  const [image, setImage] = useState(workspace.container_image ?? "");
-  const [ports, setPorts] = useState(portsToText(workspace.container_ports ?? []));
   const [available, setAvailable] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    void fetchWorkspaceCapabilities().then((caps) => setAvailable(caps.containers));
+    let active = true;
+    void fetchWorkspaceCapabilities().then((caps) => {
+      if (active) setAvailable(caps.containers);
+    });
+    return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    setEnabled(workspace.container_enabled);
-    setImage(workspace.container_image ?? "");
-    setPorts(portsToText(workspace.container_ports ?? []));
-  }, [workspace]);
+  // A new server value starts a new draft. Keep the saved notice and capability
+  // result outside the keyed form so a save does not erase either one.
+  const draftKey = JSON.stringify([
+    workspace.id,
+    workspace.container_enabled,
+    workspace.container_image,
+    workspace.container_ports,
+  ]);
+  return (
+    <WorkspaceSettingsFields
+      key={draftKey}
+      workspace={workspace}
+      onSaved={onSaved}
+      onForget={onForget}
+      available={available}
+      saved={saved}
+      onSavedStatus={() => setSaved(true)}
+    />
+  );
+}
+
+function WorkspaceSettingsFields({
+  workspace,
+  onSaved,
+  onForget,
+  available,
+  saved,
+  onSavedStatus,
+}: {
+  workspace: WorkspaceSummary;
+  onSaved: () => void;
+  onForget: () => void;
+  available: boolean | null;
+  saved: boolean;
+  onSavedStatus: () => void;
+}) {
+  const [enabled, setEnabled] = useState(workspace.container_enabled);
+  const [image, setImage] = useState(workspace.container_image ?? "");
+  const [ports, setPorts] = useState(portsToText(workspace.container_ports ?? []));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -70,7 +105,7 @@ export function WorkspaceSettings({
       container_image: image.trim() || null,
       container_ports: textToPorts(ports),
     });
-    setSaved(true);
+    onSavedStatus();
     onSaved();
   };
 
