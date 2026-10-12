@@ -625,12 +625,17 @@ packages/memory        Postgres/pgvector turn storage and recall
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r apps/server/requirements.txt
-.venv/bin/python -m pytest
+for f in apps/server/tests/test_*.py; do .venv/bin/python -m pytest "$f" -q; done
 ```
 
 The suite starts a throwaway `pgvector/pgvector:pg16` container, so a working
 Docker daemon is required. Adapter tests run against fake CLIs
 (`apps/server/tests/fixtures/`) and never call a real model.
+
+Run it one file per process: the whole suite in a single process can run out
+of memory around 6GB. Run from inside AnA's server container, the test
+database joins the same Docker network, and the server's own `ANA_*` settings
+do not leak into the tests.
 
 ## License
 
