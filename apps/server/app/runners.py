@@ -334,17 +334,24 @@ class TurnRunner:
             return
         self.closed = True
         self.sinks.clear()
-        for delegation in list(self.gate_session.active_delegations):
-            delegation.cancel()
-        self.relay_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await self.relay_task
-        await self._stop_adapters()
-        if self.gate_session.active_delegations:
-            await asyncio.gather(
-                *list(self.gate_session.active_delegations), return_exceptions=True
-            )
-        self.gate_registry.unregister(self.gate_session.token)
+        try:
+            for delegation in list(self.gate_session.active_delegations):
+                delegation.cancel()
+            self.relay_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self.relay_task
+            await self._stop_adapters()
+            if self.gate_session.active_delegations:
+                await asyncio.gather(
+                    *list(self.gate_session.active_delegations), return_exceptions=True
+                )
+        finally:
+            # Revoking the token must not depend on the teardown above getting
+            # to its end. Every step there awaits, and a close that is itself
+            # cancelled (server shutdown, a connection torn down mid-cleanup)
+            # used to stop before this line — leaving a live gate token behind,
+            # with `closed` already set so no later close would retry it.
+            self.gate_registry.unregister(self.gate_session.token)
 
 
 class RunnerRegistry:
