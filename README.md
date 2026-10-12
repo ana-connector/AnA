@@ -615,6 +615,28 @@ python -m venv .venv && .venv/bin/pip install -r apps/server/requirements.txt
 동작해야 합니다. 어댑터 테스트는 가짜 CLI(`apps/server/tests/fixtures/`)로
 실행되며 실제 모델을 호출하지 않습니다.
 
+## 로드맵
+
+v1.0의 목표는 AnA 데몬 하나가 호스팅하는 같은 화면으로 웹·Windows·Debian
+KDE Plasma·Android 어디서든 작업을 이어가는 것입니다. 각 버전은 날짜가 아니라
+완료 조건을 채웠을 때 출시합니다.
+
+| 버전 | 목표 |
+|---|---|
+| **v0.1** (현재) | 첫 공개 알파: 여러 CLI 오케스트레이션, 거버넌스 게이트, 플래너-워커, 워크스페이스 |
+| v0.2 | 현재 기능 안정화, shadcn/ui에서 독립한 자체 UI, CI |
+| v0.3 | AnA 데몬(UI·API 단일 주소), 인증과 기기 페어링, Windows·Debian KDE Plasma 앱 |
+| v0.4 | 끊김·재시작 뒤 실행 상태 복구, 여러 기기 동시 사용 |
+| v0.5 | Android 앱 |
+| v0.6 | 작업 결과(변경 파일·diff·검증) 검토, 권한 강화 |
+| v0.7 | 라우팅과 사용량 정책 |
+| v0.8 | 백업·복원·업데이트 등 운영 |
+| v0.9 | 베타: 기능 동결과 실사용 검증 |
+| **v1.0** | 정식 출시 |
+
+버전별 완료 조건은 [v1.0.0 제품 로드맵](docs/plans/v1.0.0-product-roadmap.md)에
+있습니다.
+
 ## 라이선스
 
 ANA는 [GNU Affero General Public License v3.0](LICENSE)으로 배포됩니다.
