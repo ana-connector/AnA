@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { CopyIcon, NetworkIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -35,7 +35,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Composer } from "@/components/composer";
+import { Composer, type ComposerHandle } from "@/components/composer";
 import { Marker, MarkerContent } from "@/components/ui/marker";
 import { Message, MessageContent } from "@/components/ui/message";
 import {
@@ -153,7 +153,9 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     answerApproval,
     answerQuestion,
   } = useChatSocket(sessionId);
-  const [draft, setDraft] = useState("");
+  // The draft itself lives in the composer, so typing does not re-render the
+  // transcript; this only lets the starter buttons fill it.
+  const composerRef = useRef<ComposerHandle>(null);
   // The sub-agent whose own transcript is open, if any. A panel over the
   // conversation rather than a replacement for it: the lead's reply is the
   // context that makes a worker's output mean anything, so leaving the
@@ -352,7 +354,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                               variant="outline"
                               size="sm"
                               className="h-auto justify-start whitespace-normal py-1.5 text-left"
-                              onClick={() => setDraft(starter)}
+                              onClick={() => composerRef.current?.fill(starter)}
                             >
                               {starter}
                             </Button>
@@ -546,12 +548,9 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
         {/* Outside the scroll area and never shrinking, so the composer stays
             on screen no matter how long the transcript gets. */}
         <Composer
-          value={draft}
-          onChange={setDraft}
-          onSubmit={() => {
-            // Always "auto": the routing ladder picks the CLI per message.
-            if (sendMessage(draft, "auto")) setDraft("");
-          }}
+          ref={composerRef}
+          // Always "auto": the routing ladder picks the CLI per message.
+          onSubmit={(text) => sendMessage(text, "auto")}
           onCancel={cancel}
           streaming={streaming}
           connected={connected}

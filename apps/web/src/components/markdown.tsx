@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -8,8 +9,11 @@ import remarkGfm from "remark-gfm";
  *
  *  Styled per element instead of with a typography plugin: the project does not
  *  ship one, and the bubble already sets the surface colors, so these only need
- *  spacing and the few block treatments (code, tables, quotes). */
-export function Markdown({ children }: { children: string }) {
+ *  spacing and the few block treatments (code, tables, quotes).
+ *
+ *  Memoized on the text: parsing is the expensive part of a transcript render,
+ *  and without this every streamed token re-parsed every earlier reply too. */
+export const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
     <div className="flex flex-col gap-2 text-sm leading-relaxed break-words">
       <ReactMarkdown
@@ -80,4 +84,4 @@ export function Markdown({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

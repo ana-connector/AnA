@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useRef, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type Ref,
+} from "react";
 import { SendIcon, SquareIcon } from "lucide-react";
 import {
   InputGroup,
@@ -20,25 +28,40 @@ const MAX_ROWS = 3;
  *  It decides per turn now (see packages/orchestrator/planner.py).
  *
  *  Enter sends and Shift+Enter makes a newline — the usual chat contract, which
- *  a plain textarea does not give you. */
+ *  a plain textarea does not give you.
+ *
+ *  The draft lives here, not in the page. Held by the chat page, every
+ *  keystroke re-rendered the whole transcript — every reply's markdown, the
+ *  plan graph — and typing lagged more the longer the conversation got. The
+ *  page only hears about the text when it is sent, and fills it through
+ *  `ref` (the starter suggestions). */
+export type ComposerHandle = { fill: (text: string) => void };
+
 export function Composer({
-  value,
-  onChange,
+  ref,
   onSubmit,
   onCancel,
   streaming,
   connected,
   placeholder,
 }: {
-  value: string;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
+  ref?: Ref<ComposerHandle>;
+  /** Returns whether the message went out; the box is cleared only then. */
+  onSubmit: (text: string) => boolean;
   onCancel: () => void;
   streaming: boolean;
   connected: boolean;
   placeholder: string;
 }) {
+  const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    fill: (text: string) => {
+      setValue(text);
+      textareaRef.current?.focus();
+    },
+  }), []);
 
   // Grow with the text up to MAX_ROWS, then scroll — measured from the element
   // rather than counted in characters, which wrapping makes meaningless.
@@ -54,7 +77,7 @@ export function Composer({
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (!value.trim() || streaming) return;
-    onSubmit();
+    if (onSubmit(value)) setValue("");
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -71,7 +94,7 @@ export function Composer({
           ref={textareaRef}
           rows={1}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
           className="max-h-32 resize-none"
