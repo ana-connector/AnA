@@ -279,6 +279,30 @@ async def test_closing_a_runner_kills_its_clis_and_drops_its_token():
 
 
 @pytest.mark.asyncio
+async def test_a_close_cancelled_mid_teardown_still_drops_the_token():
+    """Server shutdown or a connection torn down mid-cleanup cancels the close
+    while it is waiting on a CLI to exit. The token used to be revoked only
+    after that wait, so it outlived the runner."""
+    stuck = asyncio.Event()
+
+    class SlowToDie(FakeAdapter):
+        async def terminate(self) -> None:
+            stuck.set()
+            await asyncio.Event().wait()  # never exits on its own
+
+    runner = _runner(FakeGraph([TEXT, RESULT]), adapters={"claude": SlowToDie()})
+    token = runner.gate_session.token
+
+    closing = asyncio.create_task(runner.close())
+    await stuck.wait()
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert runner.gate_registry.get(token) is None
+
+
+@pytest.mark.asyncio
 async def test_an_idle_unwatched_runner_is_swept(monkeypatch):
     monkeypatch.setenv("ANA_RUNNER_IDLE_SECONDS", "0")
     graph = FakeGraph([TEXT, RESULT])
