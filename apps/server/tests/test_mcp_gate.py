@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from apps.server.app.main import app
 from packages.governance.audit import recent_events, run_audit_migrations
 from packages.governance.session import GateRegistry
+from packages.governance.subagent_scope import Scope
 
 
 @pytest_asyncio.fixture
@@ -82,19 +83,28 @@ async def test_denial_leaves_an_audit_row(client, prepared_pool):
     )
 
 
-def test_lead_still_gets_no_tools(client):
+def test_lead_can_use_mcp_tools_but_respects_explicit_scope(client):
     session = _register(client, "mcp-gate-4")
     session.current_agent = "claude"
 
-    response = client.post(
-        "/gate/tool-call",
-        headers={"x-ana-gate-token": session.token},
-        json={
-            "tool_name": "mcp__git__git_log",
-            "tool_input": {},
-            "cli_session_id": "s1",
-            "role": "lead",
-        },
-    )
+    def call(tool_name):
+        return client.post(
+            "/gate/tool-call",
+            headers={"x-ana-gate-token": session.token},
+            json={
+                "tool_name": tool_name,
+                "tool_input": {},
+                "cli_session_id": "s1",
+                "role": "lead",
+            },
+        )
 
-    assert response.json()["decision"] == "deny"
+    response = call("mcp__git__git_log")
+    assert response.status_code == 200
+    assert response.json()["decision"] == "allow"
+
+    session.lead_scope = Scope(mode="read")
+    scoped_response = call("mcp__git__git_commit")
+    assert scoped_response.status_code == 200
+    assert scoped_response.json()["decision"] == "deny"
+    assert scoped_response.json()["rule_id"] == "subagent-scope"

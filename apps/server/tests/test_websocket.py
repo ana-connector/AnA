@@ -188,6 +188,10 @@ def test_websocket_relays_error_when_run_stream_raises(db_pool, postgres_dsn, mo
     with patch(
         "apps.server.app.websocket.build_adapter", return_value=RaisingAdapter()
     ), patch(
+        "apps.server.app.websocket.build_codex_adapter", return_value=RaisingAdapter()
+    ), patch(
+        "apps.server.app.websocket.build_kimi_adapter", return_value=RaisingAdapter()
+    ), patch(
         "apps.server.app.websocket.build_transcript",
         return_value=TranscriptLogger(str(tmp_path)),
     ):
@@ -195,7 +199,7 @@ def test_websocket_relays_error_when_run_stream_raises(db_pool, postgres_dsn, mo
             with client.websocket_connect("/ws/chat") as ws:
                 ws.receive_json()  # thread_id
                 ws.send_text("hello")
-                event = next_content(ws)
+                event = next_content(ws, skip=NOISE_FRAMES | {"failover"})
     assert event["type"] == "error"
     assert "boom" in event["text"]
 
@@ -207,6 +211,10 @@ def test_websocket_closes_connection_after_relay_failure(db_pool, postgres_dsn, 
     with patch(
         "apps.server.app.websocket.build_adapter", return_value=RaisingAdapter()
     ), patch(
+        "apps.server.app.websocket.build_codex_adapter", return_value=RaisingAdapter()
+    ), patch(
+        "apps.server.app.websocket.build_kimi_adapter", return_value=RaisingAdapter()
+    ), patch(
         "apps.server.app.websocket.build_transcript",
         return_value=TranscriptLogger(str(tmp_path)),
     ):
@@ -214,7 +222,9 @@ def test_websocket_closes_connection_after_relay_failure(db_pool, postgres_dsn, 
             with client.websocket_connect("/ws/chat") as ws:
                 ws.receive_json()  # thread_id
                 ws.send_text("hello")
-                assert next_content(ws)["type"] == "error"
+                event = next_content(ws, skip=NOISE_FRAMES | {"failover"})
+                assert event["type"] == "error"
+                assert "boom" in event["text"]
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     ws.receive_text()
     assert exc_info.value.code == 1011
