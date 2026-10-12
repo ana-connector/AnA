@@ -38,7 +38,21 @@ class EnvBuilder:
         # checkpoint tables), which it could drop or corrupt if it chose to
         # or was tricked into it.
         env.pop("DATABASE_URL", None)
-        return env
+        return _without_inherited_gate(env)
+
+
+def _without_inherited_gate(env: dict[str, str]) -> dict[str, str]:
+    """Drops a gate token the server happened to be holding itself.
+
+    These are added back by `with_gate` for the conversation the subprocess is
+    actually being started for. What they must never be is inherited: ANA runs
+    as an agent inside its own workspace, so its environment can carry a live
+    token for somebody else's conversation — and with the gate switched off
+    nothing adds one, which left exactly that stale token in the CLI's
+    environment. Same reasoning as the DATABASE_URL strip above."""
+    env.pop("ANA_GATE_TOKEN", None)
+    env.pop("ANA_GATE_URL", None)
+    return env
 
 
 def build_codex_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -49,7 +63,7 @@ def build_codex_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     ANA's own memory database (see EnvBuilder.build)."""
     env = dict(base_env if base_env is not None else os.environ)
     env.pop("DATABASE_URL", None)
-    return env
+    return _without_inherited_gate(env)
 
 
 def build_kimi_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -63,7 +77,7 @@ def build_kimi_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     memory database."""
     env = dict(base_env if base_env is not None else os.environ)
     env.pop("DATABASE_URL", None)
-    return env
+    return _without_inherited_gate(env)
 
 
 def default_kimi_model_from_settings() -> str | None:
