@@ -173,7 +173,7 @@ async def test_exhausted_claude_hands_over_to_codex_with_context(db_pool):
 
 
 @pytest.mark.asyncio
-async def test_ordinary_failure_does_not_fail_over(db_pool):
+async def test_a_cli_error_fails_over_to_the_next_rung(db_pool):
     broken = BrokenAdapter()
     other = WorkingAdapter("tapie")
 
@@ -181,11 +181,42 @@ async def test_ordinary_failure_does_not_fail_over(db_pool):
         return broken if agent == "claude" else other
 
     graph = build_graph(InMemorySaver())
-    frames, _ = await _run(graph, _config(db_pool, factory, "fo-3"))
+    frames, values = await _run(graph, _config(db_pool, factory, "fo-3"))
 
-    # A bad request is reported, not retried against another provider.
-    assert [f["type"] for f in frames if f["type"] in ("error", "failover")] == ["error"]
-    assert other.calls == []
+    # A CLI that exits with an error is unavailable for this turn, whatever the
+    # reason: the next rung answers instead of the user getting the error.
+    failover = next(f for f in frames if f["type"] == "failover")
+    assert (failover["from_rung"], failover["to_rung"]) == ("claude", "tapie")
+    assert values["response_text"] == "tapie answered"
+    assert not [f for f in frames if f["type"] == "error"]
+
+
+@pytest.mark.asyncio
+async def test_a_kimi_crash_hands_the_turn_to_another_cli(db_pool):
+    other = WorkingAdapter("claude")
+
+    def factory(agent, auth_mode=None, model=None, effort=None):
+        return BrokenAdapter() if agent == "kimi" else other
+
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, _config(db_pool, factory, "fo-3k"), agent="kimi")
+
+    failover = next(f for f in frames if f["type"] == "failover")
+    assert (failover["from_rung"], failover["to_rung"]) == ("kimi", "claude")
+    assert values["response_text"] == "claude answered"
+
+
+@pytest.mark.asyncio
+async def test_a_cli_error_on_every_rung_reports_the_error(db_pool):
+    def factory(agent, auth_mode=None, model=None, effort=None):
+        return BrokenAdapter()
+
+    graph = build_graph(InMemorySaver())
+    frames, _ = await _run(graph, _config(db_pool, factory, "fo-3x"))
+
+    assert len([f for f in frames if f["type"] == "failover"]) == 3
+    error = next(f for f in frames if f["type"] == "error")
+    assert "SyntaxError" in error["text"]
 
 
 @pytest.mark.asyncio
