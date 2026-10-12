@@ -143,6 +143,12 @@ export function SessionSidebar({
   const active = useMemo(() => visible.filter((item) => !item.archived), [visible]);
   const archived = useMemo(() => visible.filter((item) => item.archived), [visible]);
 
+  // Archiving the workspace you are in must not hide the conversation you are
+  // reading: while the open one sits in the archive the group stays open, no
+  // matter what the toggle says. Derived rather than pushed into state so that
+  // closing it again works the moment you move to an unarchived workspace.
+  const archiveExpanded = archiveOpen || archived.some((item) => item.id === workspaceId);
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim()) return;
@@ -303,23 +309,23 @@ export function SessionSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* The archive sits at the bottom and stays shut: these are workspaces
-            you put away, so they should cost a click to see and no space
-            otherwise. Hidden entirely when nothing is archived — an empty
-            heading is furniture. */}
+        {/* The archive sits at the bottom and stays shut unless the workspace
+            you are in is inside it: these are workspaces you put away, so they
+            should cost a click to see and no space otherwise. Hidden entirely
+            when nothing is archived — an empty heading is furniture. */}
         {archived.length > 0 && (
           <SidebarGroup className="mt-auto">
             <SidebarGroupContent>
               <button
                 type="button"
                 onClick={() => setArchiveOpen((previous) => !previous)}
-                aria-expanded={archiveOpen}
+                aria-expanded={archiveExpanded}
                 className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               >
                 <ChevronDownIcon
                   className={cn(
                     "size-3.5 shrink-0 transition-transform",
-                    !archiveOpen && "-rotate-90"
+                    !archiveExpanded && "-rotate-90"
                   )}
                 />
                 <ArchiveIcon strokeWidth={1.5} className="size-3.5 shrink-0" />
@@ -327,7 +333,7 @@ export function SessionSidebar({
                 <span className="ml-auto tabular-nums opacity-70">{archived.length}</span>
               </button>
 
-              {archiveOpen && (
+              {archiveExpanded && (
                 <SidebarMenu className="gap-1 pt-1">{archived.map(row)}</SidebarMenu>
               )}
             </SidebarGroupContent>
