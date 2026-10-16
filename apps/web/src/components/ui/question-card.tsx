@@ -35,14 +35,16 @@ import type { QuestionRequest } from "@/hooks/useChatSocket";
 export function QuestionCard({
   request,
   onAnswer,
+  connected,
+  connectionVersion,
 }: {
   request: QuestionRequest;
   onAnswer: (requestId: string, answers: (string | string[])[]) => boolean;
+  connected: boolean;
+  connectionVersion: number;
 }) {
-  const [submitted, setSubmitted] = useState(false);
-  // Set when the answers never left the browser, so a dead socket does not read
-  // as a card that simply ignored the button.
-  const [failed, setFailed] = useState(false);
+  const [submittedOn, setSubmittedOn] = useState<number | null>(null);
+  const submitted = submittedOn === connectionVersion;
   const items = request.questions.map((question, index) => ({
     name: `q${index}`,
     required: question.required !== false,
@@ -56,9 +58,7 @@ export function QuestionCard({
       const picked = data.getAll(`q${index}`).map(String).filter((value) => value.trim().length > 0);
       return question.multi ? picked : picked[0] ?? "";
     });
-    const sent = onAnswer(request.request_id, answers);
-    setSubmitted(sent);
-    setFailed(!sent);
+    if (onAnswer(request.request_id, answers)) setSubmittedOn(connectionVersion);
   };
 
   return (
@@ -116,17 +116,12 @@ export function QuestionCard({
             </CardContent>
           </QuestionnaireItem>
         ))}
-        <CardFooter className="flex-col items-stretch gap-2">
-          {failed ? (
-            <p role="alert" className="text-xs text-destructive">
-              연결이 끊겨 보내지 못했습니다. 다시 연결되면 다시 눌러 주세요.
-            </p>
-          ) : null}
+        <CardFooter>
           <QuestionnaireActions>
             <QuestionnairePrevious size="sm">이전</QuestionnairePrevious>
             <QuestionnaireSkip size="sm">건너뛰기</QuestionnaireSkip>
             <QuestionnaireNext size="sm">다음</QuestionnaireNext>
-            <QuestionnaireSubmit size="sm" disabled={submitted}>
+            <QuestionnaireSubmit size="sm" disabled={submitted || !connected}>
               {submitted ? "전달 중…" : "답하기"}
             </QuestionnaireSubmit>
           </QuestionnaireActions>

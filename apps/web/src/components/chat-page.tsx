@@ -133,6 +133,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   const {
     messages,
     connected,
+    connectionVersion,
     streaming,
     usage,
     failingAgents,
@@ -526,7 +527,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                     messageId={request.request_id}
                     className="min-w-0"
                   >
-                    <QuestionCard request={request} onAnswer={answerQuestion} />
+                    <QuestionCard request={request} onAnswer={answerQuestion} connected={connected} connectionVersion={connectionVersion} />
                   </MessageScrollerItem>
                 ))}
 
@@ -536,7 +537,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                     messageId={request.request_id}
                     className="min-w-0"
                   >
-                    <ApprovalCard request={request} onAnswer={answerApproval} />
+                    <ApprovalCard request={request} onAnswer={answerApproval} connected={connected} connectionVersion={connectionVersion} />
                   </MessageScrollerItem>
                 ))}
               </MessageScrollerContent>
