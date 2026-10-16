@@ -34,10 +34,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Composer, type ComposerHandle } from "@/components/composer";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import { Message, MessageContent } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -295,10 +293,38 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
           </div>
         </header>
 
+        {/* A phone shows one screen at a time, and the one thing that cannot
+            wait is the request blocking the turn. Above the transcript, not
+            inside it: the transcript is scrolled to its end, so anything
+            placed at the top of it would be off screen. At md and up the
+            cards stay in the flow, next to what they are about. */}
+        {(questions.length > 0 || approvals.length > 0) && (
+          <div className="flex max-h-[55vh] shrink-0 flex-col gap-4 overflow-y-auto border-b border-border px-4 py-3 md:hidden">
+            {questions.map((request) => (
+              <QuestionCard
+                key={request.request_id}
+                request={request}
+                onAnswer={answerQuestion}
+                connected={connected}
+                connectionVersion={connectionVersion}
+              />
+            ))}
+            {approvals.map((request) => (
+              <ApprovalCard
+                key={request.request_id}
+                request={request}
+                onAnswer={answerApproval}
+                connected={connected}
+                connectionVersion={connectionVersion}
+              />
+            ))}
+          </div>
+        )}
+
         <MessageScrollerProvider autoScroll>
           <MessageScroller className="min-h-0 flex-1">
             <MessageScrollerViewport>
-              <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 px-4 pt-4 pb-12">
+              <MessageScrollerContent className="mx-auto w-full max-w-[68ch] gap-7 px-4 pt-6 pb-12 leading-relaxed">
                 {/* A fresh conversation used to be a blank rectangle above
                     the composer, which says nothing about what this thing
                     does or what it may do on your behalf. */}
@@ -308,7 +334,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                     turns in it. */}
                 {loadingHistory && messages.length === 0 && (
                   <MessageScrollerItem messageId="loading">
-                    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 py-6">
+                    <div className="mx-auto flex w-full max-w-[68ch] flex-col gap-6 py-6">
                       <div className="flex flex-col items-end gap-2">
                         <Skeleton className="h-9 w-2/5 rounded-xl" />
                       </div>
@@ -380,31 +406,29 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                     // jump-to-latest button covers the rest.
                   >
                     {message.role === "user" ? (
-                      // What you said is a message in a conversation: short,
-                      // attributable, and worth setting apart from the page.
-                      <Message align="end">
-                        <MessageContent>
-                          <Bubble align="end" variant="default">
-                            <BubbleContent>
-                              {/* The user's own text is not markdown; showing
-                                  it verbatim keeps their formatting intact. */}
-                              <span className="whitespace-pre-wrap">{message.text}</span>
-                            </BubbleContent>
-                          </Bubble>
+                      // One reading line down the page: what you asked and
+                      // what came back are the same column, told apart by the
+                      // label above each. A right-aligned bubble split the
+                      // transcript into two columns, which is a chat app's
+                      // shape, not a record of work.
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <div className="flex items-center gap-2 text-xs tracking-wide text-muted-foreground">
+                          <span>나</span>
                           {message.at ? (
                             <Tooltip>
                               <TooltipTrigger
                                 render={
-                                  <span className="mt-1 block text-right text-[11px] tabular-nums text-muted-foreground">
-                                    {clockTime(message.at)}
-                                  </span>
+                                  <span className="tabular-nums">· {clockTime(message.at)}</span>
                                 }
                               />
                               <TooltipContent>{timeExact(message.at)}</TooltipContent>
                             </Tooltip>
                           ) : null}
-                        </MessageContent>
-                      </Message>
+                        </div>
+                        {/* The user's own text is not markdown; showing it
+                            verbatim keeps their formatting intact. */}
+                        <p className="min-w-0 font-medium whitespace-pre-wrap">{message.text}</p>
+                      </div>
                     ) : (
                       // The agent's reply is not a chat message, it is the
                       // document you asked for: a bubble put a hundred-line
@@ -423,7 +447,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                         {/* Who answered and when it landed. With the prompt's
                             own time above, the pair says how long the turn
                             took once the live counter is gone. */}
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-2 text-xs tracking-wide text-muted-foreground">
                           <span>
                             {message.model ??
                               models[message.agent] ??
@@ -521,11 +545,13 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                     render after the transcript: both are what the conversation
                     is currently blocked on. Questions first — an approval is
                     about one command, a question is about what to build. */}
+                {/* Hidden on a phone, where the same requests are pinned
+                    above the transcript instead — see below. */}
                 {questions.map((request) => (
                   <MessageScrollerItem
                     key={request.request_id}
                     messageId={request.request_id}
-                    className="min-w-0"
+                    className="hidden min-w-0 md:block"
                   >
                     <QuestionCard request={request} onAnswer={answerQuestion} connected={connected} connectionVersion={connectionVersion} />
                   </MessageScrollerItem>
@@ -535,7 +561,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                   <MessageScrollerItem
                     key={request.request_id}
                     messageId={request.request_id}
-                    className="min-w-0"
+                    className="hidden min-w-0 md:block"
                   >
                     <ApprovalCard request={request} onAnswer={answerApproval} connected={connected} connectionVersion={connectionVersion} />
                   </MessageScrollerItem>
@@ -607,18 +633,12 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
             // where they happened — so nothing has to be learned twice.
             <div className="flex min-w-0 flex-col gap-4 px-4 pb-4">
               {shownTask.prompt && (
-                <Message align="end">
-                  <MessageContent>
-                    <Bubble align="end" variant="default">
-                      <BubbleContent>
-                        <span className="whitespace-pre-wrap">{shownTask.prompt}</span>
-                      </BubbleContent>
-                    </Bubble>
-                    <span className="mt-1 block text-right text-[11px] text-muted-foreground">
-                      대장 에이전트의 지시
-                    </span>
-                  </MessageContent>
-                </Message>
+                <div className="flex min-w-0 flex-col gap-1">
+                  <div className="text-xs tracking-wide text-muted-foreground">
+                    대장 에이전트의 지시
+                  </div>
+                  <p className="min-w-0 font-medium whitespace-pre-wrap">{shownTask.prompt}</p>
+                </div>
               )}
 
               <div className="flex min-w-0 flex-col gap-2">

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleDotIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronDownIcon, CircleDotIcon, RefreshCwIcon } from "lucide-react";
 import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
 import { fetchUsage, syncUsage, type UsageSnapshot, type UsageWindow } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -90,6 +90,8 @@ export function UsageBar({
 }) {
   const [usage, setUsage] = useState<UsageSnapshot>({});
   const [syncing, setSyncing] = useState(false);
+  // Closed by default: this is reference, not something being watched.
+  const [open, setOpen] = useState(false);
   const loadState = useRef({ mounted: false, request: 0 });
 
   const refresh = useCallback(() => {
@@ -160,11 +162,52 @@ export function UsageBar({
   };
 
   const agents = Object.entries(usage);
+  // The fullest window across the CLIs: the one figure that decides whether
+  // the row is worth opening at all.
+  const tightest = agents.reduce((highest, [, data]) => {
+    const value = data.windows.reduce(
+      (most, window) => Math.max(most, window.utilization ?? 0),
+      0
+    );
+    return Math.max(highest, value);
+  }, 0);
+
+  if (!open) {
+    // Four meters and a cost took two rows on a phone, under the composer,
+    // for numbers that move in percents. Closed, they are one line.
+    return (
+      <footer className="flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-expanded={false}
+          className="-mx-2 flex min-w-0 items-center gap-2 rounded px-2 py-1 transition-colors hover:text-foreground"
+        >
+          <ChevronDownIcon className="size-3.5 shrink-0 -rotate-90" />
+          <span className="tabular-nums">
+            {agents.length === 0 ? "사용량" : `한도 ${percent(tightest)}`}
+          </span>
+          <span className="tabular-nums">
+            ${totalCostUsd.toFixed(2)} · {compactTokens(totalTokens)} tok
+          </span>
+        </button>
+      </footer>
+    );
+  }
 
   return (
     // Generous vertical padding: this is the last row on screen, and a tight
     // one reads as clipped against the window edge.
     <footer className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        aria-expanded={true}
+        aria-label="사용량 접기"
+        className="-m-1 rounded p-1 transition-colors hover:text-foreground"
+      >
+        <ChevronDownIcon className="size-3.5" />
+      </button>
       <Tooltip>
         <TooltipTrigger
           render={

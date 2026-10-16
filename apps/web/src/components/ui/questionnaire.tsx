@@ -384,12 +384,13 @@ function moveChoiceFocus(event: React.KeyboardEvent<HTMLFormElement>): boolean {
 
 function QuestionnaireProgress({ className, children, ...props }: React.ComponentProps<"div">) {
   const { current, total } = useRoot("QuestionnaireProgress")
-  const label = total ? `Question ${current} of ${total}` : undefined
+  // Korean, like everything else the person reads here.
+  const label = total ? `질문 ${current} / ${total}` : undefined
   return (
     <div
       data-slot="questionnaire-progress"
       role="progressbar"
-      aria-label="Questionnaire progress"
+      aria-label="질문 진행"
       aria-live="polite"
       aria-valuemin={total ? 1 : undefined}
       aria-valuemax={total || undefined}
@@ -692,7 +693,7 @@ function QuestionnaireError({ children, className, ...props }: React.ComponentPr
       {...props}
     >
       {children ??
-        (item.required ? "Choose an answer to continue." : "Choose an answer or skip this question.")}
+        (item.required ? "답을 골라야 다음으로 넘어갑니다." : "답을 고르거나 이 질문을 건너뛰세요.")}
     </p>
   )
 }

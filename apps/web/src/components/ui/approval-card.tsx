@@ -78,20 +78,24 @@ export function ApprovalCard({
   const where = request.workspace ?? request.cwd;
 
   return (
+    // An inset in the transcript rather than a card floating over it: the
+    // rule stopped something that was said a line above, and a rule with its
+    // own box reads as a different page. The bar on the leading edge is what
+    // marks it, and the heading says what it is without relying on colour.
     <div
       className={cn(
-        "flex w-full min-w-0 flex-col gap-3 rounded-lg border bg-card p-3",
-        severe ? "border-destructive/50" : "border-border"
+        "flex w-full min-w-0 flex-col gap-3 border-s-2 py-2 ps-4",
+        severe ? "border-destructive bg-destructive/5" : "border-signal bg-signal-muted"
       )}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {severe ? (
           <ShieldAlertIcon className="size-4 shrink-0 text-destructive" />
         ) : (
-          <ShieldQuestionIcon className="size-4 shrink-0 text-muted-foreground" />
+          <ShieldQuestionIcon className="size-4 shrink-0 text-signal" />
         )}
         <span className={cn("text-sm font-medium", severe && "text-destructive")}>
-          {severe ? "되돌릴 수 없는 작업입니다" : "실행해도 될까요?"}
+          {severe ? "되돌릴 수 없는 작업입니다" : "승인이 필요합니다"}
         </span>
         {categoryLabel ? (
           <Badge variant={severe ? "destructive" : "secondary"}>{categoryLabel}</Badge>
@@ -108,7 +112,7 @@ export function ApprovalCard({
           what it stopped. They used to be in different places — the command in
           a code block, the rule only as an id in the footnote row — so the
           reader had to know the rule set to know what they were being asked. */}
-      <div className="flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-muted">
+      <div className="flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background">
         {request.description ? (
           <p
             className={cn(
@@ -148,7 +152,7 @@ export function ApprovalCard({
 
       {/* The safe answer is the wide one and sits where the eye lands first;
           the one that cannot be undone needs a deliberate move to the right. */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col gap-2 pe-2 sm:flex-row sm:justify-end">
         <Button
           size="sm"
           variant="outline"

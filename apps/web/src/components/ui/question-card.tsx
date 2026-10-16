@@ -63,13 +63,16 @@ export function QuestionCard({
 
   return (
     <Questionnaire
-      className="mx-auto w-full max-w-xl"
+      className="w-full min-w-0"
       defaultItem="q0"
       items={items}
       shortcuts="numbers"
       onSubmit={submit}
     >
-      <Card>
+      {/* Inset into the transcript, like an approval: the question belongs to
+          the turn above it, and a centred card detached it from what it was
+          asking about. */}
+      <Card className="rounded-none border-s-2 border-signal bg-signal-muted ring-0 [--card-spacing:--spacing(3)]">
         {request.questions.map((question, index) => (
           <QuestionnaireItem
             key={index}
@@ -79,7 +82,7 @@ export function QuestionCard({
           >
             <CardHeader>
               <QuestionnaireTitle render={<CardTitle />}>
-                <MessageCircleQuestionMarkIcon className="mr-2 inline size-4 text-muted-foreground" />
+                <MessageCircleQuestionMarkIcon className="mr-2 inline size-4 text-signal" />
                 {question.question}
               </QuestionnaireTitle>
               {question.note && (

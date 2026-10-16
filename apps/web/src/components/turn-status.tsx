@@ -53,11 +53,14 @@ export function TurnStatusLine({
       aria-live="polite"
     >
       <span className="relative flex size-1.5 shrink-0">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-60" />
+        <span className="absolute inline-flex size-full rounded-full bg-primary opacity-60 motion-safe:animate-ping" />
         <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
       </span>
+      {/* A middle dot rather than a subject particle: the subject is a CLI
+          name, and no Korean particle is right for both "Claude Code" and
+          "codex". */}
       <span className="truncate">
-        {who}이(가) {what}
+        {who} · {what}
         {count}
       </span>
       {/* Only once it has been a moment: a counter that appears instantly makes
