@@ -38,7 +38,23 @@ class EnvBuilder:
         # checkpoint tables), which it could drop or corrupt if it chose to
         # or was tricked into it.
         env.pop("DATABASE_URL", None)
-        return _without_inherited_gate(env)
+        return _without_inherited_gate(_with_mcp_tool_timeout(env))
+
+
+# The CLI's own deadline for one MCP tool call. ANA's `delegate.run_task`
+# holds its answer until the worker is finished, which is the whole point —
+# a lead that re-asks every few seconds spends a tool call, and a model
+# round trip, on learning nothing. The client has to be willing to wait that
+# long, and Claude Code's default is far shorter.
+#
+# Only set when the environment has nothing to say: an operator who has
+# configured a deadline meant it.
+MCP_TOOL_TIMEOUT_MS = "3900000"  # 65 minutes, past ANA_DELEGATE_WAIT_SECONDS
+
+
+def _with_mcp_tool_timeout(env: dict[str, str]) -> dict[str, str]:
+    env.setdefault("MCP_TOOL_TIMEOUT", MCP_TOOL_TIMEOUT_MS)
+    return env
 
 
 def _without_inherited_gate(env: dict[str, str]) -> dict[str, str]:
@@ -63,7 +79,7 @@ def build_codex_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     ANA's own memory database (see EnvBuilder.build)."""
     env = dict(base_env if base_env is not None else os.environ)
     env.pop("DATABASE_URL", None)
-    return _without_inherited_gate(env)
+    return _without_inherited_gate(_with_mcp_tool_timeout(env))
 
 
 def build_kimi_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -77,7 +93,7 @@ def build_kimi_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     memory database."""
     env = dict(base_env if base_env is not None else os.environ)
     env.pop("DATABASE_URL", None)
-    return _without_inherited_gate(env)
+    return _without_inherited_gate(_with_mcp_tool_timeout(env))
 
 
 def default_kimi_model_from_settings() -> str | None:

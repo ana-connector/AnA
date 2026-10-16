@@ -15,6 +15,7 @@
 
 import { useState } from "react";
 import { ApprovalCard } from "@/components/ui/approval-card";
+import { PlanGraph } from "@/components/plan-graph";
 import { QuestionCard } from "@/components/ui/question-card";
 import {
   MessageScroller,
@@ -24,7 +25,12 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import type { ApprovalRequest, QuestionRequest } from "@/hooks/useChatSocket";
+import type {
+  ApprovalRequest,
+  PlanState,
+  QuestionRequest,
+  SubagentTask,
+} from "@/hooks/useChatSocket";
 
 declare global {
   interface Window {
@@ -80,6 +86,21 @@ const approval: ApprovalRequest = {
   cwd: "/home/hello/ana",
 };
 
+/** A fan-out with a dependency, one long failure message, and a task that
+ *  arrives after the others — the three things that broke the diagram. */
+const baseTasks: SubagentTask[] = [
+  { id: "t1", title: "테스트 실행", agent: "codex", model: "gpt-6-astra", status: "done" },
+  { id: "t2", title: "실패 원인 조사", agent: "claude", model: "fable", status: "running" },
+  {
+    id: "t3",
+    title: "수정안 작성",
+    agent: "claude",
+    model: "opus",
+    status: "blocked",
+    needs: ["t2"],
+  },
+];
+
 export default function UiHarness() {
   const [messages, setMessages] = useState<string[]>(
     Array.from({ length: 40 }, (_, index) => `메시지 ${index + 1}`)
@@ -87,6 +108,8 @@ export default function UiHarness() {
   // Stands in for an answer arriving token by token: the item keeps its
   // identity and only grows, which is a resize rather than a new child.
   const [grow, setGrow] = useState(0);
+  const [tasks, setTasks] = useState<SubagentTask[]>(baseTasks);
+  const plan: PlanState = { mode: "delegate", tasks, note: "" };
 
   if (process.env.NODE_ENV === "production") return null;
 
@@ -102,6 +125,45 @@ export default function UiHarness() {
         </button>
         <button id="grow" type="button" onClick={() => setGrow((value) => value + 1)}>
           grow
+        </button>
+        <button
+          id="fail-task"
+          type="button"
+          onClick={() =>
+            setTasks((current) =>
+              current.map((task) =>
+                task.id === "t2"
+                  ? {
+                      ...task,
+                      status: "error" as const,
+                      error:
+                        "uvx 를 찾지 못해 MCP 서버 두 개가 비활성화됐고, 그래서 " +
+                        "capabilities 응답의 active 목록이 기대값과 달라졌습니다. " +
+                        "PATH 를 확인하세요.",
+                    }
+                  : task
+              )
+            )
+          }
+        >
+          fail
+        </button>
+        <button
+          id="add-task"
+          type="button"
+          onClick={() =>
+            setTasks((current) => [
+              ...current,
+              {
+                id: `t${current.length + 1}`,
+                title: `추가 작업 ${current.length + 1}`,
+                agent: "kimi",
+                status: "running" as const,
+              },
+            ])
+          }
+        >
+          add
         </button>
       </div>
       <div className="h-80 border" id="scroller-host">
@@ -122,6 +184,9 @@ export default function UiHarness() {
             <MessageScrollerButton />
           </MessageScroller>
         </MessageScrollerProvider>
+      </div>
+      <div id="plan-host" className="w-full max-w-3xl">
+        <PlanGraph plan={plan} />
       </div>
       <ApprovalCard
         request={approval}

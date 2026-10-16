@@ -10,10 +10,29 @@ from packages.orchestrator.context import SharedContext
 from apps.server.app.delegation import DelegationManager, run_routed_task
 
 
+async def test_a_worker_that_finishes_is_answered_in_one_call():
+    """The point of the long wait: no second tool call, no second worker."""
+    active: set[asyncio.Task] = set()
+    manager = DelegationManager(active, wait_seconds=5)
+    starts = 0
+
+    async def worker():
+        nonlocal starts
+        starts += 1
+        await asyncio.sleep(0.05)
+        return {"status": "done", "output": "completed"}
+
+    result = await manager.request(1, "작업", "prompt", worker)
+    assert result["status"] == "done"
+    assert result["output"] == "completed"
+    assert starts == 1
+
+
 async def test_long_delegation_poll_and_retry_keep_one_worker():
     finished = asyncio.Event()
     active: set[asyncio.Task] = set()
-    manager = DelegationManager(active, poll_seconds=0.01)
+    # Short on purpose: a worker outliving the wait is the case being tested.
+    manager = DelegationManager(active, wait_seconds=0.01)
     starts = 0
 
     async def worker():

@@ -11,9 +11,11 @@ TOOL = {
         "Run one delegated task with ANA's worker routing. Use this for tasks "
         "that need a worker-only MCP server, or whenever the worker model "
         "ladder should choose the sub-agent. Start with a short Korean title "
-        "and a self-contained English prompt. If the result says running, "
-        "call this same tool again with its task_id until it returns done or "
-        "error. Never start a second task for the same work."
+        "and a self-contained English prompt. This call waits for the worker "
+        "and returns its result, however long it takes — do not poll it, and "
+        "do not check on the worker while it runs. Only if the result says "
+        "running (the wait was capped) call this same tool again with its "
+        "task_id. Never start a second task for the same work."
     ),
     "inputSchema": {
         "type": "object",
