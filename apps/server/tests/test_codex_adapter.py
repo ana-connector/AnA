@@ -1,6 +1,5 @@
 import json
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -148,9 +147,20 @@ async def test_terminate_stops_native_child_process(tmp_path):
         await adapter.terminate()
         await asyncio.wait_for(running, timeout=3)
         # A reaped process may linger briefly as a zombie, but it cannot hold
-        # the Codex writer lock or continue work.
-        proc_status = f"/proc/{child_pid}/status"
-        assert not os.path.exists(proc_status) or "State:\tZ" in open(proc_status).read()
+        # the Codex writer lock or continue work. Reading /proc races with the
+        # kernel removing the entry, so a lookup that fails means gone, and
+        # the check is given a moment rather than sampled once.
+        def gone() -> bool:
+            try:
+                return "State:\tZ" in open(f"/proc/{child_pid}/status").read()
+            except (FileNotFoundError, ProcessLookupError):
+                return True
+
+        for _ in range(100):
+            if gone():
+                break
+            await asyncio.sleep(0.02)
+        assert gone()
     finally:
         if not running.done():
             running.cancel()
