@@ -67,10 +67,6 @@ with sync_playwright() as p:
         page.wait_for_selector("text=받은 말: 안녕", timeout=20000)
         check("the agent's answer arrives", True, "받은 말: 안녕")
 
-    # --- the conversation survives a reload -------------------------------
-    # What the server itself has, named in the failure: a transcript that does
-    # not come back is either a turn that was never stored or a page that did
-    # not ask, and the two need different fixes.
     import json as _json
     import urllib.request as _request
 
@@ -98,6 +94,21 @@ with sync_playwright() as p:
         )
         return " | ".join(shown) if shown else "no error shown"
 
+    # --- the turn reaches the table ---------------------------------------
+    # Asked before anything navigates: a row that is missing here was never
+    # written, and one that is missing only later went away.
+    recorded = ""
+    for _ in range(20):
+        recorded = stored_turns()
+        if not recorded.startswith("0 "):
+            break
+        time.sleep(1)
+    check("the turn is written down", not recorded.startswith("0 "), recorded)
+
+    # --- the conversation survives a reload -------------------------------
+    # What the server itself has, named in the failure: a transcript that does
+    # not come back is either a turn that was never stored or a page that did
+    # not ask, and the two need different fixes.
     page.reload(wait_until="networkidle")
     with phase("the conversation is still there after a reload"):
         # Waited for, not slept on: the transcript arrives over HTTP after the
