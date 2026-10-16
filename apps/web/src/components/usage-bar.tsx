@@ -3,25 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleDotIcon, RefreshCwIcon } from "lucide-react";
 import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
-import { apiBase, syncUsage } from "@/lib/api";
+import { fetchUsage, syncUsage, type UsageSnapshot, type UsageWindow } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-
-type Window = {
-  label: string;
-  key: string;
-  tokens: number;
-  budget: number;
-  /** "tokens" or "usd": what this plan is capped in. */
-  unit: string;
-  usd: number;
-  utilization: number | null;
-  resets_at: number | null;
-  source: "reported" | "estimated" | "manual";
-};
-
-type UsageSnapshot = Record<string, { windows: Window[] }>;
 
 /** How often the bar re-asks while the tab is open. Fast enough that a window
  *  filling up during a long turn is visible, slow enough that it is not a
@@ -57,7 +42,7 @@ function compactTokens(tokens: number): string {
 /** "$12.50 / $50" for a plan capped in dollars, "" for one capped in tokens:
  *  a dollar figure is the thing you actually watch on a metered key, and a
  *  token count against a guessed budget is not worth the room. */
-function spentLabel(window: Window): string {
+function spentLabel(window: UsageWindow): string {
   if (window.unit !== "usd" || !window.budget) return "";
   return `$${window.usd.toFixed(2)} / $${Math.round(window.budget)}`;
 }
@@ -109,13 +94,10 @@ export function UsageBar({
 
   const refresh = useCallback(() => {
     const request = ++loadState.current.request;
-    return fetch(`${apiBase()}/usage`).then((response) => {
-      if (!response.ok) return null;
-      return response.json() as Promise<{ agents: UsageSnapshot }>;
-    }).then(
-      (body) => {
-        if (body && loadState.current.mounted && loadState.current.request === request) {
-          setUsage(body.agents);
+    return fetchUsage().then(
+      (agents) => {
+        if (loadState.current.mounted && loadState.current.request === request) {
+          setUsage(agents);
         }
       },
       () => {

@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, XIcon } from "lucide-react";
-import { apiBase } from "@/lib/api";
+import {
+  fetchRouting,
+  fetchUsage,
+  saveRouting,
+  type RoutingRung as Rung,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
 import { AGENT_LABELS } from "@/components/ui/agent-toggle";
@@ -23,13 +28,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-type Rung = {
-  agent: string;
-  model: string;
-  effort: string;
-  window: string;
-  utilization: number | null;
-};
 
 type Vocabulary = {
   agents: string[];
@@ -91,7 +89,7 @@ export function RoutingEditor() {
 
   const load = useCallback(async () => {
     const request = ++loadState.current.request;
-    await fetch(`${apiBase()}/routing`).then((response) => response.json()).then(
+    await fetchRouting().then(
       (body) => {
         if (!loadState.current.mounted || loadState.current.request !== request) return;
         setLadders({ lead: body.lead, workers: body.workers ?? {} });
@@ -107,9 +105,9 @@ export function RoutingEditor() {
         if (loadState.current.mounted && loadState.current.request === request) setError(String(e));
       },
     );
-    await fetch(`${apiBase()}/usage`).then((response) => response.json()).then(
-      (body) => {
-        if (loadState.current.mounted && loadState.current.request === request) setUsage(body.agents ?? {});
+    await fetchUsage().then(
+      (agents) => {
+        if (loadState.current.mounted && loadState.current.request === request) setUsage(agents);
       },
       () => {
         // The ladder is editable without live usage; it just reads flatter.
@@ -132,17 +130,7 @@ export function RoutingEditor() {
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch(`${apiBase()}/routing`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(ladders),
-      });
-      if (!response.ok) {
-        throw new Error(
-          ((await response.json()) as { detail?: string }).detail ?? response.statusText
-        );
-      }
-      const stored = await response.json();
+      const stored = await saveRouting(ladders);
       setLadders({ lead: stored.lead, workers: stored.workers ?? {} });
       setDirty(false);
     } catch (e) {

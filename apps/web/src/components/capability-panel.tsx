@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiBase } from "@/lib/api";
+import {
+  fetchMcpServers,
+  fetchSkills,
+  type McpView,
+  type SkillLibrary,
+} from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 
-type Server = { name: string; description: string; command: string };
-type Inactive = { name: string; reason: string };
-type McpView = { role: string; enabled: boolean; active: Server[]; inactive: Inactive[] };
 
 const ROLE_LABELS: Record<string, string> = { lead: "대장", worker: "하위" };
 
@@ -53,14 +55,6 @@ function mergeRoles(views: McpView[]): {
   return [...rows.values()];
 }
 
-type Skill = {
-  name: string;
-  title: string;
-  description: string;
-  roles: string[];
-  mcp: string[];
-};
-type SkillView = { skills: Skill[]; errors: { path: string; message: string }[] };
 
 /** What the agents can reach: the MCP servers a sub-agent gets and the skill
  *  library it can follow. Read-only on purpose — both are files
@@ -68,22 +62,15 @@ type SkillView = { skills: Skill[]; errors: { path: string; message: string }[] 
  *  change, and an editor here would be a second source of truth. */
 export function CapabilityPanel() {
   const [mcp, setMcp] = useState<McpView[] | null>(null);
-  const [skills, setSkills] = useState<SkillView | null>(null);
+  const [skills, setSkills] = useState<SkillLibrary | null>(null);
 
   useEffect(() => {
     void Promise.all(
-      ["lead", "worker"].map((role) =>
-        fetch(`${apiBase()}/mcp/servers?role=${role}`).then((response) =>
-          response.ok ? (response.json() as Promise<McpView>) : null
-        )
-      )
+      ["lead", "worker"].map((role) => fetchMcpServers(role).catch(() => null))
     )
       .then((views) => setMcp(views.filter((view): view is McpView => view !== null)))
       .catch(() => setMcp(null));
-    void fetch(`${apiBase()}/skills`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then(setSkills)
-      .catch(() => setSkills(null));
+    void fetchSkills().then(setSkills, () => setSkills(null));
   }, []);
 
   return (

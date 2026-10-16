@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiBase } from "@/lib/api";
+import { ApiError, fetchUsageEstimates, saveUsageEstimate } from "@/lib/api";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -21,8 +21,6 @@ const rows = [
   { agent: "tapie", window: "monthly", label: "TAPIE · 이번 달 ($1500)" },
 ] as const;
 
-type Estimate = { utilization: number; resets_at: number | null };
-type Estimates = Record<string, Record<string, Estimate>>;
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
@@ -64,10 +62,8 @@ export function UsageEstimateEditor() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    void fetch(`${apiBase()}/usage/estimates`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const { estimates } = (await response.json()) as { estimates: Estimates };
+    void fetchUsageEstimates()
+      .then((estimates) => {
         setValues(Object.fromEntries(rows.map(({ agent, window }) => {
           const entry = estimates[agent]?.[window];
           return [`${agent}.${window}`, entry === undefined ? "" : String(Math.round(entry.utilization * 100))];
@@ -92,14 +88,15 @@ export function UsageEstimateEditor() {
         }
         // A reset time on its own says nothing; it belongs to a figure.
         const resetsAt = amount === null ? null : toIso(resets[key] ?? "", window);
-        const response = await fetch(`${apiBase()}/usage/estimates`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ agent, window, utilization: amount, resets_at: resetsAt }),
-        });
-        if (!response.ok) {
-          const detail = await response.json().then((body) => body?.detail).catch(() => null);
-          throw new Error(detail ? `${label(agent, window)}: ${detail}` : `사용량 저장 실패: HTTP ${response.status}`);
+        try {
+          await saveUsageEstimate({ agent, window, utilization: amount, resets_at: resetsAt });
+        } catch (cause) {
+          const detail = cause instanceof ApiError ? cause.detail : null;
+          throw new Error(
+            detail
+              ? `${label(agent, window)}: ${detail}`
+              : `사용량 저장 실패: ${cause instanceof Error ? cause.message : String(cause)}`
+          );
         }
       }
       setError(null);
