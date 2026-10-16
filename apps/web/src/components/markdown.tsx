@@ -65,8 +65,15 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
           },
           pre: ({ children }) => (
             // Its own scroll container: a long line must not widen the bubble
-            // and push the whole column sideways.
-            <pre className="overflow-x-auto rounded-md bg-foreground/10 p-3">{children}</pre>
+            // and push the whole column sideways. Focusable with it, because a
+            // region you can only scroll with a pointer is a region a keyboard
+            // cannot read.
+            <pre
+              tabIndex={0}
+              className="overflow-x-auto rounded-md bg-foreground/10 p-3 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              {children}
+            </pre>
           ),
           table: ({ children }) => (
             <div className="overflow-x-auto">
