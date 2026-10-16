@@ -46,14 +46,15 @@ export function Composer({
   placeholder,
 }: {
   ref?: Ref<ComposerHandle>;
-  /** Returns whether the message went out; the box is cleared only then. */
-  onSubmit: (text: string) => boolean;
+  /** Resolves after the server confirms receipt; the box is cleared only then. */
+  onSubmit: (text: string) => Promise<boolean>;
   onCancel: () => void;
   streaming: boolean;
   connected: boolean;
   placeholder: string;
 }) {
   const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useImperativeHandle(ref, () => ({
@@ -74,16 +75,25 @@ export function Composer({
     element.style.height = `${Math.min(element.scrollHeight, lineHeight * MAX_ROWS + padding) }px`;
   }, [value]);
 
-  const submit = (event?: FormEvent) => {
+  const submit = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!value.trim() || streaming) return;
-    if (onSubmit(value)) setValue("");
+    if (!value.trim() || streaming || submitting) return;
+    const sent = value;
+    setSubmitting(true);
+    try {
+      if (await onSubmit(sent)) setValue((current) => current === sent ? "" : current);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+    // Some IMEs report isComposing=false on the Enter that confirms the final
+    // syllable. keyCode 229 still marks that key as part of composition.
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing
+      && event.nativeEvent.keyCode !== 229) {
       event.preventDefault();
-      submit();
+      void submit();
     }
   };
 
@@ -117,7 +127,7 @@ export function Composer({
               size="icon-sm"
               variant="default"
               className="ml-auto"
-              disabled={!connected || !value.trim()}
+              disabled={!connected || !value.trim() || submitting}
               title="보내기 (Enter)"
             >
               <SendIcon />

@@ -53,19 +53,19 @@ const CATEGORY_LABELS: Record<string, string> = {
 export function ApprovalCard({
   request,
   onAnswer,
+  connected,
+  connectionVersion,
 }: {
   request: ApprovalRequest;
   onAnswer: (requestId: string, decision: "allow" | "deny") => boolean;
+  connected: boolean;
+  connectionVersion: number;
 }) {
-  // Set when the answer never left the browser. Without it a dead socket looks
-  // exactly like a delivered answer: the buttons do nothing and the card sits
-  // there with no reason given.
-  const [failed, setFailed] = useState(false);
-
-  const answer = (decision: "allow" | "deny") => {
-    setFailed(!onAnswer(request.request_id, decision));
+  const [submittedOn, setSubmittedOn] = useState<number | null>(null);
+  const submitted = submittedOn === connectionVersion;
+  const submit = (decision: "allow" | "deny") => {
+    if (!submitted && onAnswer(request.request_id, decision)) setSubmittedOn(connectionVersion);
   };
-
   const command =
     typeof request.tool_input?.command === "string"
       ? (request.tool_input.command as string)
@@ -143,26 +143,26 @@ export function ApprovalCard({
             <TooltipContent>{where}</TooltipContent>
           </Tooltip>
         ) : null}
-        <span>답하지 않으면 자동으로 차단됩니다</span>
+        <span>{submitted ? "결정 확인 중…" : "답하지 않으면 자동으로 차단됩니다"}</span>
       </div>
-
-      {failed ? (
-        <p role="alert" className="text-xs text-destructive">
-          연결이 끊겨 보내지 못했습니다. 다시 연결되면 다시 눌러 주세요.
-        </p>
-      ) : null}
 
       {/* The safe answer is the wide one and sits where the eye lands first;
           the one that cannot be undone needs a deliberate move to the right. */}
       <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <Button size="sm" variant="outline" onClick={() => answer("deny")}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!connected || submitted}
+          onClick={() => submit("deny")}
+        >
           <XIcon data-icon="inline-start" />
           차단
         </Button>
         <Button
           size="sm"
           variant={severe ? "destructive" : "default"}
-          onClick={() => answer("allow")}
+          disabled={!connected || submitted}
+          onClick={() => submit("allow")}
         >
           <CheckIcon data-icon="inline-start" />
           이번만 실행

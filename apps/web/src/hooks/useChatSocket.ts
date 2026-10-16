@@ -22,6 +22,7 @@ export type ChatEvent =
         | "status"
         | "replay"
         | "prompt"
+        | "prompt_ack"
         | "failover"
         | "plan"
         | "subagent"
@@ -61,6 +62,8 @@ export type ChatEvent =
       running?: boolean;
       role?: string;
       request_id?: string;
+      client_id?: string;
+      accepted?: boolean;
       /** Epoch seconds, by the server's clock: when a phase started, or when
        *  a prompt was submitted. Read through the offset learned on connect. */
       started_at?: number;
@@ -262,6 +265,9 @@ function isAgentName(value: string): value is Agent {
 export function useChatSocket(initialThreadId: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
+  // A queued reply may never reach the server if the connection drops. Cards
+  // use this to allow a retry on the next socket without losing form input.
+  const [connectionVersion, setConnectionVersion] = useState(0);
   const [streaming, setStreaming] = useState(false);
   const [usage, setUsage] = useState<UsageTotals>({ totalCostUsd: 0, totalTokens: 0 });
   const [hasUnpricedUsage, setHasUnpricedUsage] = useState(false);
@@ -306,6 +312,8 @@ export function useChatSocket(initialThreadId: string) {
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const pendingAckRef = useRef<{ id: string; resolve: (accepted: boolean) => void; onAccepted: () => void } | null>(null);
+  const retryPromptRef = useRef<{ id: string; text: string; agent: Agent | "auto" } | null>(null);
   // Total number of messages appended so far, kept in sync by hand next to
   // every setMessages call that appends one. React state (`messages`) can't
   // serve this purpose here: it's only guaranteed current after a render,
@@ -472,9 +480,12 @@ export function useChatSocket(initialThreadId: string) {
 
       socket.onopen = () => {
         retryDelayMs = 1000;
+        setConnectionVersion((version) => version + 1);
         setConnected(true);
       };
       socket.onclose = () => {
+        pendingAckRef.current?.resolve(false);
+        pendingAckRef.current = null;
         setConnected(false);
         setStreaming(false);
         setStatus(null);
@@ -490,6 +501,16 @@ export function useChatSocket(initialThreadId: string) {
       // while this browser was elsewhere has to be processed exactly like one
       // arriving now, or the two paths drift.
       const handleEvent = (event: ChatEvent) => {
+        if (event.type === "prompt_ack") {
+          const pending = pendingAckRef.current;
+          if (pending && pending.id === event.client_id) {
+            if (event.accepted) pending.onAccepted();
+            pending.resolve(true);
+            pendingAckRef.current = null;
+            retryPromptRef.current = null;
+          }
+          return;
+        }
         if (event.type === "replay") {
           // Everything that happened while nobody was watching, in order. The
           // turn kept running server-side; this is the catch-up, and the
@@ -979,48 +1000,53 @@ export function useChatSocket(initialThreadId: string) {
       disposed = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
       socketRef.current?.close();
+      pendingAckRef.current?.resolve(false);
+      pendingAckRef.current = null;
     };
   }, [initialThreadId]);
 
   const sendMessage = useCallback(
-    (text: string, agent: Agent | "auto") => {
+    (text: string, agent: Agent | "auto"): Promise<boolean> => {
       const socket = socketRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      if (!socket || socket.readyState !== WebSocket.OPEN || pendingAckRef.current) return Promise.resolve(false);
+      const previous = retryPromptRef.current;
+      const retrying = previous?.text === text && previous.agent === agent;
+      const id = retrying ? previous.id : crypto.randomUUID();
+      retryPromptRef.current = { id, text, agent };
       try {
-        socket.send(JSON.stringify({ prompt: text, agent }));
+        socket.send(JSON.stringify({ prompt: text, agent, client_id: id }));
       } catch {
-        return false;
+        return Promise.resolve(false);
       }
-      turnStartRef.current = messageCountRef.current;
-      messageCountRef.current += 1;
-      // "auto" is resolved server-side; until the route frame arrives, label
-      // the pending reply with whatever ran last.
-      if (agent !== "auto") pendingAgentRef.current = agent;
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "user",
-          text,
-          agent: agent === "auto" ? pendingAgentRef.current : agent,
-          at: Date.now(),
-        },
-      ]);
-      setStreaming(true);
-      // Set before the server says anything: the gap between pressing Enter and
-      // the first frame is exactly where the screen used to go quiet.
-      setStatus({
-        phase: "thinking",
-        agent: agent === "auto" ? pendingAgentRef.current : agent,
-        count: 0,
-        since: Date.now(),
+      const showPrompt = () => {
+        turnStartRef.current = messageCountRef.current;
+        messageCountRef.current += 1;
+        // "auto" is resolved server-side; until the route frame arrives,
+        // label the pending reply with whatever ran last.
+        if (agent !== "auto") pendingAgentRef.current = agent;
+        setMessages((prev) => [
+          ...prev,
+          { role: "user", text, agent: agent === "auto" ? pendingAgentRef.current : agent, at: Date.now() },
+        ]);
+        setStreaming(true);
+        // Set before the server says anything: the gap between pressing Enter
+        // and the first frame is exactly where the screen used to go quiet.
+        setStatus({
+          phase: "thinking", agent: agent === "auto" ? pendingAgentRef.current : agent,
+          count: 0, since: Date.now(),
+        });
+        pendingReasoningRef.current = "";
+        // A new turn replaces the previous turn's fan-out rather than
+        // stacking.
+        setPlan(null);
+        planRef.current = null;
+        setPlanOutcome(null);
+        setRoute(null);
+      };
+      if (!retrying) showPrompt();
+      return new Promise<boolean>((resolve) => {
+        pendingAckRef.current = { id, resolve, onAccepted: retrying ? showPrompt : () => {} };
       });
-      pendingReasoningRef.current = "";
-      // A new turn replaces the previous turn's fan-out rather than stacking.
-      setPlan(null);
-      planRef.current = null;
-      setPlanOutcome(null);
-      setRoute(null);
-      return true;
     },
     []
   );
@@ -1036,9 +1062,8 @@ export function useChatSocket(initialThreadId: string) {
     return true;
   }, []);
 
-  /** Sends the user's answers back to the agent that asked. Removed locally
-   *  rather than on an ack, for the same reason an approval is: the reply goes
-   *  to the waiting tool call, not back to the browser. */
+  /** The server's request_resolved frame removes the card after the gate has
+   *  settled it. A successful socket.send only queues bytes in this tab. */
   const answerQuestion = useCallback((requestId: string, answers: (string | string[])[]) => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
@@ -1047,14 +1072,10 @@ export function useChatSocket(initialThreadId: string) {
     } catch {
       return false;
     }
-    setQuestions((prev) => prev.filter((item) => item.request_id !== requestId));
     return true;
   }, []);
 
   const answerApproval = useCallback((requestId: string, decision: "allow" | "deny") => {
-    // Only removed once the frame is actually on the wire: a send on a closing
-    // socket is silently dropped, and dropping the card too would show the
-    // request as answered while the gate goes on to deny it on timeout.
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     try {
@@ -1062,15 +1083,13 @@ export function useChatSocket(initialThreadId: string) {
     } catch {
       return false;
     }
-    // Removed locally rather than on an ack: the gate answers the CLI, not the
-    // browser, so this frame is the last the UI hears of this request.
-    setApprovals((prev) => prev.filter((a) => a.request_id !== requestId));
     return true;
   }, []);
 
   return {
     messages,
     connected,
+    connectionVersion,
     streaming,
     usage,
     hasUnpricedUsage,
