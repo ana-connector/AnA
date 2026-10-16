@@ -284,6 +284,37 @@ class RaisingAdapter(AgentAdapter):
         return None
 
 
+class PartialFailureAdapter(AgentAdapter):
+    async def run_stream(self, prompt, session_id=None):
+        yield AdapterEvent(type="text", text="partial answer")
+        yield AdapterEvent(type="error", text="CLI crashed", is_error=True)
+
+    async def terminate(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_partial_failed_answer_is_stored_before_notice(db_pool):
+    graph = build_graph(InMemorySaver())
+    transcript = Mock()
+    config = {"configurable": {
+        "thread_id": "thread-partial-failure", "adapter": PartialFailureAdapter(),
+        "pool": db_pool, "embedding_model": EmbeddingModel(), "transcript": transcript,
+    }}
+    frames = [frame async for frame in graph.astream(
+        {"prompt": "partial failure", "session_id": None, "response_text": ""},
+        config=config, stream_mode="custom",
+    )]
+
+    expected = f"partial answer\n{FAILED_TURN_NOTICE}"
+    assert any(frame["type"] == "error" for frame in frames)
+    assert transcript.append.call_args.kwargs["response"] == expected
+    assert transcript.append.call_args.kwargs["error"] == "CLI crashed"
+    stored = await search_similar_turns(db_pool, EmbeddingModel(), "partial failure", limit=1)
+    assert stored[0]["response"] == expected
+    assert await _stored_error(db_pool, "partial failure") == "CLI crashed"
+
+
 @pytest.mark.asyncio
 async def test_mid_turn_exception_still_reaches_transcript_before_propagating(db_pool):
     """A raised exception from adapter.run_stream (as opposed to a

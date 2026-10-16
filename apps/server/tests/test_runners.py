@@ -137,6 +137,102 @@ async def test_cancel_auto_stops_routed_cli_and_delegated_worker():
 
 
 @pytest.mark.asyncio
+async def test_cancel_resolves_pending_approval_as_deny():
+    hold = asyncio.Event()
+    runner = _runner(FakeGraph([TEXT, RESULT], hold=hold))
+    seen = []
+
+    async def sink(frame):
+        seen.append(frame)
+
+    runner.attach(sink)
+    await runner.submit("slow turn", "claude", False)
+    async with asyncio.timeout(2):
+        while runner.current_turn_task is None or not runner.graph.calls:
+            await asyncio.sleep(0.01)
+    approval = asyncio.create_task(runner.gate_registry.request_approval(
+        runner.gate_session, {"tool_name": "Bash", "command": "git push"}
+    ))
+    async with asyncio.timeout(2):
+        while not any(frame.get("type") == "approval_request" for frame in seen):
+            await asyncio.sleep(0.01)
+    request_id = next(frame["request_id"] for frame in seen if frame["type"] == "approval_request")
+
+    assert runner.cancel_current()
+    answer = await asyncio.wait_for(approval, 2)
+    assert answer.value == "deny"
+    assert any(frame.get("type") == "request_resolved" and frame["request_id"] == request_id for frame in seen)
+    assert not runner.gate_registry.resolve_approval(runner.gate_session, request_id, "allow")
+    async with asyncio.timeout(2):
+        while not any(frame["type"] == "cancelled" for frame in seen):
+            await asyncio.sleep(0.01)
+    await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_cancel_discards_queued_prompts():
+    hold = asyncio.Event()
+    graph = FakeGraph([RESULT], hold=hold)
+    runner = _runner(graph)
+    await runner.submit("first", "claude", False)
+    async with asyncio.timeout(2):
+        while graph.calls != ["first"]:
+            await asyncio.sleep(0.01)
+
+    # Hold the relay between turns, with the second prompt still in its queue.
+    resume = asyncio.Event()
+
+    class PausedQueue(asyncio.Queue):
+        async def get(self):
+            await resume.wait()
+            return await super().get()
+
+    runner.queue = PausedQueue()
+    await runner.submit("queued second", "claude", False)
+    hold.set()
+    async with asyncio.timeout(2):
+        while runner.current_turn_task is not None:
+            await asyncio.sleep(0.01)
+
+    assert runner.cancel_current() is False
+    assert runner.queue.empty()
+    resume.set()
+    await asyncio.sleep(0)
+    assert graph.calls == ["first"]
+    assert not any(frame["type"] == "prompt" for frame in runner.buffer)
+    await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_active_turn_keeps_queued_prompt():
+    hold = asyncio.Event()
+    graph = FakeGraph([RESULT], hold=hold)
+    runner = _runner(graph)
+    replay_at_cancel = []
+
+    async def sink(frame):
+        if frame["type"] == "cancelled":
+            replay_at_cancel.extend(runner.buffer)
+
+    runner.attach(sink)
+    await runner.submit("first", "claude", False)
+    async with asyncio.timeout(2):
+        while graph.calls != ["first"]:
+            await asyncio.sleep(0.01)
+    await runner.submit("second", "claude", False)
+    assert runner.cancel_current()
+    hold.set()
+    async with asyncio.timeout(2):
+        while graph.calls != ["first", "second"] or runner.busy:
+            await asyncio.sleep(0.01)
+    assert graph.calls == ["first", "second"]
+    assert [(frame["type"], frame["text"]) for frame in replay_at_cancel] == [
+        ("prompt", "second")
+    ]
+    await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_frames_from_a_detached_turn_are_replayed_on_return():
     hold = asyncio.Event()
     graph = FakeGraph([TEXT, RESULT], hold=hold)
@@ -303,6 +399,41 @@ async def test_a_close_cancelled_mid_teardown_still_drops_the_token():
 
 
 @pytest.mark.asyncio
+async def test_closing_while_a_turn_swallows_its_cancel_still_finishes():
+    """close() cancels the relay while it awaits a turn, and asyncio passes that
+    cancellation to the turn. A turn that catches it while finishing (storing its
+    row, say) returns normally — and the relay, never told, went back to waiting
+    on the queue. close() waited on the relay, so server shutdown hung."""
+    finishing = asyncio.Event()
+
+    class SwallowsCancel(FakeGraph):
+        async def astream(self, state, config=None, stream_mode=None):
+            self.calls.append(state["prompt"])
+            yield TEXT
+            try:
+                finishing.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass  # finishing up despite the cancel, as a finally block would
+            yield RESULT
+
+    runner = _runner(SwallowsCancel([]))
+    token = runner.gate_session.token
+    await runner.submit("ending turn", "claude", False)
+    await asyncio.wait_for(finishing.wait(), 2)
+
+    # Timed by hand rather than with wait_for: close() suppresses the
+    # CancelledError of the relay it awaits, which also swallows wait_for's own
+    # timeout, so a hung close looked like a slow but successful one.
+    closing = asyncio.create_task(runner.close())
+    done, _ = await asyncio.wait({closing}, timeout=1)
+
+    assert closing in done, "close() did not finish: the relay lost its cancellation"
+    assert runner.relay_task.done()
+    assert runner.gate_registry.get(token) is None
+
+
+@pytest.mark.asyncio
 async def test_an_idle_unwatched_runner_is_swept(monkeypatch):
     monkeypatch.setenv("ANA_RUNNER_IDLE_SECONDS", "0")
     graph = FakeGraph([TEXT, RESULT])
@@ -358,6 +489,55 @@ async def test_a_failed_relay_is_not_handed_out_again():
 
     assert registry.get("dead-1") is None
     await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_turn_failure_does_not_strand_next_prompt():
+    class FailsOnce(FakeGraph):
+        async def astream(self, state, config=None, stream_mode=None):
+            self.calls.append(state["prompt"])
+            if len(self.calls) == 1:
+                raise RuntimeError("first turn broke")
+            yield RESULT
+
+    graph = FailsOnce([])
+    runner = _runner(graph)
+    seen: list[dict] = []
+
+    async def sink(frame):
+        seen.append(frame)
+
+    runner.attach(sink)
+    try:
+        await runner.submit("first", "claude", False)
+        await runner.submit("second", "claude", False)
+        for _ in range(200):
+            if len(graph.calls) == 2 and any(frame["type"] == "result" for frame in seen):
+                break
+            await asyncio.sleep(0.01)
+        assert graph.calls == ["first", "second"]
+        assert [frame["type"] for frame in seen if frame["type"] in {"error", "result"}] == [
+            "error", "result"
+        ]
+        assert not runner.failed.is_set()
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_retrying_a_confirmed_prompt_id_does_not_run_it_twice():
+    graph = FakeGraph([RESULT])
+    runner = _runner(graph)
+    try:
+        assert await runner.submit("once", "claude", False, "browser-1")
+        assert not await runner.submit("once", "claude", False, "browser-1")
+        for _ in range(200):
+            if graph.calls and not runner.busy:
+                break
+            await asyncio.sleep(0.01)
+        assert graph.calls == ["once"]
+    finally:
+        await runner.close()
 
 
 def test_the_lifetime_can_be_switched_back(monkeypatch):

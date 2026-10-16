@@ -20,6 +20,7 @@ from packages.governance.subagent_scope import Scope
 from packages.orchestrator.activity import ActivityTracker
 from packages.orchestrator.timeline import TurnTimeline
 from packages.remote.notifier import NullNotifier, RemoteNotifier
+from packages.remote.render import missing_required, text_key
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class Answer:
 class _Pending:
     future: asyncio.Future
     loop: asyncio.AbstractEventLoop
+    questions: Optional[list[dict]] = None
 
     def resolve(self, value: object) -> None:
         if self.future.done():
@@ -172,6 +174,13 @@ class GateRegistry:
             self._requests.pop(request_id, None)
             pending.fail(ConnectionError("gate session closed"))
 
+    def cancel_pending(self, session: GateSession) -> None:
+        """End requests from a cancelled turn through their normal close path."""
+        for pending in tuple(session.pending.values()):
+            pending.resolve(Answer(
+                value=None if pending.questions is not None else "deny", by="cancelled"
+            ))
+
     def get(self, token: str) -> Optional[GateSession]:
         return self._sessions.get(token)
 
@@ -247,7 +256,9 @@ class GateRegistry:
         request_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
-        session.pending[request_id] = _Pending(future=future, loop=loop)
+        session.pending[request_id] = _Pending(
+            future=future, loop=loop, questions=list(request.get("questions") or [])
+        )
         self._requests[request_id] = session
         answer = Answer(value=None, by="")
         try:
@@ -267,7 +278,7 @@ class GateRegistry:
         finally:
             outcome = (
                 "answered" if isinstance(answer.value, list)
-                else ("closed" if answer.by == "closed" else "timeout")
+                else ("closed" if answer.by in ("closed", "cancelled") else "timeout")
             )
             await self._close_request(session, request_id, outcome, answer.by)
 
@@ -278,6 +289,17 @@ class GateRegistry:
         already-answered request, so a double submit is a no-op."""
         pending = session.pending.get(request_id)
         if pending is None or pending.future.done():
+            return False
+        questions = pending.questions
+        if questions is None or len(answers) != len(questions):
+            return False
+        state = {}
+        for index, answer in enumerate(answers):
+            if isinstance(answer, list):
+                state[index] = any(str(value).strip() for value in answer if value is not None)
+            else:
+                state[text_key(index)] = [answer or ""]
+        if missing_required(questions, state):
             return False
         pending.resolve(Answer(value=answers, by=by))
         return True

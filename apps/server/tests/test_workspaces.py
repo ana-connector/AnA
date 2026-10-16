@@ -1,4 +1,5 @@
 """Workspaces: the folder ANA works in, and the one conversation that owns it."""
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -235,6 +236,42 @@ async def test_archiving_an_unknown_workspace_reports_it(workspace_pool):
     assert await set_workspace_archived(workspace_pool, "no-such-workspace", True) is False
 
 
+@pytest.mark.asyncio
+async def test_ensure_workspace_preserves_archive_state(workspace_pool, tmp_path):
+    folder = tmp_path / "archived-ensure"
+    folder.mkdir()
+    workspace = await create_workspace(workspace_pool, name="Archived ensure", path=str(folder))
+    await set_workspace_archived(workspace_pool, workspace.id, True)
+
+    ensured = await ensure_workspace(workspace_pool, workspace.id)
+
+    assert ensured.archived is True
+    assert (await get_workspace(workspace_pool, workspace.id)).archived is True
+
+
+@pytest.mark.asyncio
+async def test_forget_archived_workspace_purges_turns_but_keeps_folder(workspace_pool, tmp_path):
+    from packages.memory.db import EMBEDDING_DIMENSIONS
+
+    folder = tmp_path / "archived-forget"
+    folder.mkdir()
+    (folder / "keep.txt").write_text("mine", encoding="utf-8")
+    workspace = await create_workspace(workspace_pool, name="Archived forget", path=str(folder))
+    await set_workspace_archived(workspace_pool, workspace.id, True)
+    async with workspace_pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO turns (thread_id, agent, prompt, response, embedding) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (workspace.id, "claude", "q", "a", str([0.0] * EMBEDDING_DIMENSIONS)),
+        )
+
+    assert await forget_workspace(workspace_pool, workspace.id)
+    async with workspace_pool.connection() as conn:
+        cur = await conn.execute("SELECT count(*) FROM turns WHERE thread_id = %s", (workspace.id,))
+        assert (await cur.fetchone())[0] == 0
+    assert (folder / "keep.txt").read_text(encoding="utf-8") == "mine"
+
+
 @pytest.fixture
 def client(workspace_pool, postgres_dsn, monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", postgres_dsn)
@@ -261,6 +298,44 @@ def test_api_create_list_rename_delete(client):
 
     assert client.delete("/workspaces/api-project").status_code == 200
     assert client.get("/workspaces").json()["workspaces"] == []
+
+
+def test_api_archive_round_trip_preserves_workspace_fields_and_turn_count(client, workspace_pool, tmp_path):
+    from packages.memory.db import EMBEDDING_DIMENSIONS
+
+    folder = tmp_path / "archived-folder"
+    folder.mkdir()
+    created = client.post("/workspaces", json={
+        "name": "Archived Project", "path": str(folder),
+    }).json()
+    workspace_id = created["id"]
+    assert client.patch(f"/workspaces/{workspace_id}", json={
+        "system_prompt": "Keep context",
+    }).status_code == 200
+
+    async def add_turn():
+        async with workspace_pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO turns (thread_id, agent, prompt, response, embedding) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (workspace_id, "claude", "q", "a", str([0.0] * EMBEDDING_DIMENSIONS)),
+            )
+
+    asyncio.run(add_turn())
+    before = next(row for row in client.get("/workspaces").json()["workspaces"] if row["id"] == workspace_id)
+    assert before["turn_count"] == 1
+
+    for archived in (True, False):
+        response = client.patch(f"/workspaces/{workspace_id}", json={"archived": archived})
+        assert response.status_code == 200
+        row = response.json()
+        listed = next(row for row in client.get("/workspaces").json()["workspaces"] if row["id"] == workspace_id)
+        for actual in (row, listed):
+            assert actual["archived"] is archived
+            assert (actual["name"], actual["path"], actual["system_prompt"]) == (
+                before["name"], before["path"], "Keep context"
+            )
+        assert listed["turn_count"] == 1
 
 
 def test_api_rejects_a_nameless_workspace(client):
@@ -430,6 +505,21 @@ async def test_self_workspace_keeps_a_rename_but_follows_the_mount(
 
     assert again.path == str(moved)
     assert again.name == "내 ANA"
+
+
+@pytest.mark.asyncio
+async def test_ensure_self_workspace_preserves_archive_state(workspace_pool, tmp_path, monkeypatch):
+    repo = tmp_path / "ana-self"
+    repo.mkdir()
+    monkeypatch.setenv("ANA_SELF_WORKSPACE", str(repo))
+    monkeypatch.setenv("ANA_WORKSPACE_GIT_INIT", "off")
+    await ensure_self_workspace(workspace_pool)
+    await set_workspace_archived(workspace_pool, SELF_WORKSPACE_ID, True)
+
+    ensured = await ensure_self_workspace(workspace_pool)
+
+    assert ensured.archived is True
+    assert (await get_workspace(workspace_pool, SELF_WORKSPACE_ID)).archived is True
 
 
 @pytest.mark.asyncio

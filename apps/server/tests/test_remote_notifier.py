@@ -53,6 +53,28 @@ async def _sent_request_id(sent: list) -> str:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_question_is_closed_in_remote_audit():
+    notifier = RecordingNotifier()
+    registry = _registry(notifier)
+    sent = []
+
+    async def send(payload):
+        sent.append(payload)
+
+    session = registry.register("cancelled-question", send)
+    waiting = asyncio.create_task(registry.request_answer(
+        session, {"questions": [{"question": "Continue?"}]}
+    ))
+    request_id = await _sent_request_id(sent)
+    registry.cancel_pending(session)
+
+    answer = await asyncio.wait_for(waiting, 2)
+    assert answer.value is None and answer.by == "cancelled"
+    assert notifier.closed == [(request_id, "closed", "cancelled")]
+    assert not registry.resolve_answer(session, request_id, ["yes"])
+
+
+@pytest.mark.asyncio
 async def test_an_approval_is_posted_to_the_notifier_as_well_as_the_browser():
     notifier = RecordingNotifier()
     registry = _registry(notifier)

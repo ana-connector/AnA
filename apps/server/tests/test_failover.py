@@ -48,6 +48,15 @@ class BrokenAdapter(AgentAdapter):
         return None
 
 
+class EmptyAdapter(AgentAdapter):
+    async def run_stream(self, prompt, session_id=None):
+        if False:
+            yield AdapterEvent(type="text", text="")
+
+    async def terminate(self) -> None:
+        return None
+
+
 class WorkingAdapter(AgentAdapter):
     def __init__(self, label: str):
         self.label = label
@@ -189,6 +198,36 @@ async def test_a_cli_error_fails_over_to_the_next_rung(db_pool):
     assert (failover["from_rung"], failover["to_rung"]) == ("claude", "tapie")
     assert values["response_text"] == "tapie answered"
     assert not [f for f in frames if f["type"] == "error"]
+
+
+@pytest.mark.asyncio
+async def test_empty_cli_stream_fails_over_to_next_rung(db_pool):
+    def factory(agent, auth_mode=None, model=None, effort=None):
+        return EmptyAdapter() if agent == "claude" else WorkingAdapter(agent)
+
+    graph = build_graph(InMemorySaver())
+    frames, values = await _run(graph, _config(db_pool, factory, "fo-empty"))
+
+    failover = next(frame for frame in frames if frame["type"] == "failover")
+    assert (failover["from_rung"], failover["to_rung"]) == ("claude", "tapie")
+    assert any(frame["type"] == "result" for frame in frames)
+    assert values["response_text"] == "tapie answered"
+
+
+@pytest.mark.asyncio
+async def test_single_empty_cli_stream_ends_and_stores_turn(db_pool):
+    from packages.memory.rag import search_similar_turns
+
+    graph = build_graph(InMemorySaver())
+    config = _config(db_pool, None, "fo-empty-single")
+    config["configurable"].pop("adapter_factory")
+    config["configurable"]["adapter"] = EmptyAdapter()
+    frames, _ = await _run(graph, config, prompt="empty answer")
+
+    assert len([frame for frame in frames if frame["type"] in {"result", "error", "cancelled"}]) == 1
+    assert next(frame for frame in frames if frame["type"] == "error")["text"] == "the CLI ended without producing an answer"
+    stored = await search_similar_turns(db_pool, EmbeddingModel(), "empty answer", limit=10)
+    assert len([row for row in stored if row["prompt"] == "empty answer"]) == 1
 
 
 @pytest.mark.asyncio

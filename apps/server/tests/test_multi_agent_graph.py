@@ -188,6 +188,61 @@ async def test_planning_limit_switches_lead_before_creating_workers(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_planning_exhaustion_answers_and_runner_processes_next_prompt(db_pool, monkeypatch):
+    from apps.server.app.runners import TurnRunner
+    from packages.governance.session import GateRegistry
+
+    monkeypatch.setenv("ANA_PLANNER", "on")
+
+    class LimitedPlanner(AgentAdapter):
+        async def run_stream(self, prompt, session_id=None):
+            if "**JSON only**" in prompt:
+                yield AdapterEvent(type="text", text="You've hit your session limit")
+            else:
+                yield AdapterEvent(type="text", text="answered")
+                yield AdapterEvent(type="result", text="answered")
+
+        async def terminate(self):
+            return None
+
+    lead = LimitedPlanner()
+    config = _config(db_pool, lead, lambda *args, **kwargs: None, "ma-plan-exhausted")
+    config["configurable"]["adapter_factory"] = lambda *args: lead
+    registry = GateRegistry()
+
+    async def sink(_frame):
+        return None
+
+    session = registry.register("ma-plan-exhausted", sink)
+    runner = TurnRunner(
+        thread_id="ma-plan-exhausted", workspace_dir="", workspace_name="test",
+        gate_session=session, gate_registry=registry, adapters={"claude": lead},
+        config=config, graph=build_graph(InMemorySaver()),
+    )
+    frames = []
+
+    async def collect(frame):
+        frames.append(frame)
+
+    runner.attach(collect)
+    try:
+        await runner.submit("first exhausted plan", "claude", True)
+        await runner.submit("second exhausted plan", "claude", True)
+        async with asyncio.timeout(5):
+            while len([frame for frame in frames if frame["type"] == "result"]) < 2:
+                await asyncio.sleep(0.01)
+        assert len([frame for frame in frames if frame["type"] == "plan" and "건너뛰고" in frame["text"]]) == 2
+        async with db_pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT count(*) FROM turns WHERE thread_id = %s", ("ma-plan-exhausted",)
+            )
+            assert (await cur.fetchone())[0] == 2
+        assert not runner.failed.is_set()
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_stalled_planner_times_out_and_switches_lead(db_pool, monkeypatch):
     monkeypatch.setenv("ANA_PLANNER_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("ANA_PLANNER_TOTAL_TIMEOUT_SECONDS", "5")

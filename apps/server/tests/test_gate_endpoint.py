@@ -335,6 +335,40 @@ def test_unanswered_request_times_out_as_denied(client, prepared_pool):
     assert events[0]["decided_by"] == "timeout"
 
 
+def test_approval_without_browser_attached_times_out_as_denied(client, prepared_pool):
+    session = _register(client, "gate-unwatched", [], timeout=0.05)
+
+    response = _call(client, session.token, "git push origin main")
+
+    assert response.json()["decision"] == "deny"
+    events = asyncio.run(recent_events(prepared_pool, thread_id="gate-unwatched"))
+    assert events[0]["decided_by"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_answer_from_another_conversation_is_ignored():
+    registry = GateRegistry(question_timeout=2)
+    sent = []
+
+    async def send(payload):
+        sent.append(payload)
+
+    owner = registry.register("owner", send)
+    stranger = registry.register("stranger", send)
+    waiting = asyncio.create_task(registry.request_answer(
+        owner, {"questions": [{"question": "Which?"}]}
+    ))
+    async with asyncio.timeout(2):
+        while not sent:
+            await asyncio.sleep(0.01)
+    request_id = sent[0]["request_id"]
+
+    assert registry.resolve_answer(stranger, request_id, ["wrong"]) is False
+    assert request_id in owner.pending
+    assert registry.resolve_answer(owner, request_id, ["right"]) is True
+    assert (await waiting).value == ["right"]
+
+
 def test_closed_session_invalidates_the_token(client):
     session = _register(client, "gate-6", [])
     client.app.state.gate_registry.unregister(session.token)
