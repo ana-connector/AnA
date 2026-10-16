@@ -287,7 +287,7 @@ for f in apps/server/tests/test_*.py; do
 done
 ```
 
-- **총계: 61개 파일 / 892 통과 / 0 실패 / 0 오류.** 실행 후 `ana-test-pg-*` 컨테이너는 남지 않았다.
+- **총계: 61개 파일 / 892 통과 / 0 실패 / 0 오류.** 실행 후 `ana-test-pg-*` 컨테이너는 남지 않았다. 이후 중지 뒤 프롬프트 회귀 검사 1개를 `test_runners.py`에 더해 최종 집계는 **893 통과**이며, 출시 게이트의 수치는 [05](05-release-PLAN.md)에 있다.
 - 이 실행 직전 두 가지 환경 결손을 고쳐야 했다. 둘 다 제품 결함이 아니며 자세한 내용은 [01-environment-PLAN.md](01-environment-PLAN.md)의 실행 기록에 있다.
   1. `.venv`의 베이스 인터프리터(`/usr/local/bin/python3.13`)가 사라져 모든 파일이 `exit=127`(`timeout: failed to execute process`)로 끝났다. mise의 3.13.14로 다시 연결했다.
   2. `uvx`가 PATH에서 사라져 `config/mcp.yaml`의 `git`·`postgres` 서버가 조용히 비활성화되고 `test_capabilities_endpoint.py::test_the_lead_has_routed_delegation_but_github_stays_worker_only`가 실패했다. `uv` 설치 후 통과한다.
