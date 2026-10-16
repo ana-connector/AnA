@@ -33,6 +33,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r apps/server/requirements.txt
 
+      # The git and postgres MCP servers are `uvx` ones, and the registry
+      # disables a server whose command is missing — which the capabilities
+      # test then sees as two servers gone. The server image installs uv for
+      # the same reason (apps/server/Dockerfile).
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Collect
         run: python -m pytest --collect-only -q | tail -3
 
@@ -140,7 +147,12 @@ jobs:
 
       - name: Stack logs
         if: failure()
-        run: tail -100 "${TMPDIR:-/tmp}"/ana-e2e/server.log "${TMPDIR:-/tmp}"/ana-e2e/web.log || true
+        run: |
+          for log in "${TMPDIR:-/tmp}"/ana-e2e/*.log; do
+            echo "::group::$log"
+            cat "$log" || true
+            echo "::endgroup::"
+          done
 
   images:
     name: docker images
