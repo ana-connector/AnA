@@ -47,9 +47,15 @@ with sync_playwright() as p:
     page.wait_for_timeout(2500)
     workspace_url = page.url
     check("a workspace opens its own conversation", workspace_url.rstrip("/") != BASE, workspace_url)
-    connected = page.get_by_text("연결 끊김").count()
-    check("the socket is accepted from this origin", connected == 0 and not errors,
-          f"disconnected={connected} errors={errors[:2]}")
+    # Asked of something that is only true when the socket is up, rather than
+    # of the words "연결 끊김": that string also lives in the page's own data
+    # payload, where a text query finds it whether or not it is on screen.
+    page.fill("textarea", "연결 확인")
+    page.wait_for_timeout(300)
+    live = page.evaluate("() => !document.querySelector('button[type=submit]').disabled")
+    page.fill("textarea", "")
+    check("the socket is accepted from this origin", live and not errors,
+          f"send enabled={live} errors={errors[:2]}")
 
     # --- a turn, end to end ----------------------------------------------
     page.fill("textarea", "안녕")
