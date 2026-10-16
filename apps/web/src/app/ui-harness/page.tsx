@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import { ApprovalCard } from "@/components/ui/approval-card";
 import { QuestionCard } from "@/components/ui/question-card";
 import {
   MessageScroller,
@@ -23,7 +24,7 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import type { QuestionRequest } from "@/hooks/useChatSocket";
+import type { ApprovalRequest, QuestionRequest } from "@/hooks/useChatSocket";
 
 declare global {
   interface Window {
@@ -65,6 +66,18 @@ const request: QuestionRequest = {
       required: false,
     },
   ],
+};
+
+const approval: ApprovalRequest = {
+  request_id: "ap-1",
+  workspace: "/home/hello/ana",
+  tool_name: "Bash",
+  tool_input: { command: "git push --dry-run origin main" },
+  description: "원격 저장소에 쓰는 명령입니다. 이 턴의 쓰기 범위 밖입니다.",
+  rule_id: "git-push",
+  category: "network",
+  agent: "codex",
+  cwd: "/home/hello/ana",
 };
 
 export default function UiHarness() {
@@ -110,6 +123,16 @@ export default function UiHarness() {
           </MessageScroller>
         </MessageScrollerProvider>
       </div>
+      <ApprovalCard
+        request={approval}
+        connected
+        connectionVersion={1}
+        onAnswer={(requestId, decision) => {
+          window.__answers = window.__answers ?? [];
+          window.__answers.push({ requestId, decision });
+          return true;
+        }}
+      />
       <QuestionCard
         request={request}
         connected

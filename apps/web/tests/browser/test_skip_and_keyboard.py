@@ -26,7 +26,7 @@ with sync_playwright() as p:
     page.get_by_role("button", name="건너뛰기").click()   # skip the multi question
     page.wait_for_timeout(150)
     progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("skip advances", progress.strip() == "Question 3 of 3", progress)
+    check("skip advances", progress.strip() == "질문 3 / 3", progress)
     page.get_by_role("button", name="건너뛰기").click()   # skip the last one: submits
     page.wait_for_timeout(400)
     answers = page.evaluate("() => window.__answers ?? []")
@@ -63,12 +63,12 @@ with sync_playwright() as p:
     page2.keyboard.press("Enter")   # Enter on an answered choice moves on
     page2.wait_for_timeout(200)
     progress = page2.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("Enter advances from an answered question", progress.strip() == "Question 2 of 3", progress)
+    check("Enter advances from an answered question", progress.strip() == "질문 2 / 3", progress)
 
     page2.keyboard.press("ArrowLeft")
     page2.wait_for_timeout(200)
     progress = page2.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("ArrowLeft goes back", progress.strip() == "Question 1 of 3", progress)
+    check("ArrowLeft goes back", progress.strip() == "질문 1 / 3", progress)
 
     # a hidden question must not be reachable
     reachable = page2.evaluate(

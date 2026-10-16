@@ -70,14 +70,14 @@ with sync_playwright() as p:
     visible = page.locator('[data-slot="questionnaire-item"]:not([hidden])').count()
     check("one question visible", visible == 1, f"visible={visible}")
     progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("progress reads 1 of 3", progress.strip() == "Question 1 of 3", progress)
+    check("progress reads 1 of 3", progress.strip() == "질문 1 / 3", progress)
 
     next_button = page.locator('[data-slot="questionnaire-item"]:not([hidden])').locator("xpath=../..").locator("button", has_text="다음")
     page.get_by_role("button", name="다음").click()
     page.wait_for_timeout(200)
     err = page.locator('[data-slot="questionnaire-error"]:not([hidden])').count()
     still_first = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("required question blocks Next", err == 1 and still_first.strip() == "Question 1 of 3",
+    check("required question blocks Next", err == 1 and still_first.strip() == "질문 1 / 3",
           f"errors={err} progress={still_first}")
 
     # skip must not be offered on a required question
@@ -95,7 +95,7 @@ with sync_playwright() as p:
     page.get_by_role("button", name="다음").click()
     page.wait_for_timeout(200)
     progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("answered question advances", progress.strip() == "Question 2 of 3", progress)
+    check("answered question advances", progress.strip() == "질문 2 / 3", progress)
 
     # 9. multiple choice keeps both answers
     page.keyboard.press("1")
@@ -114,7 +114,7 @@ with sync_playwright() as p:
         "() => [...document.querySelectorAll('input[data-slot=questionnaire-choice-input]')]"
         ".filter(i => i.checked).map(i => i.value)")
     check("previous keeps the earlier answer",
-          progress.strip() == "Question 1 of 3" and "운영" in first_kept, f"{progress} {first_kept}")
+          progress.strip() == "질문 1 / 3" and "운영" in first_kept, f"{progress} {first_kept}")
     page.get_by_role("button", name="다음").click()
     page.get_by_role("button", name="다음").click()
     page.wait_for_timeout(200)

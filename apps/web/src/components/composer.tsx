@@ -97,8 +97,10 @@ export function Composer({
     }
   };
 
+  // The same column as the transcript: a wider box under a narrower reading
+  // line reads as two different pages.
   return (
-    <form onSubmit={submit} className="mx-auto w-full max-w-3xl shrink-0 px-4 py-3">
+    <form onSubmit={submit} className="mx-auto w-full max-w-[68ch] shrink-0 px-4 py-3">
       <InputGroup>
         <InputGroupTextarea
           ref={textareaRef}
