@@ -96,8 +96,18 @@ with sync_playwright() as p:
         if len(mine) == 1 and mine[0].get("turn_count", 0) >= 1:
             break
         time.sleep(1)
+    detail = json.dumps(mine, ensure_ascii=False)[:160]
+    if not (len(mine) == 1 and mine[0].get("turn_count", 0) >= 1) and mine:
+        # Say whether the turn is missing from the table or only from the
+        # count: they are different bugs.
+        try:
+            rows = json.loads(urllib.request.urlopen(
+                f"{API}/threads/{mine[0]['id']}/turns", timeout=10).read())
+            detail += f" | {len(rows.get('turns', []))} stored turn(s)"
+        except Exception as cause:
+            detail += f" | turns unreadable: {cause}"
     check("the workspace was created with turns recorded",
-          len(mine) == 1 and mine[0].get("turn_count", 0) >= 1, json.dumps(mine, ensure_ascii=False)[:160])
+          len(mine) == 1 and mine[0].get("turn_count", 0) >= 1, detail)
 
     if mine:
         target = mine[0]["id"]

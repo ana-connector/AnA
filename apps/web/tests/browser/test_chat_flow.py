@@ -68,12 +68,35 @@ with sync_playwright() as p:
         check("the agent's answer arrives", True, "받은 말: 안녕")
 
     # --- the conversation survives a reload -------------------------------
+    # What the server itself has, named in the failure: a transcript that does
+    # not come back is either a turn that was never stored or a page that did
+    # not ask, and the two need different fixes.
+    import json as _json
+    import urllib.request as _request
+
+    def stored_turns() -> str:
+        thread = workspace_url.rstrip("/").rsplit("/", 1)[-1]
+        api = os.environ.get("ANA_E2E_API", "http://127.0.0.1:8123")
+        try:
+            with _request.urlopen(f"{api}/threads/{thread}/turns", timeout=10) as answer:
+                body = _json.load(answer)
+            turns = body.get("turns", [])
+            return f"{len(turns)} stored turn(s) for {thread}: " + _json.dumps(
+                [{k: str(t.get(k))[:40] for k in ("prompt", "response", "agent")} for t in turns],
+                ensure_ascii=False,
+            )[:300]
+        except Exception as cause:
+            return f"could not read the turns of {thread}: {cause}"
+
     page.reload(wait_until="networkidle")
     with phase("the conversation is still there after a reload"):
         # Waited for, not slept on: the transcript arrives over HTTP after the
         # page does, and how long that takes is not ours to assume.
-        page.wait_for_selector("text=받은 말: 안녕", timeout=20000)
-        check("the conversation is still there after a reload", True, "found")
+        try:
+            page.wait_for_selector("text=받은 말: 안녕", timeout=20000)
+            check("the conversation is still there after a reload", True, "found")
+        except Exception:
+            check("the conversation is still there after a reload", False, stored_turns())
 
     # --- stopping a turn --------------------------------------------------
     page.fill("textarea", "SLOWMARK 기다려")
