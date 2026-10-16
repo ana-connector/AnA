@@ -73,7 +73,7 @@ export function ToolCalls({
           {/* Closed, the card still says what the last thing it ran was: a bare
               count tells you nothing about whether to open it. */}
           {!open && (
-            <code className="min-w-0 truncate font-mono opacity-80">{commandOf(last)}</code>
+            <code className="min-w-0 truncate font-mono">{commandOf(last)}</code>
           )}
         </button>
 
