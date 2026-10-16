@@ -1,6 +1,35 @@
 # v0.2.0-alpha.1 / 04 — 독자 UI 적용과 shadcn 실행 의존 제거
 
-상태: **미구현**. 이 문서는 작업 계획이며 코드 변경·테스트 통과·출시를 뜻하지 않는다.
+상태: **shadcn 실행 의존 제거 완료, 화면 적용은 03 대기**. 2026-10-16 기준 `@shadcn/react`·`shadcn`·`components.json`·`shadcn/tailwind.css`가 모두 사라졌고, 두 primitive는 ANA 구현으로 바뀌었으며 Chromium 실측 28건이 통과한다. 03의 시각 방향이 정해져야 하는 5단계(핵심 화면별 적용)는 남아 있다.
+
+## 실행 기록 (2026-10-16)
+
+### 무엇을 바꿨나
+
+- [`message-scroller.tsx`](../../../apps/web/src/components/ui/message-scroller.tsx)는 `@shadcn/react/message-scroller` 래퍼에서 자체 구현으로 바뀌었다. ANA가 실제로 쓰던 것은 Provider(`autoScroll`)·Root·Viewport·Content·Item(`messageId`)·Button 뿐이어서, 쓰이지 않던 스크롤 앵커, IntersectionObserver 가시성 저장소, 정렬 포함 scroll-to-message, 측정용 spacer는 재구현하지 않고 없앴다. 남긴 계약은 "열면 최신 메시지에서 시작, 바닥을 보고 있으면 따라가기, 위로 읽는 동안 위치 유지, 그동안 점프 버튼 제공"이다. `useMessageScroller`와 `useMessageScrollerScrollable`은 유지했고, 아무도 쓰지 않던 `useMessageScrollerVisibility`는 뺐다.
+- [`questionnaire.tsx`](../../../apps/web/src/components/ui/questionnaire.tsx)는 DOM 등록 기반 primitive 대신 React 상태로 답을 들고 실제 폼 컨트롤을 그린다. `QuestionCard`가 의존하는 계약은 그대로다: 한 번에 한 질문, 숨은 질문도 폼 안에 남아 `new FormData(form)` 한 번으로 전부 읽힘, 컨트롤 이름은 `q{index}`, 건너뛴 질문은 이름을 잃어 아무것도 제출하지 않음, 필수 질문은 Next·Submit을 막고 건너뛰기를 제공하지 않음, 숫자 키 선택과 Enter/화살표 이동.
+- [`tailwind-extras.css`](../../../apps/web/src/app/tailwind-extras.css)가 `shadcn/tailwind.css`를 대신한다. 실제로 쓰이는 것만 옮겼다: `data-open/closed/checked/unchecked/selected/disabled/active/horizontal/vertical` 커스텀 변형, `no-scrollbar`, `scroll-fade-b`. `shimmer`는 이미 `globals.css`에 ANA 자체 정의가 있어 가져오지 않았다. `scrollbar-thin`·`scrollbar-gutter-stable`·`scrollbar-thumb-transparent`는 Tailwind 4 기본 유틸리티라 그대로 쓴다. 빌드된 CSS에서 해당 규칙이 모두 생성되는 것을 확인했다.
+- 외부 코드 고지는 [NOTICE.md](../../../NOTICE.md)에 모았다. `ui/` 아래 컴포넌트가 shadcn/ui CLI 산출물에서 출발했다는 사실과 MIT 고지를 남겼고, README의 "shadcn/ui로 만들었다"는 설명도 현재 상태에 맞게 고쳤다.
+
+### 구현 중 드러난 결함 두 가지
+
+- 선택지 번호 단축키를 렌더 중 ref에 밀어 넣어 계산하던 첫 구현은 서버와 클라이언트의 첫 렌더가 달라져 하이드레이션이 깨졌다. 지금은 `QuestionnaireChoices`가 자식 순서를 보고 각 선택지에 위치를 넘긴다.
+- 질문이 바뀔 때 포커스를 옮기지 않으면, 포커스를 쥐고 있던 컨트롤이 질문과 함께 `hidden`이 되면서 포커스가 body로 떨어지고 폼이 키 입력을 더 받지 못했다. 이동 시 새 질문의 `fieldset`으로 포커스를 넘기고, 거기서 위/아래 화살표로 선택지에 들어가게 했다.
+
+### 검증
+
+- Chromium 실측: [`apps/web/tests/browser/`](../../../apps/web/tests/browser/README.md)의 두 스크립트가 개발 전용 `/ui-harness` 화면을 상대로 28개 항목을 확인하고 모두 통과한다(스크롤 시작 위치·따라가기·읽던 위치 보존·점프 버튼, 단계 이동·필수 차단·건너뛰기 제출 형식·숫자 단축키·복수 선택·제출 payload, Tab/Space/Enter/화살표만으로의 조작, 콘솔·하이드레이션 오류 0건).
+- 정적 검사: `eslint src` 0건, `tsc --noEmit` 0건, `npm run build` 성공.
+- `rg '@shadcn/react|shadcn/tailwind.css|"shadcn":|ui.shadcn.com'`는 `src`·`package.json`·`package-lock.json`에서 주석 설명 외에 아무것도 찾지 못한다.
+
+### 남은 것
+
+- 5단계(03의 시각 방향을 화면별로 적용)는 03의 방향 결정 전이라 시작하지 않았다. 지금 변경은 기존 외형을 그대로 유지한다.
+- 좁은 뷰포트·200% 확대·스크린리더 실측은 하지 않았다. 브라우저 검사는 1280×900 Chromium 한 종류다.
+
+---
+
+아래는 작업 전에 작성한 원래 계획이다.
 
 ## 목표와 경계
 

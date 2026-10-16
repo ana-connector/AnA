@@ -1,0 +1,125 @@
+"use client";
+
+/**
+ * A page for driving the two components ANA had to write itself — the message
+ * scroller and the stepped question form — from a real browser.
+ *
+ * They replaced `@shadcn/react` primitives whose behaviour nothing in the
+ * repository pinned down, so the replacement is checked the only way that
+ * means anything: Chromium, real scrolling, real keystrokes. The checks live
+ * in `apps/web/tests/browser/`; see the README there for how to run them.
+ *
+ * Development only. In a production build the page renders nothing, so the
+ * harness cannot be reached on a deployed daemon.
+ */
+
+import { useState } from "react";
+import { QuestionCard } from "@/components/ui/question-card";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
+import type { QuestionRequest } from "@/hooks/useChatSocket";
+
+declare global {
+  interface Window {
+    /** Every answer the card has handed back, for the checks to read. */
+    __answers: unknown[];
+  }
+}
+
+/** One required single answer, one optional multiple, one free-text: between
+ *  them they cover every path the card has. */
+const request: QuestionRequest = {
+  request_id: "req-1",
+  agent: "claude",
+  role: "lead",
+  questions: [
+    {
+      question: "배포 대상은?",
+      options: ["스테이징", "운영"],
+      multi: false,
+      note: "",
+      required: true,
+    },
+    {
+      question: "함께 켤 기능",
+      options: [
+        { value: "metrics", label: "지표", description: "수집을 켭니다" },
+        { value: "tracing", label: "추적" },
+      ],
+      multi: true,
+      note: "",
+      required: false,
+    },
+    {
+      question: "메모",
+      options: ["없음"],
+      input: { label: "자유 입력", placeholder: "메모" },
+      multi: false,
+      note: "",
+      required: false,
+    },
+  ],
+};
+
+export default function UiHarness() {
+  const [messages, setMessages] = useState<string[]>(
+    Array.from({ length: 40 }, (_, index) => `메시지 ${index + 1}`)
+  );
+  // Stands in for an answer arriving token by token: the item keeps its
+  // identity and only grows, which is a resize rather than a new child.
+  const [grow, setGrow] = useState(0);
+
+  if (process.env.NODE_ENV === "production") return null;
+
+  return (
+    <div className="flex h-screen flex-col gap-4 p-4">
+      <div className="flex gap-2">
+        <button
+          id="append"
+          type="button"
+          onClick={() => setMessages((prev) => [...prev, `메시지 ${prev.length + 1}`])}
+        >
+          append
+        </button>
+        <button id="grow" type="button" onClick={() => setGrow((value) => value + 1)}>
+          grow
+        </button>
+      </div>
+      <div className="h-80 border" id="scroller-host">
+        <MessageScrollerProvider autoScroll>
+          <MessageScroller className="min-h-0 flex-1">
+            <MessageScrollerViewport id="viewport">
+              <MessageScrollerContent>
+                {messages.map((text, index) => (
+                  <MessageScrollerItem key={index} messageId={`m-${index}`}>
+                    <p>{text}</p>
+                  </MessageScrollerItem>
+                ))}
+                <MessageScrollerItem messageId="streaming">
+                  <p id="streaming">{"스트리밍 ".repeat(grow * 20)}</p>
+                </MessageScrollerItem>
+              </MessageScrollerContent>
+            </MessageScrollerViewport>
+            <MessageScrollerButton />
+          </MessageScroller>
+        </MessageScrollerProvider>
+      </div>
+      <QuestionCard
+        request={request}
+        connected
+        connectionVersion={1}
+        onAnswer={(requestId, answers) => {
+          window.__answers = window.__answers ?? [];
+          window.__answers.push({ requestId, answers });
+          return true;
+        }}
+      />
+    </div>
+  );
+}

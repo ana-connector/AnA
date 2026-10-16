@@ -13,7 +13,7 @@ AnA는 에이전트 CLI를 감싸는 오케스트레이터입니다. **Claude Co
 하나, 그리고 그 에이전트가 이어가는 대화 하나로 이루어집니다.
 
 - **스택**: Python (FastAPI + LangGraph + Postgres/pgvector) · TypeScript
-  (Next.js + shadcn/ui) · Docker Compose
+  (Next.js, 자체 UI) · Docker Compose
 - **설계 문서**: `docs/plans/`
 
 <p align="center">
@@ -302,8 +302,8 @@ AnA 자체 체크아웃을 마운트하면 목록에 평범한 워크스페이�
   규칙(`ask-user`)이 있어 질문 자체가 승인 대기에 걸리지 않습니다. 질문과 답은 턴의
   대화 기록에 덧붙여지므로 대화를 다시 열면 무엇을 물었는지 보입니다.
 - 새 의존성은 없습니다. stdio 프로토콜(`initialize`, `tools/list`,
-  `tools/call`)은 표준 라이브러리로 약 200줄이고, 브라우저 쪽은
-  `@shadcn/questionnaire`를 씁니다.
+  `tools/call`)은 표준 라이브러리로 약 200줄이고, 브라우저 쪽 질문 폼은
+  `apps/web/src/components/ui/questionnaire.tsx`에 직접 구현되어 있습니다.
 
 ### 자동화 (예약 턴)
 
@@ -420,7 +420,10 @@ _사용자 ID 복사_(개발자 모드 켜기)로 얻습니다.
 
 ## 웹 UI
 
-shadcn/ui 컴포넌트(`base-nova` 스타일, Base UI 프리미티브)로 만들었습니다:
+UI 부품은 `apps/web/src/components/ui/`에 저장소 안에 있습니다. 처음에는
+shadcn/ui CLI로 생성했고(`base-nova` 스타일, Base UI 프리미티브) 지금은 ANA가
+직접 관리합니다. `@shadcn/react`와 `shadcn` 실행 의존성은 없습니다
+([NOTICE.md](NOTICE.md)).
 
 - **사이드바(inset)**는 워크스페이스 목록(폴더, 턴 수, 마지막 에이전트)을
   보여주며, 하나를 열면 대화 전체가 그쪽으로 바뀝니다. 워크스페이스를 만들 때는
@@ -598,7 +601,7 @@ shadcn/ui 컴포넌트(`base-nova` 스타일, Base UI 프리미티브)로 만들
 
 ```
 apps/server     FastAPI 앱: /ws/chat, LangGraph 연결
-apps/web        에이전트 전환 기능이 있는 Next.js + shadcn/ui 채팅 UI
+apps/web        에이전트 전환 기능이 있는 Next.js 채팅 UI (자체 컴포넌트)
 packages/adapters      claude_code.py, codex.py — 턴마다 하위 프로세스 하나
 packages/orchestrator  handoff.py — CLI 간 맥락 요약
 packages/memory        Postgres/pgvector 턴 저장과 회상
@@ -629,7 +632,7 @@ KDE Plasma·Android 어디서든 작업을 이어가는 것입니다. 각 버전
 | 버전 | 목표 |
 |---|---|
 | **v0.1** (현재) | 첫 공개 알파: 여러 CLI 오케스트레이션, 거버넌스 게이트, 플래너-워커, 워크스페이스 |
-| v0.2 | 현재 기능 안정화, shadcn/ui에서 독립한 자체 UI, CI |
+| v0.2 | 현재 기능 안정화, shadcn/ui 실행 의존에서 독립한 자체 UI, CI |
 | v0.3 | AnA 데몬(UI·API 단일 주소), 인증과 기기 페어링, Windows·Debian KDE Plasma 앱 |
 | v0.4 | 끊김·재시작 뒤 실행 상태 복구, 여러 기기 동시 사용 |
 | v0.5 | Android 앱 |
