@@ -143,6 +143,8 @@ jobs:
       - name: Run the browser checks
         env:
           PYTHON: python
+        # 55 checks across four scripts; the stack goes up and comes down
+        # inside the script.
         run: scripts/e2e-stack.sh check
 
       - name: Stack logs
