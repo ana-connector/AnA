@@ -1,6 +1,7 @@
 """Run lead-requested tasks through the worker routing ladder."""
 import asyncio
 import contextlib
+import os
 import uuid
 from typing import Awaitable, Callable, Optional
 
@@ -27,18 +28,41 @@ from packages.orchestrator.cooldown import label_for, shared as shared_cooldowns
 from packages.orchestrator.routing import WORKER, decide, load_routing_table
 
 
+# How long the server holds one `run_task` call before it admits the worker
+# is still going. This used to be 15 seconds, which turned "delegate this and
+# wait" into "ask again every 15 seconds": a worker that ran for ten minutes
+# cost the lead forty tool calls, each one a round trip through its model,
+# for no information it did not already have. The lead is not supervising the
+# worker — ANA is, by watching its activity (packages/orchestrator/activity.py)
+# — so there is nothing for it to do in the meantime but wait.
+#
+# An hour rather than forever, because the answer still has to reach an MCP
+# client that may have a deadline of its own; when it elapses, the task_id
+# path below resumes the same worker rather than starting a second one.
+_DEFAULT_WAIT_SECONDS = 3600.0
+
+
+def default_wait_seconds() -> float:
+    try:
+        return max(1.0, float(os.environ.get("ANA_DELEGATE_WAIT_SECONDS",
+                                             _DEFAULT_WAIT_SECONDS)))
+    except ValueError:
+        return _DEFAULT_WAIT_SECONDS
+
+
 class DelegationManager:
     """One worker per request in a turn, even if an MCP caller times out.
 
-    MCP clients have their own tool-call deadline. A long worker cannot be
-    awaited in one call: when that deadline fires, the lead may retry while
-    the first worker is still running. Keep the task on the server and return
-    a stable ID after a short wait so later calls observe the same result.
+    The call waits for the worker. MCP clients have their own tool-call
+    deadline, though, and a worker can outlive it: when that deadline fires,
+    the lead may retry while the first worker is still running. So the task
+    stays on the server under a stable ID, and a later call with that ID
+    observes the same worker instead of starting another.
     """
 
-    def __init__(self, active: set[asyncio.Task], poll_seconds: float = 15.0):
+    def __init__(self, active: set[asyncio.Task], wait_seconds: float | None = None):
         self.active = active
-        self.poll_seconds = poll_seconds
+        self.wait_seconds = default_wait_seconds() if wait_seconds is None else wait_seconds
         self.by_id: dict[str, asyncio.Task] = {}
         self.by_request: dict[tuple[int, str, str], str] = {}
 
@@ -61,7 +85,7 @@ class DelegationManager:
                 self.active.add(task)
                 task.add_done_callback(self.active.discard)
         try:
-            result = await asyncio.wait_for(asyncio.shield(task), self.poll_seconds)
+            result = await asyncio.wait_for(asyncio.shield(task), self.wait_seconds)
         except asyncio.TimeoutError:
             return {"status": "running", "task_id": task_id}
         except asyncio.CancelledError:

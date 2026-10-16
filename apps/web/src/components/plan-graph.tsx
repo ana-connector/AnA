@@ -7,7 +7,6 @@ import {
   Controls,
   Position,
   ReactFlow,
-  useNodesInitialized,
   useReactFlow,
   type Edge,
   type Node,
@@ -67,26 +66,48 @@ function FitWhenReady({ container, taskIds }: {
   taskIds: string;
 }) {
   const flow = useReactFlow();
-  const nodesInitialized = useNodesInitialized();
 
+  // Deliberately not gated on useNodesInitialized(). That hook reports the
+  // sizes React Flow has *measured*, and measurements only reach its store
+  // through onNodesChange — which a flow driven by a computed `nodes` prop,
+  // as this one is, never sends. It stayed false forever, so the fit below
+  // never ran at all: the canvas sat at translate(0,0) with the plan in its
+  // corner. The nodes carry explicit width and height instead, which is all
+  // fitView needs and is true anyway: they are a fixed size.
   useEffect(() => {
-    if (!nodesInitialized || !container.current) return;
+    if (!container.current) return;
     const element = container.current;
-    let fitted = false;
+    let cancelled = false;
     let frame = 0;
-    const fit = () => {
-      if (fitted || element.clientWidth === 0 || element.clientHeight === 0) return;
-      fitted = true;
-      frame = requestAnimationFrame(() => { void flow.fitView({ padding: 0.16 }); });
+    // fitView answers whether it actually did anything, and it does nothing
+    // while the pane has no size — which is the normal case here, because the
+    // transcript mounts the graph before laying it out. The previous version
+    // called it once behind a latch and cancelled the pending frame whenever
+    // React re-ran the effect, so in practice it often never ran at all: the
+    // canvas stayed at translate(0,0), the plan sat in its top-left corner,
+    // and a wider fan-out was simply off screen.
+    const attempt = (tries: number) => {
+      if (cancelled || tries > 60) return;
+      if (element.clientWidth === 0 || element.clientHeight === 0) {
+        frame = requestAnimationFrame(() => attempt(tries + 1));
+        return;
+      }
+      void Promise.resolve(flow.fitView({ padding: 0.16 })).then((fitted) => {
+        if (cancelled || fitted) return;
+        frame = requestAnimationFrame(() => attempt(tries + 1));
+      });
     };
-    // The scroller can mount the graph before it has a width. React Flow's
-    // one-time fitView then runs against a zero-size viewport and leaves the
-    // live graph blank until a reload. Fit after both nodes and size exist.
-    const observer = new ResizeObserver(fit);
+    // A resize is the other moment the view needs re-centring: the sidebar
+    // opening, or the window changing, moves the pane out from under it.
+    const observer = new ResizeObserver(() => attempt(0));
     observer.observe(element);
-    fit();
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [container, flow, nodesInitialized, taskIds]);
+    attempt(0);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [container, flow, taskIds]);
 
   return null;
 }
@@ -169,6 +190,12 @@ export function PlanGraph({
         // node from its underside and looked wrong.
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
+        // Given rather than measured. Every status change rebuilds this array
+        // from scratch, and a rebuilt node arrives without the size React Flow
+        // had measured for it — which is what left the canvas blank until a
+        // reload.
+        width: 110,
+        height: 32,
         style: { ...nodeStyle(), width: 110, textAlign: "center" },
       },
       ...plan.tasks.map((task) => ({
@@ -184,6 +211,8 @@ export function PlanGraph({
         },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
+        width: 210,
+        height: 50,
         style: { ...nodeStyle(task.status), whiteSpace: "pre-line" as const },
       })),
     ];
@@ -298,10 +327,26 @@ export function PlanGraph({
                   {scopeLabel(task)}
                 </Badge>
               )}
-              <span className="truncate">{task.title}</span>
-              <span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground">
+              <span className="shrink-0 truncate">{task.title}</span>
+              {/* The reason a task failed is a sentence, sometimes a
+                  paragraph: a CLI's own error text. Shown on one line and cut
+                  off, with the whole of it on hover, because left to run it
+                  pushed the row past the width of the transcript. */}
+              {task.error ? (
+                <span
+                  className="min-w-0 flex-1 truncate text-destructive"
+                  title={task.error}
+                >
+                  {task.error}
+                </span>
+              ) : null}
+              <span
+                className={cn(
+                  "flex shrink-0 items-center gap-1 text-muted-foreground",
+                  !task.error && "ml-auto"
+                )}
+              >
                 {STATUS_LABEL[task.status]}
-                {task.error ? ` · ${task.error}` : ""}
                 {onSelectTask && <ChevronRightIcon className="size-3" />}
               </span>
             </button>

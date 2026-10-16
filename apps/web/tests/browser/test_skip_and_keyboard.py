@@ -40,8 +40,10 @@ with sync_playwright() as p:
     page2.goto(URL, wait_until="networkidle")
     page2.wait_for_timeout(700)
 
-    # reach the first choice with Tab alone, and see the focus ring
-    for _ in range(12):
+    # Reach the first choice with Tab alone. The budget is generous because
+    # the harness puts the scroller, its buttons and the plan diagram above
+    # the card; what is being checked is that the path exists, not its length.
+    for _ in range(60):
         page2.keyboard.press("Tab")
         focused = page2.evaluate(
             "() => { const a = document.activeElement;"
