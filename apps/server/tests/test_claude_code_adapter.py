@@ -55,9 +55,9 @@ def test_parse_event_system_is_ignored():
 
 
 @pytest.mark.asyncio
-async def test_run_stream_yields_text_then_result():
+async def test_run_stream_yields_text_then_result(tmp_path):
     adapter = ClaudeCodeAdapter(
-        workspace_dir="/home/hello/workspace",
+        workspace_dir=str(tmp_path),
         env={"PATH": "/usr/bin:/bin"},
         executable=sys.executable,
     )
@@ -78,9 +78,9 @@ async def test_run_stream_yields_text_then_result():
 
 
 @pytest.mark.asyncio
-async def test_run_stream_emits_partial_text_without_repeating_completed_message():
+async def test_run_stream_emits_partial_text_without_repeating_completed_message(tmp_path):
     adapter = ClaudeCodeAdapter(
-        workspace_dir="/home/hello/workspace",
+        workspace_dir=str(tmp_path),
         env={"PATH": "/usr/bin:/bin", "FAKE_CLAUDE_PARTIAL": "1"},
         executable=sys.executable,
     )
@@ -94,7 +94,7 @@ async def test_run_stream_emits_partial_text_without_repeating_completed_message
 
 
 @pytest.mark.asyncio
-async def test_run_stream_drains_stderr_concurrently_without_deadlock():
+async def test_run_stream_drains_stderr_concurrently_without_deadlock(tmp_path):
     # Regression test: fake_claude.py writes >64KiB to stderr in between
     # stdout events. If run_stream() only read stderr after the stdout loop
     # finished, the child would block writing stderr (pipe full) and never
@@ -102,7 +102,7 @@ async def test_run_stream_drains_stderr_concurrently_without_deadlock():
     # bounded wait_for ensures a regression fails fast instead of hanging
     # the whole suite.
     adapter = ClaudeCodeAdapter(
-        workspace_dir="/home/hello/workspace",
+        workspace_dir=str(tmp_path),
         env={"PATH": "/usr/bin:/bin", "FAKE_CLAUDE_BIG_STDERR": "1"},
         executable=sys.executable,
     )
@@ -119,7 +119,7 @@ async def test_run_stream_drains_stderr_concurrently_without_deadlock():
 
 
 @pytest.mark.asyncio
-async def test_run_stream_handles_stdout_line_over_64kib():
+async def test_run_stream_handles_stdout_line_over_64kib(tmp_path):
     # Regression test: asyncio.create_subprocess_exec defaults to a 64KiB
     # StreamReader line limit. This machine's global Claude Code hooks (and,
     # independently, a long assistant reply or result event) can produce a
@@ -127,7 +127,7 @@ async def test_run_stream_handles_stdout_line_over_64kib():
     # run_stream() with "ValueError: Separator is not found, and chunk
     # exceed the limit" instead of yielding the event.
     adapter = ClaudeCodeAdapter(
-        workspace_dir="/home/hello/workspace",
+        workspace_dir=str(tmp_path),
         env={"PATH": "/usr/bin:/bin", "FAKE_CLAUDE_BIG_STDOUT_LINE": "1"},
         executable=sys.executable,
     )
@@ -145,21 +145,21 @@ async def test_run_stream_handles_stdout_line_over_64kib():
 
 
 @pytest.mark.asyncio
-async def test_terminate_without_running_process_is_a_noop():
-    adapter = ClaudeCodeAdapter(workspace_dir="/home/hello/workspace", env={})
+async def test_terminate_without_running_process_is_a_noop(tmp_path):
+    adapter = ClaudeCodeAdapter(workspace_dir=str(tmp_path), env={})
     await adapter.terminate()  # must not raise
 
 
-def test_build_args_omits_model_and_effort_when_unset():
-    adapter = ClaudeCodeAdapter(workspace_dir="/home/hello/workspace", env={})
+def test_build_args_omits_model_and_effort_when_unset(tmp_path):
+    adapter = ClaudeCodeAdapter(workspace_dir=str(tmp_path), env={})
     args, _ = adapter._build_args("hi", session_id=None)
     assert "--model" not in args
     assert "--effort" not in args
 
 
-def test_build_args_includes_model_and_effort_when_set():
+def test_build_args_includes_model_and_effort_when_set(tmp_path):
     adapter = ClaudeCodeAdapter(
-        workspace_dir="/home/hello/workspace", env={}, model="opus", effort="high"
+        workspace_dir=str(tmp_path), env={}, model="opus", effort="high"
     )
     args, _ = adapter._build_args("hi", session_id=None)
     assert "--model" in args

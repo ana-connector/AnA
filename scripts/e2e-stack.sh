@@ -26,7 +26,13 @@ E2E_WEB_PORT="${E2E_WEB_PORT:-3211}"
 E2E_API_PORT="${E2E_API_PORT:-8123}"
 E2E_DB_PORT="${E2E_DB_PORT:-15499}"
 CONTAINER="ana-e2e-pg"
-PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
+# Resolved to a full path: the server is started with `env -i`, which drops
+# PATH, so a bare interpreter name would not be found there.
+PYTHON="$(command -v "${PYTHON:-$ROOT/.venv/bin/python}" || true)"
+if [ -z "$PYTHON" ]; then
+  echo "[e2e] no python found (set PYTHON=/path/to/python)" >&2
+  exit 1
+fi
 
 api_url="http://127.0.0.1:${E2E_API_PORT}"
 web_url="http://127.0.0.1:${E2E_WEB_PORT}"
@@ -75,13 +81,23 @@ up() {
     "$PYTHON" -u -m uvicorn apps.server.app.main:app \
       --app-dir "$ROOT" --host 127.0.0.1 --port "$E2E_API_PORT" \
     > "$E2E_DIR/server.log" 2>&1 &
-  wait_for "${api_url}/workspaces" || { tail -30 "$E2E_DIR/server.log"; return 1; }
+  # Generous: a first run downloads the embedding model before the app is
+  # ready, which takes longer than anything else here.
+  wait_for "${api_url}/workspaces" 150 || {
+    echo "[e2e] the server never answered; its log follows:" >&2
+    cat "$E2E_DIR/server.log" >&2 || echo "[e2e] (the log is empty: it never started)" >&2
+    return 1
+  }
 
   log "web on ${E2E_WEB_PORT}"
   # The port is read at build time, so it is set for this process only.
   (cd "$ROOT/apps/web" && setsid env NEXT_PUBLIC_WS_PORT="$E2E_API_PORT" \
     npm run dev -- -p "$E2E_WEB_PORT" > "$E2E_DIR/web.log" 2>&1 &)
-  wait_for "${web_url}/" || { tail -30 "$E2E_DIR/web.log"; return 1; }
+  wait_for "${web_url}/" 90 || {
+    echo "[e2e] the web server never answered; its log follows:" >&2
+    cat "$E2E_DIR/web.log" >&2 || true
+    return 1
+  }
 
   log "ready: ${web_url} against ${api_url}"
 }
