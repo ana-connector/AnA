@@ -147,6 +147,16 @@ async def lifespan(app: FastAPI):
 
         app.state.pool = pool
         app.state.embedding_model = EmbeddingModel()
+        # Warmed here rather than on the first turn. The first embedding
+        # loads the ONNX model and builds its session, which on a small
+        # machine takes longer than anyone waits — and it happens inside the
+        # finally that writes the turn down, so the turn is answered and then
+        # appears to vanish. Paying it at startup also means a model that
+        # cannot be loaded says so here instead of eating a conversation.
+        try:
+            await asyncio.to_thread(app.state.embedding_model.embed_one, "warm")
+        except Exception:  # noqa: BLE001 - ANA still answers without memory
+            logging.getLogger(__name__).exception("the embedding model failed to load")
         app.state.checkpointer = checkpointer
         app.state.graph = build_graph(checkpointer)
         app.state.secret_cipher = SecretCipher()
