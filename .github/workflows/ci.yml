@@ -1,0 +1,161 @@
+name: CI
+
+# The checks an alpha.1 candidate has to pass. Every job is required: nothing
+# here uses continue-on-error, because a check that cannot fail is not a gate.
+#
+# All of it is reproducible locally — the commands are the ones in
+# docs/plans/v0.2.0-alpha.1/05-release-PLAN.md and in the READMEs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-tests:
+    name: server tests (file by file)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/server/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r apps/server/requirements.txt
+
+      - name: Collect
+        run: python -m pytest --collect-only -q | tail -3
+
+      # One process per file. The whole suite in a single pytest process has
+      # been OOM-killed around 87% of the way through (cgroup memory.events
+      # oom_kill=1), and the cause is not understood yet; until it is, the
+      # split is what keeps a failure a failure rather than a dead runner.
+      #
+      # Every exit code is collected, so one failing file does not hide the
+      # ones after it and the job still fails.
+      - name: Run
+        run: |
+          failed=""
+          for file in apps/server/tests/test_*.py; do
+            echo "::group::$file"
+            if timeout 420 python -m pytest "$file" -q -rfE -p no:cacheprovider; then
+              echo "ok  $file"
+            else
+              echo "::error file=$file::server tests failed"
+              failed="$failed $file"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "failing files:$failed"
+            exit 1
+          fi
+
+      # The fixture starts a throwaway pgvector container per session and is
+      # meant to remove it again. A leak here is worth knowing about.
+      - name: No test containers left behind
+        if: always()
+        run: |
+          left=$(docker ps -aq --filter 'name=ana-test-pg' | wc -l)
+          echo "leftover containers: $left"
+          [ "$left" -eq 0 ]
+
+  web-checks:
+    name: web lint, types and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches apps/web/Dockerfile.
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx next typegen
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm run build
+
+  address-rules:
+    name: address rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node strips the types itself from 22.6 on; no install step.
+          node-version: "22"
+      - run: node --test apps/web/tests/urls.test.ts
+
+  browser-checks:
+    name: browser regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+        working-directory: apps/web
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install playwright && python -m playwright install --with-deps chromium
+
+      # The harness renders nothing in a production build, on purpose, so
+      # these run against the development server.
+      - name: Start the development server
+        working-directory: apps/web
+        run: |
+          npm run dev -- -p 3210 > /tmp/next-dev.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:3210/ui-harness; then exit 0; fi
+            sleep 2
+          done
+          echo "the development server never came up"; cat /tmp/next-dev.log; exit 1
+
+      - run: python apps/web/tests/browser/test_scroller_and_questions.py
+      - run: python apps/web/tests/browser/test_skip_and_keyboard.py
+
+      - name: Development server log
+        if: failure()
+        run: cat /tmp/next-dev.log
+
+  images:
+    name: docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # These two Dockerfiles download CLIs and packages from the public
+      # internet. A failure here is reported as its own job so a flaky
+      # download is not read as a broken product.
+      - name: Server image
+        run: docker build -f apps/server/Dockerfile -t ana-server:ci .
+
+      - name: Web image
+        run: docker build -f apps/web/Dockerfile -t ana-web:ci apps/web
