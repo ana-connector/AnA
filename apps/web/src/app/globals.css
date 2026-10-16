@@ -58,7 +58,9 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  /* 0.556 measured 4.34:1 against the 0.97 muted surface at 12px, under
+     the 4.5:1 WCAG AA needs for text that size (axe, apps/web/tests/browser). */
+  --muted-foreground: oklch(0.53 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);

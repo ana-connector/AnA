@@ -348,7 +348,7 @@ function Ladder({
                         })
                       }
                     >
-                      <SelectTrigger>
+                      <SelectTrigger aria-label={`${index + 1}단계 CLI`}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -371,6 +371,7 @@ function Ladder({
                     {custom ? (
                       <Input
                         autoFocus
+                        aria-label={`${index + 1}단계 모델 이름`}
                         value={rung.model}
                         placeholder="opus"
                         className="font-mono"
@@ -390,7 +391,7 @@ function Ladder({
                           replace(index, { ...rung, model: value === NONE ? "" : String(value) });
                         }}
                       >
-                        <SelectTrigger className="font-mono">
+                        <SelectTrigger className="font-mono" aria-label={`${index + 1}단계 모델`}>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -416,7 +417,7 @@ function Ladder({
                         replace(index, { ...rung, effort: value === NONE ? "" : String(value) })
                       }
                     >
-                      <SelectTrigger>
+                      <SelectTrigger aria-label={`${index + 1}단계 사고 강도`}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -454,7 +455,7 @@ function Ladder({
                           })
                         }
                       >
-                        <SelectTrigger size="sm" className="w-28">
+                        <SelectTrigger size="sm" className="w-28" aria-label={`${index + 1}단계 사용량 창`}>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -477,6 +478,7 @@ function Ladder({
                       <span className="text-muted-foreground">창이</span>
                       <Input
                         type="number"
+                        aria-label={`${index + 1}단계에서 다음 단계로 넘어갈 사용률 (%)`}
                         min={0}
                         max={100}
                         step={5}

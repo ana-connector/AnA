@@ -1,7 +1,9 @@
 import json
+import os
 from playwright.sync_api import sync_playwright
 
-URL = "http://127.0.0.1:3210/ui-harness"
+BASE = os.environ.get("ANA_E2E_WEB", "http://127.0.0.1:3211")
+URL = f"{BASE}/ui-harness"
 results = []
 
 def check(name, ok, detail=""):
