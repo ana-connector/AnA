@@ -21,13 +21,13 @@ with sync_playwright() as p:
     page.wait_for_timeout(400)
 
     page.locator('[data-slot="questionnaire-choice"]').first.click()  # required answered
-    page.get_by_role("button", name="다음").click()
+    page.locator('[data-slot="questionnaire-next"]').click()
     page.wait_for_timeout(150)
-    page.get_by_role("button", name="건너뛰기").click()   # skip the multi question
+    page.locator('[data-slot="questionnaire-skip"]').click()   # skip the multi question
     page.wait_for_timeout(150)
     progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
     check("skip advances", progress.strip() == "질문 3 / 3", progress)
-    page.get_by_role("button", name="건너뛰기").click()   # skip the last one: submits
+    page.locator('[data-slot="questionnaire-skip"]').click()   # skip the last one: submits
     page.wait_for_timeout(400)
     answers = page.evaluate("() => window.__answers ?? []")
     check("a skipped question submits nothing",
