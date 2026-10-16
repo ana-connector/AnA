@@ -116,6 +116,16 @@ async def stop_discord_bridge(started) -> None:
         await api.close()
 
 
+# ANA's own loggers had no handler: uvicorn configures its own and nothing
+# else, so everything below WARNING was dropped and the rest reached stderr
+# only through logging's last-resort handler. A turn that failed to be
+# written down said so into a void.
+logging.basicConfig(
+    level=os.environ.get("ANA_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     dsn = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/ana")
