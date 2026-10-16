@@ -352,6 +352,7 @@ class ClientFrame:
     plan_mode: bool = field(default_factory=planning_enabled)
     # Set on kind == "approval": the gate request being answered.
     request_id: str = ""
+    client_id: str = ""
     decision: str = "deny"
     # Set on kind == "answer": what the user replied to the agent's question,
     # one entry per question asked.
@@ -399,6 +400,8 @@ def _parse_client_frame(data: str) -> ClientFrame:
     return ClientFrame(
         kind="prompt",
         prompt=prompt,
+        client_id=(payload.get("client_id") if isinstance(payload.get("client_id"), str)
+                   and 0 < len(payload["client_id"]) <= 128 else ""),
         # "auto" (or anything unknown) hands the choice to the routing rules;
         # a concrete agent from the client still wins.
         agent=payload.get("agent") if payload.get("agent") in AGENTS else AUTO,
@@ -690,8 +693,8 @@ async def chat_ws(websocket: WebSocket) -> None:
                 continue
             if frame.kind == "cancel":
                 if not runner.cancel_current():
-                    # Nothing in flight: still answer, so a client whose UI
-                    # thinks a turn is running can reset it.
+                    # No turn is in flight; queued prompts were discarded, so
+                    # acknowledge the cancellation to reset the client.
                     with contextlib.suppress(Exception):
                         await websocket.send_json(
                             {
@@ -703,9 +706,12 @@ async def chat_ws(websocket: WebSocket) -> None:
                         )
                 continue
             # Queued rather than run inline: concurrent prompts are processed in
-            # order instead of interrupting the turn in flight. A cancel frame
-            # stops only that in-flight turn, not what is queued behind it.
-            await runner.submit(frame.prompt, frame.agent, frame.plan_mode)
+            # order instead of interrupting the turn in flight. Cancel keeps
+            # queued prompts when a turn is running and discards them otherwise.
+            accepted = await runner.submit(frame.prompt, frame.agent, frame.plan_mode, frame.client_id)
+            if frame.client_id:
+                await websocket.send_json({"type": "prompt_ack", "client_id": frame.client_id,
+                                           "accepted": accepted})
     except WebSocketDisconnect:
         pass
     finally:

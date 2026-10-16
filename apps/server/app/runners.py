@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import os
 import time
+from collections import deque
 from typing import Awaitable, Callable, Optional
 
 from packages.governance.session import GateRegistry, GateSession
@@ -35,8 +36,8 @@ Sink = Callable[[dict], Awaitable[None]]
 # and the point is to show what is happening, not to reconstruct every delta.
 MAX_BUFFERED_FRAMES = 800
 
-# A frame of these types ends a turn, and with it the replay buffer: everything
-# before is in the turns table by then, and history is what shows it.
+# A frame of these types ends a turn. Its frames leave the replay buffer;
+# prompts for turns still queued stay until they have a recorded result.
 TURN_END_FRAMES = {"result", "error", "cancelled"}
 
 
@@ -90,6 +91,8 @@ class TurnRunner:
         self.container_error = container_error
 
         self.queue: "asyncio.Queue[tuple[str, str, bool]]" = asyncio.Queue()
+        self._accepted_ids: set[str] = set()
+        self._accepted_order: deque[str] = deque(maxlen=1024)
         self.buffer: list[dict] = []
         self.sinks: set[Sink] = set()
         self.cancel_requested = asyncio.Event()
@@ -124,9 +127,12 @@ class TurnRunner:
         if len(self.buffer) > MAX_BUFFERED_FRAMES:
             del self.buffer[: len(self.buffer) - MAX_BUFFERED_FRAMES]
         if frame.get("type") in TURN_END_FRAMES:
-            # The turn is in the database now; history is what shows it, so the
-            # buffer starts empty for the next one.
-            self.buffer.clear()
+            # The finished turn is in history. Prompts still in the queue are
+            # not there yet, so keep them for a tab that reconnects between
+            # turns. The oldest prompt belongs to the turn just finished.
+            queued = self.queue.qsize()
+            prompts = [item for item in self.buffer if item.get("type") == "prompt"]
+            self.buffer = prompts[-queued:] if queued else []
             # The same moment is the only one worth reporting to a phone: what
             # the agent finally said, once.
             if frame.get("type") == "result":
@@ -191,9 +197,16 @@ class TurnRunner:
 
     # --- turns ------------------------------------------------------------
 
-    async def submit(self, prompt: str, agent: str, plan_mode: bool) -> None:
+    async def submit(self, prompt: str, agent: str, plan_mode: bool, client_id: str = "") -> bool:
         """Queues a turn. Queued rather than run inline, so concurrent messages
         are processed in order instead of interrupting the turn in flight."""
+        if client_id in self._accepted_ids:
+            return False
+        if client_id:
+            if len(self._accepted_order) == self._accepted_order.maxlen:
+                self._accepted_ids.discard(self._accepted_order[0])
+            self._accepted_order.append(client_id)
+            self._accepted_ids.add(client_id)
         # Recorded, not sent: the client that typed it already shows it, and a
         # client that attaches later needs it to have something to put the
         # streaming reply under.
@@ -205,15 +218,20 @@ class TurnRunner:
         )
         self._idle_since = None
         await self.queue.put((prompt, agent, plan_mode))
+        return True
 
     def cancel_current(self) -> bool:
-        """Stops the turn in flight, leaving the runner and its queue alone."""
+        """Stop the active turn, or discard queued prompts when none is active."""
         task = self.current_turn_task
         if task is None or task.done():
+            while not self.queue.empty():
+                self.queue.get_nowait()
+            self.buffer = [frame for frame in self.buffer if frame.get("type") != "prompt"]
             for delegation in list(self.gate_session.active_delegations):
                 delegation.cancel()
             return False
         self.cancel_requested.set()
+        self.gate_registry.cancel_pending(self.gate_session)
         for agent_task in self.gate_session.native_agents.values():
             if agent_task.get("status") == "running":
                 agent_task.update(status="error", error="사용자가 중지함")
@@ -265,7 +283,7 @@ class TurnRunner:
 
     async def _relay(self) -> None:
         try:
-            while True:
+            while not self.closed:
                 prompt, agent, plan_mode = await self.queue.get()
                 # Each turn is its own task so a cancel can stop that one turn
                 # without killing the relay.
@@ -303,6 +321,16 @@ class TurnRunner:
                             "agent": agent,
                         }
                     )
+                except Exception as exc:  # noqa: BLE001 - one broken turn must not strand the queue
+                    await self.emit(
+                        {
+                            "type": "error",
+                            "text": str(exc),
+                            "session_id": None,
+                            "is_error": True,
+                            "agent": agent,
+                        }
+                    )
                 finally:
                     if self.current_turn_task is not None and not self.current_turn_task.done():
                         self.current_turn_task.cancel()
@@ -310,11 +338,18 @@ class TurnRunner:
                     self.current_turn_agent = None
                     if not self.busy and not self.sinks:
                         self._idle_since = time.monotonic()
+                # A cancel aimed at the relay itself (close()) arrives while it
+                # is awaiting the turn, so asyncio hands it to the turn task. A
+                # turn that swallows it while finishing returns normally, and the
+                # relay's own cancellation was then lost: it went back to the
+                # queue and waited forever, and so did close() — which hung
+                # server shutdown whenever a turn was just ending.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise asyncio.CancelledError
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - one turn's failure must not
-            # leave the conversation without a relay; the frame says what broke
-            # and the runner is closed by whoever owns it.
+        except Exception as exc:  # noqa: BLE001 - a failure outside a turn is fatal
             with contextlib.suppress(Exception):
                 await self.emit(
                     {

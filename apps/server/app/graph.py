@@ -47,6 +47,7 @@ from packages.orchestrator.routing import (
 )
 from packages.orchestrator.planner import (
     EXECUTE,
+    Plan,
     build_planning_prompt,
     build_replan_prompt,
     build_task_prompt,
@@ -683,6 +684,7 @@ async def _stream_turn(
     to try, and reporting a failure the system is about to recover from would
     be noise. Text and usage frames stream as they arrive, because a partial
     answer is still worth showing."""
+    saw_result = False
     try:
         async for event in adapter.run_stream(prompt, session_id=session_id):
             if event.type == "result" and event.session_id:
@@ -690,6 +692,7 @@ async def _stream_turn(
             if event.type == "text":
                 outcome.response_text += event.text
             if event.type == "result":
+                saw_result = True
                 outcome.cost_usd = event.cost_usd
                 if event.is_error:
                     outcome.error_text = event.text or "CLI reported a failed turn"
@@ -785,6 +788,8 @@ async def _stream_turn(
                 outcome.result_payload = payload
                 continue
             writer(payload)
+        if not saw_result and not outcome.response_text and not outcome.error_text:
+            outcome.error_text = "the CLI ended without producing an answer"
     except Exception as exc:  # noqa: BLE001 - a raised failure is still a turn
         # outcome, not something to lose: the caller logs it to the transcript
         # and either fails over or re-raises it unchanged.
@@ -920,13 +925,16 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         # at the cheapest effort the chosen CLI has unless configured
         # otherwise. The answer call that follows gets the rung's own effort
         # back.
-        (plan, agent, lead_model, lead_effort,
-         planning_failed_over, planning_failover_reason, planning_rung) = await _plan_with_failover(
-            configurable, agent, lead_model, lead_effort, writer, tracer, trace,
-            state["prompt"],
-            start_rung=(breaker.rung_label if route.explicit
-                        and breaker.active(breaker_config.cooldown_seconds) else None),
-        )
+        try:
+            (plan, agent, lead_model, lead_effort,
+             planning_failed_over, planning_failover_reason, planning_rung) = await _plan_with_failover(
+                configurable, agent, lead_model, lead_effort, writer, tracer, trace,
+                state["prompt"],
+                start_rung=(breaker.rung_label if route.explicit
+                            and breaker.active(breaker_config.cooldown_seconds) else None),
+            )
+        except _PlanningLimit:
+            plan = Plan(note="계획을 건너뛰고 바로 답변합니다.")
         if agent != routed_agent:
             augmented_prompt = build_handoff_prompt(
                 state["prompt"], incoming_agent=agent,
@@ -1450,15 +1458,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         if caught_exc is not None or for_error_text:
             reason = for_error_text or str(caught_exc)
             # The user gets the notice below; the transcript and the turn row
-            # keep the cause. Only the notice used to be stored, so a failed
-            # turn's record said "check the server log" and nothing else, while
-            # the log itself held the first 120 characters of the reason.
+            # keep the cause. Preserve any partial answer before the notice.
             failure_reason = reason
-            final_response = (
+            notice = (
                 "인증 오류로 요청을 완료하지 못했습니다. 다른 모델도 사용할 수 있는지 확인해 주세요."
                 if is_auth_failure(reason) else
                 "요청을 완료하지 못했습니다. 서버 오류 기록을 확인해 주세요."
             )
+            final_response = f"{response_text}\n{notice}" if response_text else notice
         else:
             final_response = response_text
         # asyncio.CancelledError is a BaseException (not Exception, since

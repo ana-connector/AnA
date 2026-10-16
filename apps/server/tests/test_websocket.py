@@ -146,6 +146,18 @@ def test_websocket_sends_thread_id_first_then_echoes_prompt(client_with_fake_ada
     assert third["type"] == "result"
 
 
+def test_websocket_confirms_prompt_receipt(client_with_fake_adapter):
+    with client_with_fake_adapter.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # thread_id
+        ws.send_json({"prompt": "hello", "agent": "claude", "client_id": "browser-1"})
+        frames = []
+        while not (any(frame["type"] == "result" for frame in frames)
+                   and any(frame["type"] == "prompt_ack" for frame in frames)):
+            frames.append(ws.receive_json())
+        assert any(frame["type"] == "prompt_ack" and frame["client_id"] == "browser-1"
+                   and frame["accepted"] for frame in frames)
+
+
 def test_websocket_reuses_supplied_thread_id(client_with_fake_adapter):
     with client_with_fake_adapter.websocket_connect("/ws/chat?thread_id=fixed-thread-abc") as ws:
         first = ws.receive_json()
@@ -204,7 +216,7 @@ def test_websocket_relays_error_when_run_stream_raises(db_pool, postgres_dsn, mo
     assert "boom" in event["text"]
 
 
-def test_websocket_closes_connection_after_relay_failure(db_pool, postgres_dsn, monkeypatch, tmp_path):
+def test_websocket_accepts_another_prompt_after_turn_failure(db_pool, postgres_dsn, monkeypatch, tmp_path):
     from packages.adapters.transcript import TranscriptLogger
 
     monkeypatch.setenv("DATABASE_URL", postgres_dsn)
@@ -225,9 +237,10 @@ def test_websocket_closes_connection_after_relay_failure(db_pool, postgres_dsn, 
                 event = next_content(ws, skip=NOISE_FRAMES | {"failover"})
                 assert event["type"] == "error"
                 assert "boom" in event["text"]
-                with pytest.raises(WebSocketDisconnect) as exc_info:
-                    ws.receive_text()
-    assert exc_info.value.code == 1011
+                ws.send_text("again")
+                second = next_content(ws, skip=NOISE_FRAMES | {"failover"})
+                assert second["type"] == "error"
+                assert "boom" in second["text"]
 
 
 def test_websocket_sends_error_frame_when_build_adapter_raises(postgres_dsn, monkeypatch):
@@ -300,6 +313,15 @@ class SlowThenDoneAdapter(AgentAdapter):
     disconnect while the turn is genuinely still running."""
 
     released = asyncio.Event()
+    # The server's event loop, which runs on TestClient's thread rather than
+    # the test's. asyncio.Event is not thread-safe: set() from the test thread
+    # does not wake a waiter on this loop until something else happens to wake
+    # it, which made this test take as long as the next unrelated timer.
+    loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @classmethod
+    def release(cls) -> None:
+        cls.loop.call_soon_threadsafe(cls.released.set)
 
     def __init__(self):
         self.calls: list[str] = []
@@ -308,6 +330,7 @@ class SlowThenDoneAdapter(AgentAdapter):
         self, prompt: str, session_id: Optional[str] = None
     ) -> AsyncIterator[AdapterEvent]:
         self.calls.append(prompt)
+        SlowThenDoneAdapter.loop = asyncio.get_running_loop()
         yield AdapterEvent(type="text", text="working…", session_id="sid-bg")
         await SlowThenDoneAdapter.released.wait()
         yield AdapterEvent(type="text", text="done", session_id="sid-bg")
@@ -352,7 +375,7 @@ def test_a_turn_survives_the_browser_leaving_and_shows_what_it_missed(
                 assert "text" in kinds
 
                 # The same turn, still the same CLI process, finishes here.
-                SlowThenDoneAdapter.released.set()
+                SlowThenDoneAdapter.release()
                 frame = next_content(ws)
                 while frame["type"] == "text" and frame["text"] != "done":
                     frame = next_content(ws)

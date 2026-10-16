@@ -4,6 +4,7 @@ No CLI and no browser here — the protocol side is fed JSON lines, and the
 endpoint side is driven against a registered gate session, which is exactly the
 seam the two real clients meet.
 """
+import asyncio
 import io
 import json
 
@@ -348,6 +349,31 @@ async def test_request_answer_returns_what_the_browser_sent():
     # The pending entry is cleaned up, so a late second answer is a no-op.
     assert session.pending == {}
     assert registry.resolve_answer(session, sent[0]["request_id"], ["again"]) is False
+
+
+@pytest.mark.asyncio
+async def test_browser_answer_requires_matching_count_and_required_values():
+    registry = GateRegistry()
+    sent = []
+
+    async def send(payload):
+        sent.append(payload)
+
+    session = registry.register("answer-validation", send)
+    waiting = asyncio.create_task(registry.request_answer(session, {"questions": [
+        {"question": "Required?"}, {"question": "Optional?", "required": False},
+    ]}))
+    async with asyncio.timeout(2):
+        while not sent:
+            await asyncio.sleep(0.01)
+    request_id = sent[0]["request_id"]
+
+    assert registry.resolve_answer(session, request_id, ["yes"]) is False
+    assert registry.resolve_answer(session, request_id, ["  ", "optional"]) is False
+    assert registry.resolve_answer(session, request_id, [[], "optional"]) is False
+    assert request_id in session.pending
+    assert registry.resolve_answer(session, request_id, ["yes", ""]) is True
+    assert (await asyncio.wait_for(waiting, 2)).value == ["yes", ""]
 
 
 @pytest.mark.asyncio
