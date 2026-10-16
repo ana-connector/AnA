@@ -6,8 +6,14 @@ import { cn } from "cn"
 
 import { Separator } from "@/components/ui/separator"
 
+/** Whether the items below are the rows of a list, which decides whether
+ *  they carry the matching role. A `role="list"` whose children are plain
+ *  links or divs is a broken list to a screen reader, not a generous one. */
+const InItemGroup = React.createContext(false)
+
 function ItemGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
+    <InItemGroup.Provider value={true}>
     <div
       role="list"
       data-slot="item-group"
@@ -17,6 +23,7 @@ function ItemGroup({ className, ...props }: React.ComponentProps<"div">) {
       )}
       {...props}
     />
+    </InItemGroup.Provider>
   )
 }
 
@@ -63,11 +70,13 @@ function Item({
   render,
   ...props
 }: useRender.ComponentProps<"div"> & VariantProps<typeof itemVariants>) {
+  const inGroup = React.useContext(InItemGroup)
   return useRender({
     defaultTagName: "div",
     props: mergeProps<"div">(
       {
         className: cn(itemVariants({ variant, size, className })),
+        ...(inGroup ? { role: "listitem" } : null),
       },
       props
     ),

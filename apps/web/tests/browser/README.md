@@ -1,24 +1,29 @@
 # 브라우저 회귀 검사
 
-`@shadcn/react`에서 가져오던 메시지 스크롤러와 질문 폼을 ANA가 직접 구현하면서,
-그 동작을 실제 브라우저에서 확인하기 위해 둔 검사다. 린트·타입 검사·빌드는 이
-동작을 대신하지 못한다. 대상 화면은 개발 모드에서만 열리는
-[`/ui-harness`](../../src/app/ui-harness/page.tsx)다.
+실제 Chromium에서 돌리는 검사다. 린트·타입 검사·빌드는 여기서 보는 동작을
+대신하지 못한다. 두 종류가 있다.
+
+- **부품 검사** — ANA가 직접 구현한 메시지 스크롤러와 질문 폼을 개발 전용
+  [`/ui-harness`](../../src/app/ui-harness/page.tsx) 화면에서 확인한다.
+- **전 구간 검사** — 진짜 서버에 붙어 대화 한 건을 처음부터 끝까지 돌린다.
+  일회용 DB, 자체 상태 디렉터리, PATH에 올린 대역 CLI
+  ([`fake_claude_cli.py`](../../../server/tests/fixtures/fake_claude_cli.py))를
+  쓰므로 계정도 요금도 건드리지 않는다.
 
 ## 실행
 
 ```bash
-# 1. 개발 서버 (프로덕션 빌드에서는 하네스가 비어 있으므로 dev 로 띄운다)
-cd apps/web && npm run dev -- -p 3210
-
-# 2. 다른 셸에서
 python -m playwright install chromium   # 처음 한 번
-python apps/web/tests/browser/test_scroller_and_questions.py
-python apps/web/tests/browser/test_skip_and_keyboard.py
+npm --prefix apps/web ci                # axe-core 포함
+
+# 스택을 올리고, 네 스크립트를 돌리고, 다시 내린다
+scripts/e2e-stack.sh check
 ```
 
-두 스크립트 모두 통과한 항목을 한 줄씩 찍고, 하나라도 실패하면 종료 코드 1을
-돌려준다. 포트를 바꿨다면 각 파일 상단의 `URL`을 함께 바꾼다.
+따로 돌리려면 `scripts/e2e-stack.sh up` 뒤에 원하는 스크립트를 실행하고
+`scripts/e2e-stack.sh down`으로 정리한다. 포트는 `ANA_E2E_WEB`,
+`ANA_E2E_API`로 바꿀 수 있다. 각 스크립트는 통과한 항목을 한 줄씩 찍고 하나라도
+실패하면 종료 코드 1을 돌려준다.
 
 ## 무엇을 확인하는가
 
@@ -43,3 +48,20 @@ python apps/web/tests/browser/test_skip_and_keyboard.py
 - Enter로 다음 질문, ArrowLeft로 이전 질문으로 가며, 질문이 바뀌면 포커스도
   따라간다. 숨은 질문은 포커스 순서에서 빠진다.
 - 스크롤 영역이 키보드로 스크롤되고, 그때 점프 버튼이 활성화된다.
+
+`test_chat_flow.py` (진짜 서버)
+
+- 워크스페이스를 만들면 그 대화가 열리고, 이 출처의 소켓이 수락된다.
+- 서버가 수신을 확인한 뒤에야 입력창이 비워진다.
+- 답이 도착하고, 새로고침해도 대화가 남아 있다.
+- 실행 중인 턴에 중지 버튼이 뜨고, 눌러서 끝낼 수 있으며, 그 다음 프롬프트도
+  정상으로 답을 받는다.
+- 360px 폭에서 가로 스크롤이 생기지 않고 턴이 그대로 돈다.
+- 전 구간에서 콘솔·페이지 오류 0건.
+
+`test_access_and_archive.py` (진짜 서버)
+
+- 허용된 출처에만 CORS 헤더가 붙고, 모르는 출처의 WebSocket은 1008로 거절된다.
+- 키보드만으로 턴을 보낼 수 있다.
+- axe 검사에서 serious·critical 위반 0건.
+- 보관하면 행·폴더·턴 수가 그대로 남고, 보관 해제하면 되돌아온다.

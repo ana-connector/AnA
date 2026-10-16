@@ -1,7 +1,9 @@
 import json
+import os
 from playwright.sync_api import sync_playwright
 
-URL = "http://127.0.0.1:3210/ui-harness"
+BASE = os.environ.get("ANA_E2E_WEB", "http://127.0.0.1:3211")
+URL = f"{BASE}/ui-harness"
 results = []
 
 def check(name, ok, detail=""):
@@ -78,10 +80,19 @@ with sync_playwright() as p:
     page2.evaluate("() => document.getElementById('viewport').focus()")
     before = page2.evaluate("() => document.getElementById('viewport').scrollTop")
     page2.keyboard.press("PageUp")
-    page2.wait_for_timeout(600)
+    page2.keyboard.press("PageUp")
+    page2.wait_for_timeout(400)
     after = page2.evaluate("() => document.getElementById('viewport').scrollTop")
     check("viewport scrolls from the keyboard", after < before, f"{before} -> {after}")
-    active = page2.locator('[data-slot="message-scroller-button"]').get_attribute("data-active")
+    # Polled rather than read once: the attribute is set from a scroll event,
+    # and a smooth scroll delivers several.
+    button = page2.locator('[data-slot="message-scroller-button"]')
+    active = "false"
+    for _ in range(20):
+        active = button.get_attribute("data-active")
+        if active == "true":
+            break
+        page2.wait_for_timeout(100)
     check("keyboard scroll reveals the jump button", active == "true", f"data-active={active}")
 
     check("no console or page errors", not errors, "; ".join(errors[:3]))

@@ -123,26 +123,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install playwright && python -m playwright install --with-deps chromium
-
-      # The harness renders nothing in a production build, on purpose, so
-      # these run against the development server.
-      - name: Start the development server
-        working-directory: apps/web
+          cache: pip
+          cache-dependency-path: apps/server/requirements.txt
+      - name: Install dependencies
         run: |
-          npm run dev -- -p 3210 > /tmp/next-dev.log 2>&1 &
-          for _ in $(seq 1 60); do
-            if curl -sf -o /dev/null http://127.0.0.1:3210/ui-harness; then exit 0; fi
-            sleep 2
-          done
-          echo "the development server never came up"; cat /tmp/next-dev.log; exit 1
+          pip install -r apps/server/requirements.txt playwright websockets
+          python -m playwright install --with-deps chromium
 
-      - run: python apps/web/tests/browser/test_scroller_and_questions.py
-      - run: python apps/web/tests/browser/test_skip_and_keyboard.py
+      # Brings up a throwaway database, the real server with a stand-in CLI
+      # on PATH, and the development server (the harness page renders nothing
+      # in a production build), runs every check, and tears it all down.
+      - name: Run the browser checks
+        env:
+          PYTHON: python
+        run: scripts/e2e-stack.sh check
 
-      - name: Development server log
+      - name: Stack logs
         if: failure()
-        run: cat /tmp/next-dev.log
+        run: tail -100 "${TMPDIR:-/tmp}"/ana-e2e/server.log "${TMPDIR:-/tmp}"/ana-e2e/web.log || true
 
   images:
     name: docker images

@@ -204,6 +204,41 @@ async def test_idle_cancel_discards_queued_prompts():
 
 
 @pytest.mark.asyncio
+async def test_a_prompt_sent_after_a_cancel_still_runs():
+    """A stop must not cost the conversation its relay.
+
+    Cancelling the turn in flight cancels a task the relay is awaiting, and
+    the relay has to tell that apart from being cancelled itself — otherwise
+    it ends, every later prompt is accepted and queued, and nothing ever
+    answers again."""
+    hold = asyncio.Event()
+    graph = FakeGraph([TEXT, RESULT], hold=hold)
+    runner = _runner(graph)
+    seen: list[dict] = []
+
+    async def sink(frame):
+        seen.append(frame)
+
+    runner.attach(sink)
+    await runner.submit("slow", "claude", False)
+    async with asyncio.timeout(2):
+        while graph.calls != ["slow"]:
+            await asyncio.sleep(0.01)
+    assert runner.cancel_current()
+    async with asyncio.timeout(2):
+        while not any(frame["type"] == "cancelled" for frame in seen):
+            await asyncio.sleep(0.01)
+
+    hold.set()
+    await runner.submit("after", "claude", False)
+    async with asyncio.timeout(5):
+        while not any(frame["type"] == "result" for frame in seen):
+            await asyncio.sleep(0.01)
+    assert graph.calls == ["slow", "after"]
+    await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_cancel_active_turn_keeps_queued_prompt():
     hold = asyncio.Event()
     graph = FakeGraph([RESULT], hold=hold)
