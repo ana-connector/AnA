@@ -818,6 +818,19 @@ def _codex_home_of(adapter) -> Optional[str]:
     return env.get("CODEX_HOME")
 
 
+async def _store_turn_or_log(pool, embedding_model, **fields) -> None:
+    """Stores the turn, and says so in the log when it cannot.
+
+    The row is what a reopened conversation is made of. When writing it
+    failed, the only sign was a transcript that came back empty — the reply
+    had already been sent, so nothing else complained."""
+    try:
+        await store_turn(pool, embedding_model, **fields)
+    except Exception:  # noqa: BLE001 - the answer is already with the user
+        logger.exception("failed to store turn on %s", fields.get("thread_id"))
+        raise
+
+
 async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     configurable = config["configurable"]
     gate_session = configurable.get("gate_session")
@@ -1485,12 +1498,20 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
         # what later turns retrieve and what anyone reading the history sees.
         final_response = mask_secrets(final_response, configurable.get("secrets") or [])
         failure_reason = mask_secrets(failure_reason, configurable.get("secrets") or [])
+        if caught_exc is None and not final_response:
+            # The conversation's memory is this row. A turn that ends with
+            # nothing to say is a real case — a cancel, mostly — but it used
+            # to leave no trace of why the history has a gap in it.
+            logger.warning(
+                "storing nothing for turn on %s: no answer text and no error",
+                thread_id,
+            )
         if caught_exc is not None or final_response:
             transcript.append(
                 session_id=session_id or "", prompt=state["prompt"], response=final_response,
                 cost_usd=cost_usd, error=failure_reason or None,
             )
-            await store_turn(
+            await _store_turn_or_log(
                 pool, embedding_model,
                 thread_id=thread_id, session_id=session_id,
                 prompt=state["prompt"], response=final_response, cost_usd=cost_usd,
