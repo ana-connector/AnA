@@ -1473,6 +1473,10 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
             for_error_text = ""
             response_text = ""  # never retain the failed CLI's partial answer
     finally:
+        logger.info(
+            "turn on %s ending: %d characters of answer, error=%s",
+            thread_id, len(response_text or ""), bool(for_error_text or caught_exc),
+        )
         if gate_session is not None:
             gate_session.lead_scope = None
         # A cancelled attempt never gets to copy its fields out of the loop,
