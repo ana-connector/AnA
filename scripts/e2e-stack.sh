@@ -7,7 +7,9 @@
 #   - a throwaway pgvector container, published on 127.0.0.1 only,
 #   - the real FastAPI server, with its own state directory and workspace
 #     root, and `apps/server/tests/fixtures/fake_claude_cli.py` on PATH as
-#     `claude` so turns run without an account or a quota,
+#     `claude` so turns run without an account or a quota. CLAUDE_AUTH_MODE
+#     is pinned to "pro": the default is "api", which builds thekey-path agent's
+#     environment from TAPIE_API_KEY and fails the turn where no key exists,
 #   - the real Next development server, built to reach that API port.
 #
 # Usage:
@@ -78,6 +80,7 @@ up() {
     ANA_STATE_DIR="$E2E_DIR/state" \
     ANA_WORKSPACE_ROOT="$E2E_DIR/workspaces" \
     ANA_SECRET_KEY="e2e" \
+    CLAUDE_AUTH_MODE="pro" \
     "$PYTHON" -u -m uvicorn apps.server.app.main:app \
       --app-dir "$ROOT" --host 127.0.0.1 --port "$E2E_API_PORT" \
     > "$E2E_DIR/server.log" 2>&1 &

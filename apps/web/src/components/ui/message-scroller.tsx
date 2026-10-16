@@ -77,6 +77,9 @@ function MessageScrollerProvider({
   const followingRef = React.useRef(autoScroll)
   const itemCountRef = React.useRef(0)
   const settleTimerRef = React.useRef<number | null>(null)
+  // True while a scroll this component started is still running, so the
+  // scroll events it produces are not read as the reader taking over.
+  const autoscrollingRef = React.useRef(false)
 
   const [pending, setPending] = React.useState(true)
   const [scrollable, setScrollable] = React.useState<Scrollable>({ start: false, end: false })
@@ -84,10 +87,12 @@ function MessageScrollerProvider({
   const markAutoscrolling = React.useCallback(() => {
     const viewport = viewportRef.current
     if (!viewport) return
+    autoscrollingRef.current = true
     viewport.setAttribute("data-autoscrolling", "")
     if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current)
     settleTimerRef.current = window.setTimeout(() => {
       settleTimerRef.current = null
+      autoscrollingRef.current = false
       viewportRef.current?.removeAttribute("data-autoscrolling")
     }, AUTOSCROLL_SETTLE_MS)
   }, [])
@@ -160,17 +165,24 @@ function MessageScrollerProvider({
   const onViewportScroll = React.useCallback(() => {
     const viewport = viewportRef.current
     if (!viewport) return
-    // A scroll that lands at the bottom resumes following, wherever it came
-    // from; one that leaves the bottom gives the position back to the reader.
+    // The position decides, not how it was reached. A scroll that lands at
+    // the bottom resumes following; one that leaves it hands the position
+    // back to the reader — unless this component is the one scrolling.
+    // Reading the wheel and the arrow keys instead meant any other way of
+    // moving (a focus jump, a trackpad fling the page handled, an
+    // anchor) left the view "following" while it sat halfway up.
     const distanceToEnd = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
     if (distanceToEnd <= EDGE_THRESHOLD) followingRef.current = autoScroll
+    else if (!autoscrollingRef.current) followingRef.current = false
     syncScrollable()
   }, [autoScroll, syncScrollable])
 
   const onUserScrollIntent = React.useCallback(() => {
-    // Wheel, touch or an arrow key: the reader is driving now. Whether they
-    // end up at the bottom is decided by the scroll event that follows.
+    // Wheel, touch or an arrow key: the reader is driving, so stop following
+    // before the scroll even lands. The scroll handler above would reach the
+    // same answer a frame later; this just avoids the frame.
     followingRef.current = false
+    autoscrollingRef.current = false
   }, [])
 
   const onContentChange = React.useCallback(() => {
