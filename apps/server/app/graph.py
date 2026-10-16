@@ -1525,10 +1525,12 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                 thread_id,
             )
         if caught_exc is not None or final_response:
-            transcript.append(
-                session_id=session_id or "", prompt=state["prompt"], response=final_response,
-                cost_usd=cost_usd, error=failure_reason or None,
-            )
+            # The row first, and the file after it. They used to be the other
+            # way round, so a transcript file that could not be written —
+            # a workspace directory that is gone, a full disk — took the
+            # database row with it, and the conversation lost the turn it had
+            # just answered. The row is what a reopened conversation is made
+            # of; the file is a copy beside the work.
             await _store_turn_or_log(
                 pool, embedding_model,
                 thread_id=thread_id, session_id=session_id,
@@ -1551,6 +1553,14 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
                     "blocks": configurable["timeline"].blocks if configurable.get("timeline") else [],
                 },
             )
+            try:
+                transcript.append(
+                    session_id=session_id or "", prompt=state["prompt"],
+                    response=final_response, cost_usd=cost_usd,
+                    error=failure_reason or None,
+                )
+            except Exception:  # noqa: BLE001 - the turn is already recorded
+                logger.exception("failed to append to %s", transcript.path)
 
         # Recorded here rather than after the try block: a client that
         # disconnects right after the result frame cancels this coroutine
