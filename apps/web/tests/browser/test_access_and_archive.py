@@ -87,8 +87,15 @@ with sync_playwright() as p:
     # --- archive and restore ----------------------------------------------
     page.goto(f"{BASE}/", wait_until="networkidle")
     page.wait_for_timeout(1200)
-    workspaces = json.loads(urllib.request.urlopen(f"{API}/workspaces", timeout=10).read())
-    mine = [w for w in workspaces["workspaces"] if w["name"] == f"키보드 {run_id}"]
+    # The turn is stored after its last frame reaches the browser, so the
+    # count can still be zero the moment the answer appears.
+    mine = []
+    for _ in range(20):
+        workspaces = json.loads(urllib.request.urlopen(f"{API}/workspaces", timeout=10).read())
+        mine = [w for w in workspaces["workspaces"] if w["name"] == f"키보드 {run_id}"]
+        if len(mine) == 1 and mine[0].get("turn_count", 0) >= 1:
+            break
+        time.sleep(1)
     check("the workspace was created with turns recorded",
           len(mine) == 1 and mine[0].get("turn_count", 0) >= 1, json.dumps(mine, ensure_ascii=False)[:160])
 

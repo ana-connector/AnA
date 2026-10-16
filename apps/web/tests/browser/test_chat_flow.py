@@ -69,10 +69,11 @@ with sync_playwright() as p:
 
     # --- the conversation survives a reload -------------------------------
     page.reload(wait_until="networkidle")
-    page.wait_for_timeout(2500)
-    body = page.inner_text("body")
-    check("the conversation is still there after a reload", "받은 말: 안녕" in body,
-          "found" if "받은 말: 안녕" in body else body[-200:])
+    with phase("the conversation is still there after a reload"):
+        # Waited for, not slept on: the transcript arrives over HTTP after the
+        # page does, and how long that takes is not ours to assume.
+        page.wait_for_selector("text=받은 말: 안녕", timeout=20000)
+        check("the conversation is still there after a reload", True, "found")
 
     # --- stopping a turn --------------------------------------------------
     page.fill("textarea", "SLOWMARK 기다려")
