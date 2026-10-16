@@ -1,6 +1,34 @@
 # v0.2.0-alpha.1 환경·테스트 기반 계획
 
-상태: **미구현**. 이 문서는 실행 계획이며 환경 복구, 테스트 통과, 제품 수정이 끝났다는 뜻이 아니다.
+상태: **구현됨**. 환경 복구와 기준선 확보는 끝났다. 남은 제품 실패는 [02-stability-PLAN.md](02-stability-PLAN.md)가 맡는다. 실제로 확인하고 고친 내용은 아래 "실행 기록"에 있다.
+
+## 실행 기록
+
+### 진단 (1단계)
+
+테스트는 **컨테이너 안**(`/.dockerenv` 존재, `ana_default` 네트워크의 `172.25.0.2`)에서 돌지만, Docker CLI는 마운트된 소켓으로 **호스트 데몬**(Ubuntu 26.04, Docker 29.7.1)에 붙는다. 그래서 `docker run -p <포트>:5432`로 공개한 포트는 호스트에 열리고, 테스트 프로세스의 `localhost`로는 닿지 않는다. 같은 `localhost`가 두 네트워크를 가리킨 것이 DB 접속 거부의 원인이었다.
+
+### 고친 것
+
+1. **`.venv` 복구**: `.venv/bin/python3`이 사라진 인터프리터를 가리키고 있었다. 설치된 패키지(site-packages 145개)는 그대로 두고 인터프리터 심링크와 `pyvenv.cfg`만 다시 연결했다. 요구사항 설치와 수집이 재현된다.
+   - 이 고장은 **두 번** 일어났다. 처음에는 `~/.local/share/mise/.../3.13.14`가 사라져 `/usr/local/bin/python3.13`(3.13.16)으로 옮겼고, 2026-10-16에는 `/usr/local/bin`이 통째로 사라져 다시 mise의 3.13.14로 옮겼다. 두 경로 모두 컨테이너 재생성에서 살아남지 않는다. 베이스 인터프리터가 사라지면 `.venv/bin/python`은 `No such file or directory`로 죽고 `timeout`조차 실행에 실패하므로, 테스트가 전부 exit=127이면 이것부터 의심한다. 복구는 `.venv/bin/python3` 심링크와 `.venv/pyvenv.cfg`의 `home`/`executable`/`version`을 현존하는 3.13.x로 바꾸면 끝난다.
+2. **`uvx` 복구**: `config/mcp.yaml`의 `git`과 `postgres` 서버는 `uvx`로 뜨고, [registry.py](../../../packages/mcp/registry.py)는 `shutil.which`로 없는 명령을 조용히 비활성화한다. `uvx`가 PATH에서 사라지자 `/mcp/servers?role=lead`의 active 목록에서 두 서버가 빠져 `test_capabilities_endpoint.py`가 실패했다. `.venv`에 `uv`를 설치하고 `~/.local/bin/uv(x)`로 링크해 복구했다. 제품 결함이 아니라 환경 결손이다.
+3. **DB 픽스처**([conftest.py](../../../apps/server/tests/conftest.py))
+   - 컨테이너 안에서 돌면 테스트 DB를 **같은 Docker 네트워크에 붙이고** 컨테이너 주소로 접속한다. 포트를 아예 공개하지 않으므로 호스트에 노출되는 것이 없다.
+   - 호스트에서 돌면 `127.0.0.1`에만 공개한다. 이전에는 바인딩 주소를 지정하지 않아 모든 인터페이스에 열렸다.
+   - 준비 확인을 컨테이너 안의 `pg_isready`에서 **테스트 프로세스가 실제 DSN으로 여는 접속**으로 바꿨다. 초기화 중 Postgres가 한 번 재시작하므로 이른 성공은 근거가 되지 않는다. 컨테이너가 죽으면 로그와 함께 즉시 실패한다.
+   - 접속 후 `current_database()`가 `ana_test`인지 검사한다. 아니면 마이그레이션 전에 중단한다.
+   - Docker 데몬에 닿을 수 없는 실행기를 위해 `ANA_TEST_DATABASE_URL` 우회를 뒀다. 이 경우에도 DB 이름 검사는 적용된다.
+4. **잔해 정리**: 환경이 깨져 있는 동안 남은 `ana-test-pg-*` 컨테이너 5개(하나는 2주째 실행 중이라 포트를 쥐고 있었다)를 제거했다.
+
+### 검증
+
+`PGHOSTADDR` 같은 환경 변수 없이 `test_memory_db.py` 3개가 통과하고, 실행 뒤 테스트 컨테이너가 남지 않는다. 웹 쪽은 Node 20으로 Dockerfile(`node:20-slim`)과 일치하며 타입 검사와 린트가 실행된다.
+후속 Plan02 검증도 같은 일회용 DB 픽스처로 파일별 순차 실행했다. 최신 결과와 단일 프로세스 OOM 제약은 [02-baseline-RESULTS.md](02-baseline-RESULTS.md)에 기록했다. 개발·운영 DB와 볼륨은 검사에 사용하지 않았다.
+
+---
+
+아래는 작업 전에 작성한 원래 계획이다.
 
 ## 목표와 범위
 
@@ -42,6 +70,12 @@
 - `python -m pytest --collect-only -q`로 수집 단계의 import 실패를 분리한다. 모든 명령은 선택한 가상 환경의 `python -m ...` 형식으로 실행해 시스템 `pytest`와 혼용하지 않는다.
 - 출력: 재현 명령, Python·pip 버전, 설치와 수집 결과. 설치 실패 시 패키지 이름과 오류를 기록하고 제품 테스트 실패로 분류하지 않는다.
 - 완료 기준: 깨끗한 작업 트리에서 요구사항 설치와 테스트 수집이 재현된다.
+
+### 2-1. 웹 검증 환경 재현
+
+- `apps/web/package.json`, lockfile, Dockerfile의 Node 버전을 대조하고 같은 버전에서 `npm ci`를 실행한다.
+- 설치·타입 검사 실행 가능 여부를 기록한다. 린트의 제품 오류 수정은 02, CI 구성은 05가 담당한다.
+- 출력: Node/npm 버전, 의존성 설치 결과, 웹 검사 실행 명령. 버전·다운로드 문제를 제품 실패와 구분한다.
 
 ### 3. 일회용 PostgreSQL 픽스처 안정화
 

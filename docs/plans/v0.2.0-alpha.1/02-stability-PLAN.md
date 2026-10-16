@@ -1,6 +1,35 @@
 # v0.2.0-alpha.1 단계 2 — 핵심 대화 흐름 안정화 계획
 
-상태: **미구현(unimplemented)**. 이 문서는 계획이며, 아래 검증의 통과나 버그 수정을 주장하지 않는다.
+상태: **자동 검증 범위에서 구현 완료**. 2026-10-16 기준 서버 테스트 61개 파일 892개가 모두 통과하고, 웹 `eslint`·`tsc --noEmit`·`npm run build`가 모두 통과한다. 실제 브라우저·IME 및 실제 Kimi 계정 검사는 이 환경에서 할 수 없어 완료 판정에 포함하지 않는다. 아래의 원래 계획과 가설은 이 실행 기록으로 갱신한다.
+
+## 실행 기록 (2026-10-12, `/home/hello/ana` main 작업 트리)
+
+### 기준선과 환경 (1·2단계)
+
+[02-baseline-RESULTS.md](02-baseline-RESULTS.md)의 최초 실행은 61개 파일에서 수집 872 / 통과 860 / 실패 12 / 오류 0이었다. 2026-10-16 최종 재실행은 61개 파일 892 통과 / 0 실패다. 실행 컨테이너와 호스트 Docker 데몬의 네트워크 차이를 반영한 일회용 `ana_test` DB 픽스처, 상속된 `ANA_*` 격리, 게이트 토큰 전달·해제, 실패 원인 기록, 현행 계약에 맞춘 테스트 수정이 반영됐다. 첫 수정 후 전체 파일별 실행은 871 통과 / 1 실패였고, 그 1건은 토큰 해제 수정 후 같은 파일을 3회 재실행해 통과했다. 이전 전체 결과를 현재 결과처럼 세지 않는다.
+
+### Kimi·전환과 서버 대화 흐름 (3~5단계)
+
+- 출력·오류 없이 끝나는 adapter 스트림은 실패로 처리해 다음 rung의 페일오버가 가능해졌다. 계획 단계의 모든 rung이 실패해도 직접 답변 단계로 이어진다. 실패한 턴은 이미 나온 부분 답변 뒤에 오류 안내를 붙이고, 원인을 트랜스크립트와 turn 메타데이터에 보존한다.
+- 명시적 중지는 해당 턴의 미결 승인·질문을 안전한 기본값으로 해결하고 중복된 늦은 응답을 거절한다. 실행 중인 턴이 없으면 대기열의 prompt를 버리고 중지 응답을 돌려준다. runner 종료 도중 취소가 삼켜져 정리가 멈추는 경로도 수정했다.
+- 완료·취소 시 재연결 버퍼는 끝난 턴의 프레임을 비우되 아직 실행하지 않은 대기 prompt는 남긴다. 브라우저 질문 응답의 개수와 필수 값은 서버에서 검사한다.
+- 예상 밖 턴 예외도 해당 턴의 `error` 프레임으로 끝내고 릴레이는 다음 대기 prompt를 처리한다. 첫 턴이 실패한 뒤 두 번째 턴이 완료되는 회귀 검사를 추가했다.
+- `test_kimi_adapter.py`, `test_failover.py`, `test_cancel.py`, `test_gate_registry.py` 및 수정된 graph·runner·gate·WebSocket 테스트를 파일별 독립 프로세스로 재실행해 통과했다. 실제 Kimi 계정의 거절 문구와 CLI 버전별 동작은 검증하지 않았다.
+
+### 웹 응답·보관·긴 대화·린트 (5~7단계)
+
+- 승인·질문 카드는 `WebSocket.send()` 직후 사라지지 않고 서버의 `request_resolved` 프레임을 기다린다. 끊긴 연결에서는 버튼을 막고, 재연결되면 같은 답을 다시 보낼 수 있다. 전송 실패 때 카드와 입력을 유지한다.
+- 이미 열린 작업공간을 보관하면 사이드바 보관함을 펼쳐 현재 대화와 복원 경로를 보이게 한다. 서버는 기존 `archived` PATCH로 ID·폴더·기록을 유지한다. 웹 보관·복원 조작은 기존 설정 화면에 있다.
+- Composer는 한국어 IME의 마지막 조합 Enter에서 `keyCode=229`를 전송으로 취급하지 않는다. 초안은 composer 로컬 상태에 있고 스크롤은 기존 `MessageScroller`가 맡는다.
+- prompt에 브라우저가 만든 `client_id`를 싣고 서버가 `prompt_ack`로 수락 여부를 돌려준다. 입력창은 ack를 받은 뒤에만 비워지고, ack 전에 연결이 끊기면 초안이 남아 같은 `client_id`로 재전송된다. 서버는 이미 받은 `client_id`를 다시 큐에 넣지 않으므로 재전송이 턴을 두 번 돌리지 않는다.
+- 턴 하나가 예기치 않게 실패해도 릴레이는 죽지 않는다. 그 턴만 `error` 프레임으로 끝나고 소켓은 열린 채 다음 prompt를 받는다. `test_websocket.py`의 계약도 1011 종료 기대에서 "다음 prompt를 계속 받는다"로 바뀌었다.
+- 선행 `set-state-in-effect` 13건은 `6a01d46`에서 원인별로 수정했다. 비동기 로드 상태 소유, `useSyncExternalStore`, 작업공간 ID로 구분한 편집 폼을 사용하며 규칙 비활성화나 일반 훅 은폐는 없다. 이번 통합 변경 후 Node 20.20.2에서 `npm run lint`, `npx next typegen && npx tsc --noEmit`, `npm run build`가 모두 통과했다.
+
+### 아직 검증하거나 고쳐야 할 부분
+
+- 이 환경에서 브라우저 실행 파일과 자동화 도구를 찾지 못했다. 실제 화면에서 Kimi 전환, 두 번 전송·중지, 승인·질문, 보관·복원 새로고침, 한국어 IME, 수백 메시지 스크롤·입력 반응을 확인하지 못했다. 린트·타입 검사·빌드가 이 검사를 대신하지 않는다.
+- 답변 단계의 무출력 타임아웃과 실제 CLI의 한도 메시지 분류는 미확인이다.
+- 웹은 자동 라우팅을 보내므로 명시적 Kimi 선택의 쿨다운 동작은 웹 UI에서 직접 시험할 수 없다. `ANA_BACKGROUND_TURNS=off`의 동일 대화 다중 탭 소유권도 별도 검증이 필요하다.
 
 ## 목표와 경계
 
@@ -22,7 +51,7 @@
 | 긴 대화 | `apps/web/src/components/composer.tsx`가 초안을 로컬 상태로 유지하고 입력 높이를 3줄까지 늘린다. `chat-page.tsx`는 스크롤 영역과 입력창을 분리한다. `ui/message-scroller.tsx`는 메시지 높이 추정으로 인한 이동 오차를 피하려는 코드가 있다. | 긴 기록·스트리밍에서 입력 지연, 스크롤 점프, 하단 고정·수동 탐색, 한국어 조합 입력을 실제 화면으로 확인한다. |
 | effect 린트 | `workspace-settings.tsx`는 props에서 복제한 편집 상태를 effect로 재설정하고, `hooks/use-mobile.ts`는 effect 안에서 viewport 값을 즉시 설정한다. `useChatSocket.ts`에는 기록 로드 시작·종료 상태가 있다. | 선행 보고의 13건과 실제 린트 위치를 대조하고 각 원인을 분류한다. 지금 이 문서 작업에서는 린트를 실행하지 않았다. |
 
-위 표의 코드는 직접 읽은 사실이다. 보관 UI 부재, 응답 실패 후 카드 소실, 긴 대화의 성능 저하는 **검증할 가설**이며 아직 재현된 버그로 기록하지 않는다. 선행 작업의 “13건”은 보고값이고 현재 실행 결과는 아니다.
+위 표는 작업 전 조사다. 보관 UI 부재 가설은 실제 설정 화면의 보관·복원 버튼을 확인해 기각했고, 승인·질문 카드 소실은 수정했다. 긴 대화 성능과 실제 IME 입력은 브라우저 실측 전이므로 검증하지 못했다. 선행 린트 13건은 원인별 수정 후 현재 0건이다.
 
 ### 실패를 판정하는 기록 방식
 
@@ -60,14 +89,19 @@
 
 ## 실행 명령과 합격 기준
 
-환경 준비 후 저장소 루트에서 관련 서버 테스트를 좁게 실행한다. fixture는 `apps/server/tests/conftest.py`에서 임시 `pgvector/pgvector:pg16` 컨테이너와 localhost 공개 포트를 쓰므로, 컨테이너 내부 준비 완료만으로 DB 연결 성공을 가정하지 않는다.
+환경 준비 후 저장소 루트에서 관련 서버 테스트를 파일마다 독립 프로세스로 실행한다. fixture는 실행 컨테이너에서 같은 Docker 네트워크의 임시 `pgvector/pgvector:pg16`에 접속하고, 호스트 실행기에서만 loopback 포트를 공개한다. 실제 DSN 접속과 `ana_test` 이름을 마이그레이션 전에 확인한다.
 
 ```bash
-python -m pytest -q apps/server/tests/test_kimi_adapter.py apps/server/tests/test_failover.py
-python -m pytest -q apps/server/tests/test_cancel.py apps/server/tests/test_websocket.py apps/server/tests/test_runners.py
-python -m pytest -q apps/server/tests/test_gate_registry.py apps/server/tests/test_ask_user.py apps/server/tests/test_workspaces.py
+.venv/bin/python -m pytest -q apps/server/tests/test_kimi_adapter.py
+.venv/bin/python -m pytest -q apps/server/tests/test_failover.py
+.venv/bin/python -m pytest -q apps/server/tests/test_cancel.py
+.venv/bin/python -m pytest -q apps/server/tests/test_websocket.py
+.venv/bin/python -m pytest -q apps/server/tests/test_runners.py
+.venv/bin/python -m pytest -q apps/server/tests/test_gate_registry.py
+.venv/bin/python -m pytest -q apps/server/tests/test_ask_user.py
+.venv/bin/python -m pytest -q apps/server/tests/test_workspaces.py
 (cd apps/web && npm run lint)
-(cd apps/web && npx tsc --noEmit)
+(cd apps/web && npx next typegen && npx tsc --noEmit && npm run build)
 ```
 
 수동 검증에는 임시 작업공간 하나와 긴 기록이 있는 작업공간 하나를 쓴다. 각 시나리오의 서버 프레임과 화면 상태를 함께 남긴다.
@@ -102,4 +136,4 @@ python -m pytest -q apps/server/tests/test_gate_registry.py apps/server/tests/te
 - `message-scroller`는 현재 `@shadcn/react`에 의존한다. 04에서 대체할 때 입력·스크롤 동작을 같은 시나리오로 다시 검사한다.
 - 사용자에게만 확인할 결정: 현재 없음. 기존 로드맵과 구현이 보관 데이터 유지, 명시적 중지, 데몬 호스팅 단일 UI의 기준을 이미 정한다. 그 기준을 바꿔야 하는 요구가 실제로 나오면 그때 선택지를 제시한다.
 
-**바로 시작할 첫 작업:** 01의 환경 준비 결과를 받아 관련 서버 테스트와 `npm run lint`의 원문 출력을 저장하고, 실패마다 재현 가능한 제품 결함·오래된 기대값·환경 문제 표를 만든다.
+**현재 남은 작업과 검증:** 서버 수신 확인 및 재전송 규칙, 답변 무출력 타임아웃, 실제 브라우저·IME와 계정이 필요한 수동 시나리오. 실패 기준선과 자동 검증 결과는 이 문서와 [02-baseline-RESULTS.md](02-baseline-RESULTS.md)에 기록한다.

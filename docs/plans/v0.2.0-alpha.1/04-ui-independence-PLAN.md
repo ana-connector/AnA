@@ -8,7 +8,7 @@
 - 현재 `@shadcn/react`에 연결된 메시지 스크롤과 질문 폼을 동일한 사용자 동작을 갖는 자체 구현으로 바꾼다. 기존 컴포넌트의 호출 규약은 가능하면 유지해 화면 변경을 작게 나눈다.
 - 모든 소비처를 옮긴 뒤에만 shadcn 전용 패키지, CSS import, 생성 설정을 제거한다. 접근성 기반 `@base-ui/react`는 독립 UI의 구현 부품으로 남겨도 된다.
 - 이 단계는 데몬이 호스팅할 **하나의 웹 UI**를 정리한다. Windows·Debian·Android별 화면 복제, 네이티브 셸 구현, 실제 단일 출처 전환은 범위 밖이다. 후자는 로드맵상 v0.3 대상이다.
-- 서버 API·WebSocket 주소 분리와 연결 안정성은 [02-stability-PLAN.md](02-stability-PLAN.md)의 계약을 따른다. 이 문서에서 서버 프로토콜이나 DB를 바꾸지 않는다.
+- 서버 API·WebSocket 주소 계산은 [05-release-PLAN.md](05-release-PLAN.md), 기존 연결 동작의 안정화는 [02-stability-PLAN.md](02-stability-PLAN.md)가 담당한다. 이 문서에서 서버 프로토콜이나 DB를 바꾸지 않는다.
 
 ## 현재 코드에서 확인한 사실
 
