@@ -2,7 +2,6 @@
 
 import { useMemo, useRef, useState } from "react";
 import { CopyIcon, NetworkIcon } from "lucide-react";
-import { useRouter } from "next/navigation";
 import {
   useChatSocket,
   type MessageBlock,
@@ -18,12 +17,12 @@ import { UsageBar } from "@/components/usage-bar";
 import { PlanGraph } from "@/components/plan-graph";
 import { Reasoning } from "@/components/reasoning";
 import { SessionSidebar } from "@/components/session-sidebar";
-import { WorkspaceSearch } from "@/components/workspace-search";
+import { TabBar } from "@/components/tab-bar";
+import { useTabTitle } from "@/components/tabs";
 import { TurnStatusLine } from "@/components/turn-status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clockTime, duration, shortPath, timeExact } from "@/lib/format";
@@ -44,11 +43,7 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 const TASK_STATUS_LABEL: Record<SubagentTask["status"], string> = {
   running: "실행 중",
@@ -127,7 +122,6 @@ function BlockList({
 }
 
 export default function ChatPage({ sessionId }: { sessionId: string }) {
-  const router = useRouter();
   const {
     messages,
     connected,
@@ -139,7 +133,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     loadingHistory,
     workspace,
     workspaceName,
-    threadId,
     approvals,
     questions,
     status,
@@ -160,6 +153,10 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   // context that makes a worker's output mean anything, so leaving the
   // transcript on screen is the point.
   const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
+
+  // The tab is where this conversation is named now, so it is named as soon
+  // as the socket knows what the workspace is called.
+  useTabTitle(workspaceName ?? "새 대화");
 
   // Finished turns are what create and rename sessions, so the sidebar list is
   // refetched when the count of completed turns changes rather than on a timer.
@@ -186,11 +183,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     const last = messages[messages.length - 1];
     return last?.role === "agent" && last.text.trim().length > 0;
   }, [messages, streaming]);
-
-  const openWorkspace = (id: string | null) => {
-    setOpenTask(null);
-    router.push(id ? `/${encodeURIComponent(id)}` : "/");
-  };
 
   const copyResponse = async (response: string) => {
     try {
@@ -225,73 +217,56 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     // h-svh + overflow-hidden bounds the transcript so it scrolls while the
     // composer and status bar remain visible at the bottom of the window.
     <SidebarProvider className="h-svh overflow-hidden">
-      <SessionSidebar
-        workspaceId={threadId}
-        onOpenWorkspace={openWorkspace}
-        reloadKey={completedTurns}
-      />
+      <SessionSidebar reloadKey={completedTurns} />
 
       {/* No h-full: the inset's own m-2 is added *outside* its box, so a
           child told to be the full height of the row pushes its bottom margin
           and its rounded corners past the clipped edge of the window. As an
           ordinary flex child it takes the room the margins leave. */}
       <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {/* One line at every width: which workspace you are in, where it is on
-            disk, whether the socket is up, and the two controls that change the
-            next turn. Reading one sub-agent's transcript used to be a Select
-            here — a picker in the title bar, listing tasks by turn number,
-            that swapped the whole conversation out for one worker's output.
-            That now happens where the plan is drawn. */}
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="h-4" />
-          <div className="flex min-w-0 flex-1 items-baseline gap-2">
-            <span className="min-w-0 truncate text-sm font-medium">
-              {workspaceName ?? "새 대화"}
-            </span>
-            {workspace && (
-              <span
-                className="hidden max-w-[20%] min-w-0 shrink truncate font-mono text-[11px] text-muted-foreground lg:inline"
-                title={workspace}
-              >
-                {shortPath(workspace)}
-              </span>
-            )}
-          </div>
+        {/* The tab says which workspace this is; what sits beside it is what
+            you cannot read off a tab — whether the socket is up, and which
+            CLI the ladder picked for the next turn. The ⌘K workspace search
+            that used to sit here is gone: the tabs are the switcher now. */}
+        <TabBar
+          actions={
+            <>
+              {/* Silence while the socket is up: a badge that is always green
+                  says nothing. Only the broken state is worth a word, and it
+                  is a word rather than a badge -- the composer is disabled
+                  anyway. */}
+              {!connected && (
+                <span className="shrink-0 text-xs text-destructive">연결 끊김</span>
+              )}
 
-          {/* Silence while the socket is up: a badge that is always green
-              says nothing. Only the broken state is worth a word, and it is a
-              word rather than a badge -- the composer is disabled anyway. */}
-          {!connected && (
-            <span className="shrink-0 text-xs text-destructive">연결 끊김</span>
-          )}
+              {workspace && (
+                <span
+                  className="hidden max-w-48 min-w-0 shrink truncate font-mono text-[11px] text-muted-foreground lg:inline"
+                  title={workspace}
+                >
+                  {shortPath(workspace)}
+                </span>
+              )}
 
-          {route && (
-            // Which CLI the ladder picked, and why. Hidden below md: at that
-            // width the controls matter more than the explanation.
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Badge variant="outline" className="ml-1 hidden max-w-56 md:inline-flex">
-                    <span className="truncate">
-                      {models[route.agent] ?? AGENT_LABELS[route.agent as Agent] ?? route.agent}
-                    </span>
-                  </Badge>
-                }
-              />
-              <TooltipContent>자동 선택: {route.reason}</TooltipContent>
-            </Tooltip>
-          )}
-
-          <div className="flex shrink-0 items-center gap-1">
-            {/* Where the theme toggle used to be. That is a setting you touch
-                twice a year; this is the thing you reach for all day. */}
-            <WorkspaceSearch
-              onOpenWorkspace={openWorkspace}
-              reloadKey={completedTurns}
-            />
-          </div>
-        </header>
+              {route && (
+                // Which CLI the ladder picked, and why. Hidden below md: at
+                // that width the tabs matter more than the explanation.
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Badge variant="outline" className="hidden max-w-56 md:inline-flex">
+                        <span className="truncate">
+                          {models[route.agent] ?? AGENT_LABELS[route.agent as Agent] ?? route.agent}
+                        </span>
+                      </Badge>
+                    }
+                  />
+                  <TooltipContent>자동 선택: {route.reason}</TooltipContent>
+                </Tooltip>
+              )}
+            </>
+          }
+        />
 
         {/* A phone shows one screen at a time, and the one thing that cannot
             wait is the request blocking the turn. Above the transcript, not

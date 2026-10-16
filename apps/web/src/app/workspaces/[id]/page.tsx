@@ -80,7 +80,9 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
 
   return (
     <PageShell
-      title={workspace.name}
+      // The chat for this workspace is a tab too, so this one says which of
+      // the two it is rather than repeating the name on its own.
+      title={`${workspace.name} 설정`}
       description={
         <>
           이 워크스페이스의 대화와 폴더 설정입니다. 지금까지 {workspace.turn_count}턴을

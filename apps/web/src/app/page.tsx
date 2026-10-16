@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createWorkspace, fetchWorkspaces, type WorkspaceSummary } from "@/lib/api";
 import { Logo } from "@/components/logo";
 import { PageShell } from "@/components/page-shell";
+import { useTabs } from "@/components/tabs";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,11 @@ import { ShortcutKey } from "@/components/shortcut-key";
  *  No cards: two short lists on the page's own background, because a panel
  *  around each one only draws a box that says nothing. */
 export default function StartPage() {
-  const router = useRouter();
+  // Opening something from this page hands this tab over to it, the way a
+  // browser's new-tab page does: the start page is where a tab waits to be
+  // given a job, not a page you keep open beside the job. Opening a
+  // workspace from the sidebar instead adds a tab and leaves this one alone.
+  const { openHere } = useTabs();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -48,10 +52,10 @@ export default function StartPage() {
     };
   }, [refresh]);
 
-  const open = useCallback((id: string) => {
+  const open = useCallback((id: string, name?: string) => {
     window.localStorage.setItem("ana_thread_id", id);
-    router.push(`/${encodeURIComponent(id)}`);
-  }, [router]);
+    openHere(`/${encodeURIComponent(id)}`, name);
+  }, [openHere]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -59,7 +63,8 @@ export default function StartPage() {
     try {
       // Straight into the new conversation: creating a workspace is something
       // you do because you are about to work in it.
-      open((await createWorkspace(name, path)).id);
+      const created = await createWorkspace(name, path);
+      open(created.id, created.name);
     } catch (e) {
       setError(String(e));
     }
@@ -81,7 +86,7 @@ export default function StartPage() {
       const index = Number(event.code.replace(/^Digit|^Numpad/, "")) - 1;
       if (!Number.isInteger(index) || index < 0 || !recent[index]) return;
       event.preventDefault();
-      open(recent[index].id);
+      open(recent[index].id, recent[index].name);
     };
     window.addEventListener("keydown", onRecentShortcut);
     return () => window.removeEventListener("keydown", onRecentShortcut);
@@ -124,7 +129,20 @@ export default function StartPage() {
                   // sm is 10px of vertical padding, which is a row and a half
                   // of air around one line of text.
                   className="cursor-pointer px-2 py-1 hover:bg-muted"
-                  render={<Link href={`/${encodeURIComponent(item.id)}`} aria-keyshortcuts={`Alt+${index + 1}`} />}
+                  // Still a link, so the browser's own middle-click and
+                  // open-in-new-window keep working; a plain click is handled
+                  // here so the tab is replaced rather than added.
+                  render={
+                    <Link
+                      href={`/${encodeURIComponent(item.id)}`}
+                      aria-keyshortcuts={`Alt+${index + 1}`}
+                      onClick={(event) => {
+                        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+                        event.preventDefault();
+                        open(item.id, item.name);
+                      }}
+                    />
+                  }
                 >
                   <ItemContent className="min-w-0">
                     <ItemTitle className="w-full min-w-0 flex-nowrap">

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
+import { TabsProvider } from "@/components/tabs";
 import { ThemeProvider } from "@/components/theme";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
@@ -35,7 +36,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="flex min-h-full flex-col">
         <ThemeProvider>
           <TooltipProvider>
-            {children}
+            {/* Above the router's own output: the open tabs outlive any one
+                page, so the list that holds them cannot live inside one. */}
+            <TabsProvider>{children}</TabsProvider>
             {/* One place for "it saved" / "it failed" across every page: the
                 console used to answer a save with a line of text that
                 appeared somewhere near the form, or with nothing at all. */}

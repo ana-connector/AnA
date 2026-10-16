@@ -1,29 +1,20 @@
 "use client";
 
 import { type ReactNode } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { SessionSidebar } from "@/components/session-sidebar";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import { Separator } from "@/components/ui/separator";
+import { TabBar } from "@/components/tab-bar";
+import { useTabTitle } from "@/components/tabs";
 import { cn } from "@/lib/utils";
-import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
-/** The frame every non-chat page sits in: project navigation on the left, a
- *  header that says where you are, and one content column.
+/** The frame every non-chat page sits in: project navigation on the left, the
+ *  open tabs across the top, and one content column.
  *
  *  Each page used to build its own header — a back-to-chat button, a bold
  *  span, and its own container width — so the three utility pages looked like
- *  three different apps and the shell's own header row sat empty above them.
- *  Now the shell owns the header (breadcrumb, description, actions) and the
- *  page owns only its content. */
+ *  three different apps. Then the shell owned a breadcrumb that said the same
+ *  thing the sidebar highlight already said. Now the page says only what it is
+ *  called, the tab carries that name, and the page owns only its content. */
 export function PageShell({
   title,
   description,
@@ -39,42 +30,17 @@ export function PageShell({
   center?: boolean;
   children: ReactNode;
 }) {
-  const router = useRouter();
-  const openWorkspace = (id: string | null) => {
-    if (id) window.localStorage.setItem("ana_thread_id", id);
-    else window.localStorage.removeItem("ana_thread_id");
-    router.push(id ? `/${encodeURIComponent(id)}` : "/");
-  };
+  useTabTitle(title);
 
   return (
-    // Bounded rather than min-height: the inset panel is what scrolls, not the
-    // window. A document-height panel would carry its rounded corners and its
-    // bottom margin off the bottom of the screen, which is why these pages
-    // stopped looking inset as soon as they were long enough to scroll.
+    // Bounded rather than min-height: the content panel is what scrolls, not
+    // the window.
     <SidebarProvider className="h-svh overflow-hidden">
-      {/* No workspace is active here: settings, the tool log and the secrets
-          belong to the installation, not to whichever conversation you were
-          last in. Highlighting one said you were still inside it. */}
-      <SessionSidebar workspaceId={null} onOpenWorkspace={openWorkspace} reloadKey={0} />
+      <SessionSidebar reloadKey={0} />
       <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Outside the scroll area rather than sticky inside it: "where am I"
-            stays put, and the panel's top corners stay clean. */}
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="mr-1 h-4" />
-          <Breadcrumb>
-            <BreadcrumbList>
-              <BreadcrumbItem className="hidden sm:block">
-                <BreadcrumbLink render={<Link href="/" />}>AnA</BreadcrumbLink>
-              </BreadcrumbItem>
-              <BreadcrumbSeparator className="hidden sm:block" />
-              <BreadcrumbItem>
-                <BreadcrumbPage>{title}</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb>
-          {actions ? <div className="ml-auto flex items-center gap-1">{actions}</div> : null}
-        </header>
+        {/* Outside the scroll area rather than sticky inside it: which pages
+            are open does not move while you read one of them. */}
+        <TabBar actions={actions} />
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div

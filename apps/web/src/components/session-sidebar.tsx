@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   ArchiveIcon,
@@ -31,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Logo } from "@/components/logo";
+import { useTabs } from "@/components/tabs";
 import { WorkspaceEditor } from "@/components/workspace-editor";
 import { shortPath } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -66,18 +66,28 @@ const FILTER_THRESHOLD = 7;
  *  id *is* the thread id, so its CLI sessions, history and directory all line
  *  up behind the same name. */
 export function SessionSidebar({
-  workspaceId,
-  onOpenWorkspace,
   reloadKey,
 }: {
-  workspaceId: string | null;
-  onOpenWorkspace: (id: string | null) => void;
   /** Changes when a turn finishes, so activity shows up without a refresh. */
   reloadKey: number;
 }) {
-  // Which utility page is open, so the footer nav can mark it: a link that
-  // never looks selected leaves the user guessing where they are.
-  const pathname = usePathname();
+  // Every row here marks itself against the tab you are reading, so "where am
+  // I" is answered the same way in both places. Opening a workspace from the
+  // sidebar opens a tab beside the others rather than taking over the one you
+  // are in — the sidebar is how you keep two things open at once.
+  const { activeHref, open: openTab, close: closeTab } = useTabs();
+  const href = (id: string) => `/${encodeURIComponent(id)}`;
+  const workspaceId = (() => {
+    const match = /^\/([^/]+)$/.exec(activeHref);
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  })();
+  const onOpenWorkspace = (id: string | null, title?: string) =>
+    id ? openTab(href(id), title) : openTab("/", "시작");
   const { resolvedTheme, setTheme } = useTheme();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   // The id of the workspace whose folder is ANA's own source tree, when the
@@ -159,7 +169,7 @@ export function SessionSidebar({
       setAdding(false);
       setError(null);
       await refresh();
-      onOpenWorkspace(created.id);
+      onOpenWorkspace(created.id, created.name);
     } catch (e) {
       setError(String(e));
     }
@@ -177,16 +187,23 @@ export function SessionSidebar({
     // Prefer somewhere you are actually working: landing in the archive after
     // a delete says the wrong thing about where you are.
     const next = remaining.find((item) => !item.archived) ?? remaining[0];
-    onOpenWorkspace(next?.id ?? null);
+    // The tab goes with the workspace: leaving it open would offer a way back
+    // into something that no longer exists.
+    closeTab(href(deletedId));
+    onOpenWorkspace(next?.id ?? null, next?.name);
   };
 
   /** One row, shared by the live list and the archive: the same workspace with
-   *  the same controls, listed under a different heading. */
-  const row = (item: WorkspaceSummary) => (
+   *  the same controls, listed under a different heading.
+   *
+   *  `selectable` is false in the archive. A highlight there would say you are
+   *  working in a workspace you put away; the open tab says where you are, and
+   *  the archive is a place you look things up, not a place you are. */
+  const row = (item: WorkspaceSummary, selectable = true) => (
     <SidebarMenuItem key={item.id}>
       <SidebarMenuButton
-        isActive={item.id === workspaceId}
-        onClick={() => onOpenWorkspace(item.id)}
+        isActive={selectable && href(item.id) === activeHref}
+        onClick={() => onOpenWorkspace(item.id, item.name)}
         className="h-auto py-1.5"
         title={`${item.id}\n${item.path}`}
       >
@@ -210,17 +227,18 @@ export function SessionSidebar({
 
   return (
     <>
-    {/* variant="inset": the sidebar sits on the page's own background and the
-        content floats beside it as a rounded panel. SidebarInset styles itself
-        off this, so without it the inset element is an ordinary <main>. */}
-    <Sidebar variant="inset">
+    {/* The plain variant: one border between the sidebar and the content and
+        nothing else. The inset variant floated the content as a rounded panel
+        on a second background, which cost a margin on all four sides and drew
+        two edges where the eye only needs one. */}
+    <Sidebar>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
             {/* The product mark opens the start page. */}
             <SidebarMenuButton
               size="lg"
-              isActive={pathname === "/"}
+              isActive={activeHref === "/"}
               render={<Link href="/" />}
             >
               <div className="flex aspect-square size-10 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
@@ -245,7 +263,7 @@ export function SessionSidebar({
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  isActive={pathname === "/automation"}
+                  isActive={activeHref === "/automation"}
                   render={<Link href="/automation" />}
                 >
                   <ClockIcon strokeWidth={1.5} />
@@ -303,7 +321,7 @@ export function SessionSidebar({
                 모두 보관함에 있음
               </p>
             ) : (
-              <SidebarMenu className="gap-1">{active.map(row)}</SidebarMenu>
+              <SidebarMenu className="gap-1">{active.map((item) => row(item))}</SidebarMenu>
             )}
 
           </SidebarGroupContent>
@@ -334,7 +352,7 @@ export function SessionSidebar({
               </button>
 
               {archiveExpanded && (
-                <SidebarMenu className="gap-1 pt-1">{archived.map(row)}</SidebarMenu>
+                <SidebarMenu className="gap-1 pt-1">{archived.map((item) => row(item, false))}</SidebarMenu>
               )}
             </SidebarGroupContent>
           </SidebarGroup>
@@ -344,19 +362,19 @@ export function SessionSidebar({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={pathname === "/settings"} render={<Link href="/settings" />}>
+            <SidebarMenuButton isActive={activeHref === "/settings"} render={<Link href="/settings" />}>
               <Settings2Icon strokeWidth={1.5} />
               설정
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={pathname === "/tools"} render={<Link href="/tools" />}>
+            <SidebarMenuButton isActive={activeHref === "/tools"} render={<Link href="/tools" />}>
               <TerminalIcon strokeWidth={1.5} />
               도구 로그
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton isActive={pathname === "/secrets"} render={<Link href="/secrets" />}>
+            <SidebarMenuButton isActive={activeHref === "/secrets"} render={<Link href="/secrets" />}>
               <LockIcon strokeWidth={1.5} />
               시크릿
             </SidebarMenuButton>
