@@ -826,9 +826,23 @@ async def _store_turn_or_log(pool, embedding_model, **fields) -> None:
     had already been sent, so nothing else complained."""
     try:
         await store_turn(pool, embedding_model, **fields)
+    except asyncio.CancelledError:
+        # A cancelled task raises at the first await inside its own finally,
+        # so this is where a turn is lost when something stops it between
+        # answering and being written down.
+        logger.warning(
+            "turn on %s was cancelled before its row was written",
+            fields.get("thread_id"),
+        )
+        raise
     except Exception:  # noqa: BLE001 - the answer is already with the user
         logger.exception("failed to store turn on %s", fields.get("thread_id"))
         raise
+    else:
+        logger.info(
+            "stored turn on %s (%d characters)",
+            fields.get("thread_id"), len(fields.get("response") or ""),
+        )
 
 
 async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
