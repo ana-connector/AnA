@@ -8,9 +8,11 @@ kind of thing that quietly regresses, so they are driven here in a browser.
 Needs the stack from `scripts/e2e-stack.sh`, like the checks beside it.
 """
 
+import base64
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -36,12 +38,32 @@ def make_workspace(name):
         return json.loads(response.read())
 
 
+def patch_workspace(workspace_id, body):
+    request = urllib.request.Request(
+        f"{API}/workspaces/{workspace_id}",
+        data=json.dumps(body).encode(),
+        headers={"content-type": "application/json"},
+        method="PATCH",
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read())
+
+
+# A 1x1 transparent PNG: the smallest thing that proves an uploaded image
+# makes it all the way to the tab.
+PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+       "AAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+
+
 # Three, named so their order on the start page is known: it sorts by when
 # each was last used, and these are made oldest first.
 made = [make_workspace(f"탭{index} {run_id}") for index in range(1, 4)]
+# One emoji and one uploaded picture, so both kinds are carried through.
+patch_workspace(made[1]["id"], {"icon": "🛠️"})
+patch_workspace(made[2]["id"], {"icon": PNG})
 titles_of = """() => [...document.querySelectorAll('[data-slot="tab"]')]
     .map(tab => ({
-      title: tab.querySelector('a').textContent.trim(),
+      title: tab.querySelector('[data-slot="tab-title"]').textContent.trim(),
       active: tab.dataset.active === 'true',
       href: tab.dataset.href,
     }))"""
@@ -103,6 +125,21 @@ with sync_playwright() as p:
     check("the workspace search is gone from the top bar",
           page.get_by_role("button", name="워크스페이스 검색").count() == 0, "")
 
+    # Every name a tab is ever given, so the next checks can prove it was
+    # never given a placeholder on the way to the real one.
+    page.evaluate("""() => {
+      window.__titles = [];
+      const record = () => {
+        for (const link of document.querySelectorAll('[data-slot="tab-title"]')) {
+          const title = link.textContent.trim();
+          if (window.__titles.at(-1) !== title) window.__titles.push(title);
+        }
+      };
+      record();
+      new MutationObserver(record).observe(
+        document.body, { subtree: true, childList: true, characterData: true });
+    }""")
+
     # --- the start page hands its own tab over ---------------------------
     # The recent list's rows carry the listitem role (they sit in a list),
     # so they are found by what they say rather than by a link role.
@@ -125,6 +162,22 @@ with sync_playwright() as p:
     page.wait_for_timeout(1000)
     check("a third keeps the first two",
           names(page) == [w["name"] for w in made], str(names(page)))
+
+    seen = page.evaluate("() => window.__titles")
+    check("a tab is never named 새 대화 on the way to its real name",
+          "새 대화" not in seen, str(seen))
+    emoji_tab = page.locator(f'[data-slot="tab"][data-href="/{made[1]["id"]}"]')
+    check("a workspace tab shows its emoji",
+          emoji_tab.inner_text().startswith("🛠"), emoji_tab.inner_text().replace("\n", " "))
+    check("an uploaded icon is shown as an image",
+          page.locator(f'[data-slot="tab"][data-href="/{made[2]["id"]}"] img')
+              .get_attribute("src") == PNG, "")
+
+    # A tab the width of the word on it reads as a link, not as a tab.
+    widths = page.evaluate("""() => [...document.querySelectorAll('[data-slot="tab"]')]
+        .map(tab => Math.round(tab.getBoundingClientRect().width))""")
+    check("tabs share the width instead of hugging their names",
+          min(widths) >= 128, str(widths))
 
     # --- a narrow window scrolls the bar rather than widening the page ---
     page.set_viewport_size({"width": 390, "height": 780})
@@ -201,6 +254,40 @@ with sync_playwright() as p:
     check("closing the last tab lands on the start page",
           names(page) == ["시작"] and page.url.rstrip("/") == BASE.rstrip("/"),
           f"{names(page)} {page.url}")
+
+    # --- picking an icon --------------------------------------------------
+    page.goto(f"{BASE}/workspaces/{made[0]['id']}", wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    page.fill('[aria-label="아이콘 이모지"]', "🐙")
+    page.get_by_role("button", name="아이콘 저장").click()
+    page.wait_for_timeout(1500)
+    stored = [w for w in json.loads(urllib.request.urlopen(f"{API}/workspaces").read())["workspaces"]
+              if w["id"] == made[0]["id"]]
+    check("an emoji typed into the editor is stored",
+          len(stored) == 1 and stored[0]["icon"] == "🐙",
+          json.dumps(stored, ensure_ascii=False)[:120])
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+        handle.write(base64.b64decode(PNG.split(",", 1)[1]))
+        png_path = handle.name
+    page.set_input_files('input[type="file"]', png_path)
+    page.wait_for_timeout(800)
+    page.get_by_role("button", name="아이콘 저장").click()
+    page.wait_for_timeout(1500)
+    stored = [w for w in json.loads(urllib.request.urlopen(f"{API}/workspaces").read())["workspaces"]
+              if w["id"] == made[0]["id"]]
+    check("an uploaded image is stored as a small data URL",
+          len(stored) == 1 and stored[0]["icon"].startswith("data:image/png;base64,")
+          and len(stored[0]["icon"]) < 256_000,
+          str(len(stored[0]["icon"]) if stored else 0))
+    os.unlink(png_path)
+
+    # The sidebar is where the icon has to show up for it to be worth having.
+    page.goto(f"{BASE}/{made[0]['id']}", wait_until="networkidle")
+    page.wait_for_timeout(1500)
+    row_icon = page.locator(
+        f'[data-slot="sidebar-menu-button"]:has-text("{made[0]["name"]}") img').count()
+    check("the sidebar row shows the icon", row_icon == 1, f"images={row_icon}")
 
     # --- the archive never looks selected ---------------------------------
     page.goto(f"{BASE}/workspaces/{made[0]['id']}", wait_until="networkidle")

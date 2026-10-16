@@ -2,11 +2,30 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import Link from "next/link";
-import { XIcon } from "lucide-react";
+import {
+  ClockIcon,
+  HomeIcon,
+  LockIcon,
+  Settings2Icon,
+  TerminalIcon,
+  XIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { useTabs } from "@/components/tabs";
+import { WorkspaceIcon } from "@/components/workspace-icon";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
+
+/** The installation's own pages have no workspace icon to show, and a tab
+ *  with nothing in front of its name reads as a list row rather than a tab. */
+const ROUTE_ICONS: Record<string, LucideIcon> = {
+  "/": HomeIcon,
+  "/settings": Settings2Icon,
+  "/tools": TerminalIcon,
+  "/secrets": LockIcon,
+  "/automation": ClockIcon,
+};
 
 /** The top of the content pane: every page you have open, and the controls
  *  that belong to the one you are reading.
@@ -44,8 +63,11 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
   }, [activeHref, tabs]);
 
   return (
-    <header className="flex h-11 shrink-0 items-stretch gap-1 border-b border-border pr-2 pl-1">
-      <div className="flex shrink-0 items-center gap-1 pr-1">
+    // The strip is darker than the page and the open tab is the page's own
+    // colour, which is what makes it read as the sheet in front: tabs drawn
+    // on the same background as their content are only underlined words.
+    <header className="flex h-11 shrink-0 items-stretch border-b border-border bg-muted/40 pr-2">
+      <div className="flex shrink-0 items-center gap-2 pr-2 pl-3">
         <SidebarTrigger />
         <Separator orientation="vertical" className="h-4" />
       </div>
@@ -56,10 +78,11 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
       <nav
         aria-label="열린 탭"
         data-slot="tab-bar"
-        className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto"
+        className="no-scrollbar flex min-w-0 flex-1 items-stretch overflow-x-auto"
       >
         {tabs.map((tab) => {
           const active = tab.href === activeHref;
+          const RouteIcon = ROUTE_ICONS[tab.href];
           return (
             <div
               key={tab.href}
@@ -76,21 +99,30 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
                 close(tab.href);
               }}
               className={cn(
-                // The 2px line sits on the header's own bottom border, so
-                // selecting a tab moves nothing beside it.
-                "group/tab flex min-w-0 shrink-0 items-center gap-1 border-b-2 pr-1 pl-2.5 text-sm transition-colors",
+                // They share the width rather than hugging their names: a tab
+                // the width of the word on it is a link. The floor keeps a
+                // long list readable and lets the strip scroll instead.
+                "group/tab relative flex min-w-32 max-w-72 flex-1 basis-0 items-center gap-2",
+                "border-r border-border/60 pr-1 pl-3 text-sm transition-colors",
                 active
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  ? // The 2px line marks it and the 1px strip underneath eats
+                    // the header's own border, joining the tab to the page.
+                    "bg-background text-foreground before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-primary after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-background"
+                  : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
               )}
             >
               <Link
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
                 title={tab.title}
-                className="max-w-44 truncate py-2 outline-none focus-visible:underline"
+                className="flex min-w-0 flex-1 items-center gap-2 py-2 outline-none focus-visible:underline"
               >
-                {tab.title}
+                {tab.icon ? (
+                  <WorkspaceIcon icon={tab.icon} />
+                ) : RouteIcon ? (
+                  <RouteIcon className="size-4 shrink-0" strokeWidth={1.5} />
+                ) : null}
+                <span data-slot="tab-title" className="min-w-0 flex-1 truncate">{tab.title}</span>
               </Link>
               <button
                 type="button"
@@ -112,7 +144,7 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
         })}
       </nav>
 
-      {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+      {actions ? <div className="flex shrink-0 items-center gap-1 pl-2">{actions}</div> : null}
     </header>
   );
 }

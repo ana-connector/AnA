@@ -15,7 +15,12 @@ import { usePathname, useRouter } from "next/navigation";
 /** One open tab. The route it shows is its identity: two tabs on the same
  *  page would be two views of the same thing, and closing one of them would
  *  be a guess at which. */
-export type Tab = { href: string; title: string };
+export type Tab = {
+  href: string;
+  title: string;
+  /** The workspace's own icon: an emoji, or a small image as a `data:` URL. */
+  icon?: string;
+};
 
 const START_HREF = "/";
 const START: Tab = { href: START_HREF, title: "시작" };
@@ -61,7 +66,8 @@ const listeners = new Set<() => void>();
 
 function publish(next: Tab[]) {
   if (next.length === tabs.length && next.every((tab, index) =>
-    tab.href === tabs[index].href && tab.title === tabs[index].title)) return;
+    tab.href === tabs[index].href && tab.title === tabs[index].title
+    && (tab.icon ?? "") === (tabs[index].icon ?? ""))) return;
   tabs = next;
   try {
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(tabs));
@@ -106,13 +112,18 @@ type TabsValue = {
    *  copy of that fact to fall out of step. */
   activeHref: string;
   /** Sidebar navigation: a workspace joins the bar and keeps the others. */
-  open: (href: string, title?: string) => void;
+  open: (href: string, title?: string, icon?: string) => void;
   /** Navigation from inside a page: the tab you are in becomes the new page,
    *  the way a start page hands its own tab over to what you picked on it. */
-  openHere: (href: string, title?: string) => void;
+  openHere: (href: string, title?: string, icon?: string) => void;
   close: (href: string) => void;
   /** The page naming itself once it knows what it is. */
   setTitle: (href: string, title: string) => void;
+  /** The workspace list, whenever whoever is holding it reloads it. A tab for
+   *  a workspace is named and iconed from here, so opening one by its address
+   *  does not have to wait for its conversation to connect before the tab
+   *  stops reading as a raw id. */
+  describeWorkspaces: (workspaces: { id: string; name: string; icon?: string }[]) => void;
 };
 
 const TabsContext = createContext<TabsValue | null>(null);
@@ -141,9 +152,9 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   );
 
   const open = useCallback(
-    (href: string, title?: string) => {
+    (href: string, title?: string, icon?: string) => {
       if (!tabs.some((tab) => tab.href === href)) {
-        publish([...tabs, { href, title: title ?? titleFor(href) }]);
+        publish([...tabs, { href, title: title ?? titleFor(href), icon }]);
       }
       navigate(href);
     },
@@ -151,7 +162,7 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   );
 
   const openHere = useCallback(
-    (href: string, title?: string) => {
+    (href: string, title?: string, icon?: string) => {
       const here = tabs.findIndex((tab) => tab.href === pathname);
       const existing = tabs.findIndex((tab) => tab.href === href);
       if (existing >= 0) {
@@ -159,7 +170,7 @@ export function TabsProvider({ children }: { children: ReactNode }) {
         // rather than leaving a second way into the same page behind.
         if (here >= 0 && here !== existing) publish(tabs.filter((_, index) => index !== here));
       } else {
-        const next = { href, title: title ?? titleFor(href) };
+        const next = { href, title: title ?? titleFor(href), icon };
         publish(here < 0 ? [...tabs, next] : tabs.map((tab, index) => (index === here ? next : tab)));
       }
       navigate(href);
@@ -191,6 +202,22 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     publish(tabs.map((tab) => (tab.href === href ? { ...tab, title } : tab)));
   }, []);
 
+  const describeWorkspaces = useCallback(
+    (workspaces: { id: string; name: string; icon?: string }[]) => {
+      const known = new Map(
+        workspaces.map((workspace) => [`/${encodeURIComponent(workspace.id)}`, workspace])
+      );
+      publish(
+        tabs.map((tab) => {
+          const workspace = known.get(tab.href);
+          if (!workspace) return tab;
+          return { ...tab, title: workspace.name, icon: workspace.icon ?? "" };
+        })
+      );
+    },
+    []
+  );
+
   // Whatever the address bar says must have a tab, however it got there — a
   // bookmark, the back button, a redirect, a link we do not own.
   useEffect(() => {
@@ -203,8 +230,10 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   }, [pathname, openTabs]);
 
   const value = useMemo<TabsValue>(
-    () => ({ tabs: openTabs, activeHref: pathname, open, openHere, close, setTitle }),
-    [openTabs, pathname, open, openHere, close, setTitle]
+    () => ({
+      tabs: openTabs, activeHref: pathname, open, openHere, close, setTitle, describeWorkspaces,
+    }),
+    [openTabs, pathname, open, openHere, close, setTitle, describeWorkspaces]
   );
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;

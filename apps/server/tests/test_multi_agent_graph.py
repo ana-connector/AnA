@@ -232,11 +232,22 @@ async def test_planning_exhaustion_answers_and_runner_processes_next_prompt(db_p
             while len([frame for frame in frames if frame["type"] == "result"]) < 2:
                 await asyncio.sleep(0.01)
         assert len([frame for frame in frames if frame["type"] == "plan" and "건너뛰고" in frame["text"]]) == 2
-        async with db_pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT count(*) FROM turns WHERE thread_id = %s", ("ma-plan-exhausted",)
-            )
-            assert (await cur.fetchone())[0] == 2
+
+        # Polled rather than read once: the answer is sent while the turn is
+        # still finishing, and the row is written after it. Reading the moment
+        # the second result arrived raced that write and failed here — on the
+        # product's own ordering, not on a bug.
+        async def stored_turns() -> int:
+            async with db_pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT count(*) FROM turns WHERE thread_id = %s", ("ma-plan-exhausted",)
+                )
+                return (await cur.fetchone())[0]
+
+        async with asyncio.timeout(5):
+            while await stored_turns() < 2:
+                await asyncio.sleep(0.05)
+        assert await stored_turns() == 2
         assert not runner.failed.is_set()
     finally:
         await runner.close()

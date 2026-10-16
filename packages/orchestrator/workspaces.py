@@ -40,7 +40,23 @@ ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS system_prompt TEXT NOT NULL DEFA
 -- only moved out of the main list. The alternative for a project you are done
 -- with was deleting it, which destroys the turns.
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;
+-- An emoji or a small image (stored as a data URL), shown wherever the
+-- workspace is listed: the sidebar, the start page and its tab. Empty means
+-- no icon, which is what every workspace registered before this had.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS icon TEXT NOT NULL DEFAULT '';
 """
+
+# A 64px PNG is a few kB; an SVG with a font in it is not. The limit is on the
+# stored string, which is what every workspace listing carries over the wire.
+MAX_ICON_LENGTH = 256_000
+_ICON_DATA_URL_RE = re.compile(
+    r"^data:image/(png|jpeg|webp|gif|svg\+xml)(;[a-z0-9\-=.+]+)*(;base64)?,[^\s]+$",
+    re.IGNORECASE,
+)
+# Counted in code points, so the allowance is for one glyph, not one
+# character: a family emoji is seven code points and a flag is six. Short
+# enough that nobody puts a word there and expects it to fit a 16px box.
+MAX_ICON_TEXT = 8
 
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
@@ -67,6 +83,38 @@ class WorkspacePathError(ValueError):
     """The requested folder cannot be created or reached from the server."""
 
 
+def normalize_icon(icon: Optional[str]) -> str:
+    """The icon as it will be stored, or a ValueError saying what is wrong.
+
+    Two kinds are allowed and they are told apart by their shape: a data URL
+    for a picture the user picked, and otherwise a short piece of text, which
+    in practice is an emoji. A remote URL is not allowed — the icon is shown
+    on every page, and a workspace should not be able to make the browser
+    call out to somebody else's server on every render.
+
+    SVG is accepted because it is what icon sets hand you, and it is only ever
+    rendered through `<img>`, where scripts in the document do not run."""
+    value = (icon or "").strip()
+    if not value:
+        return ""
+    if len(value) > MAX_ICON_LENGTH:
+        raise ValueError(
+            f"아이콘이 너무 크다 ({len(value)}자). {MAX_ICON_LENGTH}자 이하의 "
+            "데이터 URL이어야 한다 — 64px 정도로 줄여서 올려라."
+        )
+    if value.lower().startswith("data:"):
+        if not _ICON_DATA_URL_RE.match(value):
+            raise ValueError(
+                "이미지 데이터 URL만 쓸 수 있다 (png, jpeg, webp, gif, svg+xml)."
+            )
+        return value
+    if "://" in value:
+        raise ValueError("바깥 주소는 쓸 수 없다. 이모지나 업로드한 이미지만 된다.")
+    if len(value) > MAX_ICON_TEXT or any(ch in value for ch in "\r\n\t"):
+        raise ValueError("이모지 한 글자나 그만큼 짧은 글자만 된다.")
+    return value
+
+
 @dataclass(frozen=True)
 class Workspace:
     id: str
@@ -77,6 +125,7 @@ class Workspace:
     container_ports: tuple = ()
     system_prompt: str = ""
     archived: bool = False
+    icon: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -88,6 +137,7 @@ class Workspace:
             "container_ports": list(self.container_ports),
             "system_prompt": self.system_prompt,
             "archived": self.archived,
+            "icon": self.icon,
         }
 
 
@@ -226,6 +276,7 @@ def _row_to_workspace(row) -> Workspace:
         container_ports=tuple(row[5] or ()),
         system_prompt=row[6] or "",
         archived=bool(row[7]),
+        icon=row[8] or "",
     )
 
 
@@ -234,7 +285,7 @@ async def get_workspace(pool: AsyncConnectionPool, workspace_id: str) -> Optiona
         cur = await conn.execute(
             """
             SELECT id, name, path, container_enabled, container_image, container_ports,
-                   system_prompt, archived
+                   system_prompt, archived, icon
             FROM workspaces WHERE id = %s
             """,
             (workspace_id,),
@@ -273,6 +324,16 @@ async def set_workspace_system_prompt(
         cur = await conn.execute(
             "UPDATE workspaces SET system_prompt = %s WHERE id = %s",
             (prompt, workspace_id),
+        )
+        return cur.rowcount > 0
+
+
+async def set_workspace_icon(pool: AsyncConnectionPool, workspace_id: str, icon: str) -> bool:
+    """Stores the workspace's icon. `normalize_icon` decides what may be
+    stored; this only writes it."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE workspaces SET icon = %s WHERE id = %s", (normalize_icon(icon), workspace_id)
         )
         return cur.rowcount > 0
 
@@ -433,7 +494,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             """
             SELECT w.id, w.name, w.path, w.last_used_at,
                    w.container_enabled, w.container_image, w.container_ports,
-                   w.system_prompt, w.archived,
+                   w.system_prompt, w.archived, w.icon,
                    COUNT(t.id) AS turn_count,
                    MAX(t.created_at) AS last_turn_at,
                    (ARRAY_AGG(t.agent ORDER BY t.created_at DESC, t.id DESC)
@@ -450,7 +511,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             LEFT JOIN turns t ON t.thread_id = w.id
             GROUP BY w.id, w.name, w.path, w.last_used_at,
                      w.container_enabled, w.container_image, w.container_ports,
-                     w.system_prompt, w.archived
+                     w.system_prompt, w.archived, w.icon
             ORDER BY lower(w.name), w.id
             LIMIT %s
             """,
@@ -468,10 +529,11 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             "container_ports": list(r[6] or ()),
             "system_prompt": r[7] or "",
             "archived": bool(r[8]),
-            "turn_count": r[9],
-            "last_turn_at": r[10].isoformat() if r[10] else None,
-            "last_agent": r[11],
-            "total_tokens": int(r[12] or 0),
+            "icon": r[9] or "",
+            "turn_count": r[10],
+            "last_turn_at": r[11].isoformat() if r[11] else None,
+            "last_agent": r[12],
+            "total_tokens": int(r[13] or 0),
         }
         for r in rows
     ]

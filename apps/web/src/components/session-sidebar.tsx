@@ -31,6 +31,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Skeleton } from "@/components/ui/skeleton";
 import { Logo } from "@/components/logo";
 import { useTabs } from "@/components/tabs";
+import { WorkspaceIcon } from "@/components/workspace-icon";
 import { WorkspaceEditor } from "@/components/workspace-editor";
 import { shortPath } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -75,7 +76,7 @@ export function SessionSidebar({
   // I" is answered the same way in both places. Opening a workspace from the
   // sidebar opens a tab beside the others rather than taking over the one you
   // are in — the sidebar is how you keep two things open at once.
-  const { activeHref, open: openTab, close: closeTab } = useTabs();
+  const { activeHref, open: openTab, close: closeTab, describeWorkspaces } = useTabs();
   const href = (id: string) => `/${encodeURIComponent(id)}`;
   const workspaceId = (() => {
     const match = /^\/([^/]+)$/.exec(activeHref);
@@ -86,8 +87,8 @@ export function SessionSidebar({
       return match[1];
     }
   })();
-  const onOpenWorkspace = (id: string | null, title?: string) =>
-    id ? openTab(href(id), title) : openTab("/", "시작");
+  const onOpenWorkspace = (id: string | null, title?: string, icon?: string) =>
+    id ? openTab(href(id), title, icon) : openTab("/", "시작");
   const { resolvedTheme, setTheme } = useTheme();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   // The id of the workspace whose folder is ANA's own source tree, when the
@@ -108,7 +109,14 @@ export function SessionSidebar({
     const request = ++loadState.current.request;
     return fetchWorkspaces().then(
       (items) => {
-        if (loadState.current.mounted && loadState.current.request === request) setWorkspaces(items);
+        if (loadState.current.mounted && loadState.current.request === request) {
+          setWorkspaces(items);
+          // The sidebar is on every page, so this is also the one place that
+          // reliably knows what each workspace is called and what it looks
+          // like. The tabs take their name and icon from here rather than
+          // waiting for the conversation to connect.
+          describeWorkspaces(items);
+        }
         return items;
       },
       () => {
@@ -116,7 +124,7 @@ export function SessionSidebar({
         return [];
       },
     );
-  }, []);
+  }, [describeWorkspaces]);
 
   useEffect(() => {
     const state = loadState.current;
@@ -190,7 +198,7 @@ export function SessionSidebar({
     // The tab goes with the workspace: leaving it open would offer a way back
     // into something that no longer exists.
     closeTab(href(deletedId));
-    onOpenWorkspace(next?.id ?? null, next?.name);
+    onOpenWorkspace(next?.id ?? null, next?.name, next?.icon);
   };
 
   /** One row, shared by the live list and the archive: the same workspace with
@@ -203,10 +211,11 @@ export function SessionSidebar({
     <SidebarMenuItem key={item.id}>
       <SidebarMenuButton
         isActive={selectable && href(item.id) === activeHref}
-        onClick={() => onOpenWorkspace(item.id, item.name)}
+        onClick={() => onOpenWorkspace(item.id, item.name, item.icon)}
         className="h-auto py-1.5"
         title={`${item.id}\n${item.path}`}
       >
+        <WorkspaceIcon icon={item.icon} />
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate text-xs">{item.name}</span>
           <span className="truncate text-[11px] text-muted-foreground">

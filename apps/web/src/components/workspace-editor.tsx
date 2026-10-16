@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { ArchiveIcon, ArchiveRestoreIcon, RepeatIcon, SaveIcon, TriangleAlertIcon } from "lucide-react";
+import { useRef, useState } from "react";
+import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  ImageIcon,
+  RepeatIcon,
+  SaveIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { forgetWorkspace, updateWorkspace, type WorkspaceSummary } from "@/lib/api";
 import {
   AlertDialog,
@@ -18,6 +25,8 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { WorkspaceIcon } from "@/components/workspace-icon";
+import { fileToIcon } from "@/lib/icon-file";
 import { WorkspaceSettings } from "@/components/workspace-settings";
 
 function shortPath(path: string): string {
@@ -47,6 +56,8 @@ export function WorkspaceEditor({
   onDeleted: () => void | Promise<void>;
 }) {
   const [name, setName] = useState(workspace.name);
+  const [icon, setIcon] = useState(workspace.icon ?? "");
+  const iconFile = useRef<HTMLInputElement>(null);
   const [systemPrompt, setSystemPrompt] = useState(workspace.system_prompt ?? "");
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -61,6 +72,29 @@ export function WorkspaceEditor({
       // A failed rename used to reject silently and leave the old name on
       // screen with no explanation.
       setError(String(e));
+    }
+  };
+
+  const saveIcon = async () => {
+    try {
+      await updateWorkspace(workspace.id, { icon });
+      setError(null);
+      await onSaved();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  /** A picked file becomes the icon as soon as it is small enough to be one;
+   *  it is saved with the same button as an emoji, so one preview answers
+   *  "what will this look like" for both. */
+  const pickIcon = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setIcon(await fileToIcon(file));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -134,6 +168,62 @@ export function WorkspaceEditor({
           </Button>
         </Field>
         {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
+      </FieldGroup>
+
+      <FieldGroup>
+        <Field>
+          <FieldLabel htmlFor={`ws-icon-${workspace.id}`}>아이콘</FieldLabel>
+          <div className="flex items-center gap-2">
+            {/* The box is always there, so an empty one reads as "no icon
+                yet" rather than as a missing control. */}
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border">
+              <WorkspaceIcon icon={icon} className="size-6 text-xl" />
+            </div>
+            <Input
+              id={`ws-icon-${workspace.id}`}
+              value={icon.startsWith("data:") ? "" : icon}
+              onChange={(event) => setIcon(event.target.value)}
+              placeholder="🛠️"
+              disabled={icon.startsWith("data:")}
+              className="w-24 text-center"
+              aria-label="아이콘 이모지"
+            />
+            <input
+              ref={iconFile}
+              type="file"
+              accept="image/png,image/svg+xml,image/jpeg,image/webp,image/gif"
+              hidden
+              onChange={(event) => {
+                void pickIcon(event.target.files?.[0]);
+                // Cleared so picking the same file twice still fires.
+                event.target.value = "";
+              }}
+            />
+            <Button size="sm" variant="outline" onClick={() => iconFile.current?.click()}>
+              <ImageIcon data-icon="inline-start" />
+              이미지 올리기
+            </Button>
+            {icon && (
+              <Button size="sm" variant="ghost" onClick={() => setIcon("")}>
+                지우기
+              </Button>
+            )}
+          </div>
+          <FieldDescription>
+            이모지 한 글자나 작은 이미지(png · svg · jpeg · webp). 올린 이미지는 64px로
+            줄여서 워크스페이스와 함께 저장하고, 사이드바·시작 화면·탭에 쓴다.
+          </FieldDescription>
+        </Field>
+        <Field orientation="horizontal">
+          <Button
+            size="sm"
+            disabled={icon === (workspace.icon ?? "")}
+            onClick={() => void saveIcon()}
+          >
+            <SaveIcon data-icon="inline-start" />
+            아이콘 저장
+          </Button>
+        </Field>
       </FieldGroup>
 
       <FieldGroup>

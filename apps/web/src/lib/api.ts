@@ -239,6 +239,8 @@ export type WorkspaceSummary = {
   system_prompt: string;
   /** Out of the main sidebar list, but still registered and still openable. */
   archived: boolean;
+  /** An emoji, or a small image as a `data:` URL. "" when it has none. */
+  icon: string;
 };
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -282,6 +284,7 @@ export async function updateWorkspace(
     container_ports?: PortMapping[];
     system_prompt?: string;
     archived?: boolean;
+    icon?: string;
   }
 ): Promise<void> {
   const response = await fetch(`${apiBase()}/workspaces/${encodeURIComponent(id)}`, {

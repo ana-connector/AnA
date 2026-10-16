@@ -22,7 +22,9 @@ from packages.orchestrator.workspaces import (
     list_workspaces,
     rename_workspace,
     run_workspace_migrations,
+    normalize_icon,
     set_workspace_archived,
+    set_workspace_icon,
     set_workspace_system_prompt,
     slugify,
 )
@@ -231,6 +233,59 @@ async def test_archiving_hides_nothing_but_the_flag(workspace_pool, tmp_path, mo
     assert (await get_workspace(workspace_pool, put_away.id)).archived is False
 
 
+@pytest.mark.parametrize("icon", [
+    "🐙",
+    "🏳️‍🌈",                                   # several code points, one glyph
+    "data:image/png;base64,iVBORw0KGgo=",
+    "data:image/svg+xml;charset=utf-8,%3Csvg%2F%3E",
+])
+def test_an_icon_may_be_an_emoji_or_an_image(icon):
+    assert normalize_icon(icon) == icon
+
+
+@pytest.mark.parametrize("icon,because", [
+    ("https://example.com/logo.png", "a remote address would be fetched on every render"),
+    ("data:text/html,<script>", "only images are icons"),
+    ("data:image/png,", "a data URL with no data is not an image"),
+    ("워크스페이스 이름처럼 긴 글자", "text that long is a label, not an icon"),
+    ("x" * 300_000, "a picture that big travels with every listing"),
+])
+def test_an_icon_that_cannot_be_shown_is_refused(icon, because):
+    with pytest.raises(ValueError):
+        normalize_icon(icon), because
+
+
+def test_no_icon_stays_no_icon():
+    assert normalize_icon(None) == "" and normalize_icon("  ") == ""
+
+
+@pytest.mark.asyncio
+async def test_an_icon_is_stored_and_listed(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    workspace = await create_workspace(workspace_pool, name="Iconed")
+
+    assert (await get_workspace(workspace_pool, workspace.id)).icon == ""
+    assert await set_workspace_icon(workspace_pool, workspace.id, "🛠️")
+    assert (await get_workspace(workspace_pool, workspace.id)).icon == "🛠️"
+
+    rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
+    assert rows[workspace.id]["icon"] == "🛠️"
+
+    # Clearing it is how you take the icon off again.
+    assert await set_workspace_icon(workspace_pool, workspace.id, "")
+    assert (await get_workspace(workspace_pool, workspace.id)).icon == ""
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_icon_is_never_stored(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    workspace = await create_workspace(workspace_pool, name="Iconed")
+    await set_workspace_icon(workspace_pool, workspace.id, "🐙")
+    with pytest.raises(ValueError):
+        await set_workspace_icon(workspace_pool, workspace.id, "https://example.com/x.png")
+    assert (await get_workspace(workspace_pool, workspace.id)).icon == "🐙"
+
+
 @pytest.mark.asyncio
 async def test_archiving_an_unknown_workspace_reports_it(workspace_pool):
     assert await set_workspace_archived(workspace_pool, "no-such-workspace", True) is False
@@ -295,6 +350,13 @@ def test_api_create_list_rename_delete(client):
 
     assert client.patch("/workspaces/api-project", json={"name": "Renamed"}).status_code == 200
     assert client.get("/workspaces").json()["workspaces"][0]["name"] == "Renamed"
+
+    assert client.patch("/workspaces/api-project", json={"icon": "📦"}).json()["icon"] == "📦"
+    # The reason an icon is refused is something the user can act on, so it
+    # comes back as a 422 with the reason in it rather than a 500.
+    refused = client.patch("/workspaces/api-project", json={"icon": "http://x/y.png"})
+    assert refused.status_code == 422 and refused.json()["detail"]
+    assert client.get("/workspaces").json()["workspaces"][0]["icon"] == "📦"
 
     assert client.delete("/workspaces/api-project").status_code == 200
     assert client.get("/workspaces").json()["workspaces"] == []

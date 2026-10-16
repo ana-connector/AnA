@@ -154,9 +154,11 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   // transcript on screen is the point.
   const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
 
-  // The tab is where this conversation is named now, so it is named as soon
-  // as the socket knows what the workspace is called.
-  useTabTitle(workspaceName ?? "새 대화");
+  // The tab is where this conversation is named now. Only once the name is
+  // known: naming it "새 대화" in the meantime meant every tab you opened
+  // flashed that before settling on the workspace's own name, and the tab
+  // already carries the name the sidebar or the start page opened it with.
+  useTabTitle(workspaceName);
 
   // Finished turns are what create and rename sessions, so the sidebar list is
   // refetched when the count of completed turns changes rather than on a timer.

@@ -73,6 +73,7 @@ from packages.orchestrator.workspaces import (
     get_workspace,
     set_container_settings,
     set_workspace_archived,
+    set_workspace_icon,
     set_workspace_system_prompt,
     forget_workspace,
     list_workspaces,
@@ -265,6 +266,8 @@ class WorkspaceRename(BaseModel):
     # Archiving only moves the workspace out of the main list; the row, the
     # folder and the conversation all stay.
     archived: bool | None = None
+    # An emoji, or a small image as a data URL. "" removes it.
+    icon: str | None = None
 
 
 @app.get("/workspaces")
@@ -305,6 +308,14 @@ async def patch_workspace(request: Request, workspace_id: str, body: WorkspaceRe
 
     if body.archived is not None:
         touched = await set_workspace_archived(pool, workspace_id, body.archived) or touched
+
+    if body.icon is not None:
+        try:
+            touched = await set_workspace_icon(pool, workspace_id, body.icon) or touched
+        except ValueError as exc:
+            # What is wrong with the icon is something the user can fix, so it
+            # is said in the response rather than logged as a server fault.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if (
         body.container_enabled is not None

@@ -6,6 +6,7 @@ import { createWorkspace, fetchWorkspaces, type WorkspaceSummary } from "@/lib/a
 import { Logo } from "@/components/logo";
 import { PageShell } from "@/components/page-shell";
 import { useTabs } from "@/components/tabs";
+import { WorkspaceIcon } from "@/components/workspace-icon";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -52,9 +53,9 @@ export default function StartPage() {
     };
   }, [refresh]);
 
-  const open = useCallback((id: string, name?: string) => {
+  const open = useCallback((id: string, name?: string, icon?: string) => {
     window.localStorage.setItem("ana_thread_id", id);
-    openHere(`/${encodeURIComponent(id)}`, name);
+    openHere(`/${encodeURIComponent(id)}`, name, icon);
   }, [openHere]);
 
   const submit = async (event: FormEvent) => {
@@ -86,7 +87,7 @@ export default function StartPage() {
       const index = Number(event.code.replace(/^Digit|^Numpad/, "")) - 1;
       if (!Number.isInteger(index) || index < 0 || !recent[index]) return;
       event.preventDefault();
-      open(recent[index].id, recent[index].name);
+      open(recent[index].id, recent[index].name, recent[index].icon);
     };
     window.addEventListener("keydown", onRecentShortcut);
     return () => window.removeEventListener("keydown", onRecentShortcut);
@@ -139,11 +140,12 @@ export default function StartPage() {
                       onClick={(event) => {
                         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
                         event.preventDefault();
-                        open(item.id, item.name);
+                        open(item.id, item.name, item.icon);
                       }}
                     />
                   }
                 >
+                  <WorkspaceIcon icon={item.icon} />
                   <ItemContent className="min-w-0">
                     <ItemTitle className="w-full min-w-0 flex-nowrap">
                       <span className="min-w-0 flex-1 truncate">{item.name}</span>
