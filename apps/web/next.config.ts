@@ -6,6 +6,10 @@ const nextConfig: NextConfig = {
   // resource /_next/hmr", which breaks HMR. Dev-only; production builds
   // ignore this.
   allowedDevOrigins: ["192.168.0.33", "localhost", "127.0.0.1"],
+  // The dev-only badge sits in the bottom-left corner, over the app's own
+  // controls there — the questionnaire's Previous button among them, which
+  // a click then cannot reach. Dev-only, like the badge.
+  devIndicators: false,
 };
 
 export default nextConfig;

@@ -4,6 +4,26 @@ from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("ANA_E2E_WEB", "http://127.0.0.1:3211")
 URL = f"{BASE}/ui-harness"
+def progress_of(page) -> str:
+    return page.locator('[data-slot="questionnaire-progress"]').first.inner_text().strip()
+
+
+def wait_for_question(page, label: str) -> str:
+    """Waits for the stepper to say it is on this question.
+
+    Clicking and then sleeping was enough on a fast machine and not on a
+    slow one, where the next click landed on a button the form had not
+    drawn yet.
+    """
+    page.wait_for_function(
+        "label => document.querySelector('[data-slot=\"questionnaire-progress\"]')"
+        "?.textContent.trim() === label",
+        arg=label,
+        timeout=15000,
+    )
+    return progress_of(page)
+
+
 results = []
 
 def check(name, ok, detail=""):
@@ -69,15 +89,15 @@ with sync_playwright() as p:
     # 7. questionnaire: one question at a time, required blocks Next
     visible = page.locator('[data-slot="questionnaire-item"]:not([hidden])').count()
     check("one question visible", visible == 1, f"visible={visible}")
-    progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("progress reads 1 of 3", progress.strip() == "질문 1 / 3", progress)
+    progress = progress_of(page)
+    check("progress reads 1 of 3", progress == "질문 1 / 3", progress)
 
     next_button = page.locator('[data-slot="questionnaire-item"]:not([hidden])').locator("xpath=../..").locator("button", has_text="다음")
-    page.get_by_role("button", name="다음").click()
+    page.locator('[data-slot="questionnaire-next"]').click()
     page.wait_for_timeout(200)
     err = page.locator('[data-slot="questionnaire-error"]:not([hidden])').count()
-    still_first = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("required question blocks Next", err == 1 and still_first.strip() == "질문 1 / 3",
+    still_first = progress_of(page)
+    check("required question blocks Next", err == 1 and still_first == "질문 1 / 3",
           f"errors={err} progress={still_first}")
 
     # skip must not be offered on a required question
@@ -92,10 +112,9 @@ with sync_playwright() as p:
         ".filter(i => i.checked).map(i => i.value)")
     check("number key picks a choice", picked == ["운영"], f"picked={picked}")
 
-    page.get_by_role("button", name="다음").click()
-    page.wait_for_timeout(200)
-    progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
-    check("answered question advances", progress.strip() == "질문 2 / 3", progress)
+    page.locator('[data-slot="questionnaire-next"]').click()
+    progress = wait_for_question(page, "질문 2 / 3")
+    check("answered question advances", progress == "질문 2 / 3", progress)
 
     # 9. multiple choice keeps both answers
     page.keyboard.press("1")
@@ -107,22 +126,22 @@ with sync_playwright() as p:
     check("multiple choice keeps both", picked == ["운영", "metrics", "tracing"], f"picked={picked}")
 
     # 10. previous goes back and keeps the earlier answer
-    page.get_by_role("button", name="이전").click()
-    page.wait_for_timeout(200)
-    progress = page.locator('[data-slot="questionnaire-progress"]').first.inner_text()
+    page.locator('[data-slot="questionnaire-previous"]').click()
+    progress = wait_for_question(page, "질문 1 / 3")
     first_kept = page.evaluate(
         "() => [...document.querySelectorAll('input[data-slot=questionnaire-choice-input]')]"
         ".filter(i => i.checked).map(i => i.value)")
     check("previous keeps the earlier answer",
-          progress.strip() == "질문 1 / 3" and "운영" in first_kept, f"{progress} {first_kept}")
-    page.get_by_role("button", name="다음").click()
-    page.get_by_role("button", name="다음").click()
-    page.wait_for_timeout(200)
+          progress == "질문 1 / 3" and "운영" in first_kept, f"{progress} {first_kept}")
+    page.locator('[data-slot="questionnaire-next"]').click()
+    wait_for_question(page, "질문 2 / 3")
+    page.locator('[data-slot="questionnaire-next"]').click()
+    wait_for_question(page, "질문 3 / 3")
 
     # 11. free text answers the last question, then submit
     page.fill('[data-slot="questionnaire-input"]', "배포 전 확인 완료")
     page.wait_for_timeout(100)
-    page.get_by_role("button", name="답하기").click()
+    page.locator('[data-slot="questionnaire-submit"]').click()
     page.wait_for_timeout(300)
     answers = page.evaluate("() => window.__answers ?? []")
     check("submit carries every answer",
