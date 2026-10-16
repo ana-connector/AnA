@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AGENTS, type Agent } from "@/components/ui/agent-toggle";
 import { fetchThreadHistory, wsBase } from "@/lib/api";
+import { withQuery } from "@/lib/urls";
 
 export type ChatEvent =
   // The backend's call_lead_agent (apps/server/app/graph.py) only writes
@@ -470,10 +471,7 @@ export function useChatSocket(initialThreadId: string) {
 
       if (disposed) return;
 
-      const baseUrl = wsBase();
-      const url = openingThreadId
-        ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}workspace=${encodeURIComponent(openingThreadId)}`
-        : baseUrl;
+      const url = withQuery(wsBase(), { workspace: openingThreadId ?? "" });
 
       const socket = new WebSocket(url);
       socketRef.current = socket;

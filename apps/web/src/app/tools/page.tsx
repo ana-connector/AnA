@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCwIcon } from "lucide-react";
-import { apiBase } from "@/lib/api";
+import { fetchAuditEvents, type AuditEvent } from "@/lib/api";
 import { timeAgo, timeExact } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,20 +28,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { PageShell } from "@/components/page-shell";
 import { toolDisplay } from "@/lib/tool-display";
 
-type AuditEvent = {
-  id: number;
-  created_at: string;
-  thread_id: string | null;
-  agent: string | null;
-  tool_name: string;
-  tool_input: Record<string, unknown> | null;
-  rule_id: string | null;
-  category: string | null;
-  tool_use_id: string | null;
-  verdict: string;
-  decided_by: string;
-  reason: string | null;
-};
 
 const FILTERS = [
   { value: "all", label: "전체" },
@@ -75,13 +61,10 @@ export default function ToolLogPage() {
 
   const refresh = useCallback(() => {
     const request = ++loadState.current.request;
-    return fetch(`${apiBase()}/audit?limit=200`).then((response) => {
-      if (!response.ok) throw new Error(String(response.status));
-      return response.json() as Promise<{ events: AuditEvent[] }>;
-    }).then(
-      (body) => {
+    return fetchAuditEvents().then(
+      (events) => {
         if (!loadState.current.mounted || loadState.current.request !== request) return;
-        setEvents(body.events);
+        setEvents(events);
         setFailed(false);
       },
       () => {

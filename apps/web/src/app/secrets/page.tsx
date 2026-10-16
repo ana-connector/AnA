@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { PlusIcon, TrashIcon } from "lucide-react";
-import { apiBase } from "@/lib/api";
+import {
+  ApiError,
+  deleteSecret,
+  fetchSecrets,
+  saveSecret,
+  type SecretRow,
+} from "@/lib/api";
 import { timeAgo, timeExact } from "@/lib/format";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -34,8 +40,6 @@ import { notify } from "@/lib/notify";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PageShell } from "@/components/page-shell";
 
-type SecretRow = { scope: string; name: string; updated_at: string };
-
 export default function SecretsPage() {
   const [secrets, setSecrets] = useState<SecretRow[] | null>(null);
   const [name, setName] = useState("");
@@ -50,17 +54,11 @@ export default function SecretsPage() {
 
   const refresh = useCallback(() => {
     const request = ++loadState.current.request;
-    return fetch(`${apiBase()}/secrets`).then((response) => {
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json() as Promise<{
-        secrets: SecretRow[];
-        key_persistent?: boolean;
-      }>;
-    }).then(
+    return fetchSecrets().then(
       (body) => {
         if (!loadState.current.mounted || loadState.current.request !== request) return;
         setSecrets(body.secrets);
-        setKeyPersistent(body.key_persistent !== false);
+        setKeyPersistent(body.keyPersistent);
         setError(null);
       },
       (e) => {
@@ -84,16 +82,14 @@ export default function SecretsPage() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim() || !value) return;
-    const response = await fetch(`${apiBase()}/secrets`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), value, scope: scope.trim() || "global" }),
-    });
-    if (!response.ok) {
+    try {
+      await saveSecret({ name: name.trim(), value, scope: scope.trim() || "global" });
+    } catch (cause) {
+      const status = cause instanceof ApiError ? cause.status : 0;
       setError(
-        response.status === 422
+        status === 422
           ? "이름은 환경변수 형식이어야 합니다 (영문자/숫자/밑줄, 숫자로 시작 불가)"
-          : `저장하지 못했습니다: HTTP ${response.status}`
+          : `저장하지 못했습니다: ${cause instanceof Error ? cause.message : String(cause)}`
       );
       return;
     }
@@ -108,12 +104,12 @@ export default function SecretsPage() {
 
   const remove = async (row: SecretRow) => {
     setPendingDelete(null);
-    const response = await fetch(
-      `${apiBase()}/secrets/${encodeURIComponent(row.scope)}/${encodeURIComponent(row.name)}`,
-      { method: "DELETE" }
-    );
-    if (response.ok) notify.success(`${row.name} 삭제됨`);
-    else notify.error("삭제하지 못했습니다", `HTTP ${response.status}`);
+    try {
+      await deleteSecret(row.scope, row.name);
+      notify.success(`${row.name} 삭제됨`);
+    } catch (cause) {
+      notify.error("삭제하지 못했습니다", cause instanceof Error ? cause.message : String(cause));
+    }
     void refresh();
   };
 

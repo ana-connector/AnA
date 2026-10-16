@@ -1,24 +1,74 @@
+import {
+  resolveApiBase,
+  resolveSocketUrl,
+  type AddressEnv,
+} from "@/lib/urls";
+
 /** Where the FastAPI server is reachable from the browser.
  *
- * Both the WebSocket and the HTTP endpoints derive their host from the page's
- * own location unless overridden, so one build works on localhost and over
- * the LAN alike (a hardcoded "localhost" means the *viewer's* machine when
- * the UI is opened from another device).
+ * The rules themselves are in `urls.ts`, with their own tests; these two are
+ * where they meet the real page. Both the WebSocket and the HTTP endpoints
+ * derive their host from the page's own location unless overridden, so one
+ * build works on localhost and over the LAN alike (a hardcoded "localhost"
+ * means the *viewer's* machine when the UI is opened from another device).
+ *
+ * The names are read whole rather than out of a loop: Next replaces each
+ * `process.env.NEXT_PUBLIC_*` literal at build time and cannot substitute a
+ * computed one.
  */
 
-const API_PORT = process.env.NEXT_PUBLIC_WS_PORT ?? "8100";
+const ADDRESS_ENV: AddressEnv = {
+  apiUrl: process.env.NEXT_PUBLIC_API_URL,
+  wsUrl: process.env.NEXT_PUBLIC_WS_URL,
+  apiPort: process.env.NEXT_PUBLIC_WS_PORT,
+  mode: process.env.NEXT_PUBLIC_SERVER_MODE,
+};
 
 export function apiBase(): string {
-  const configured = process.env.NEXT_PUBLIC_API_URL;
-  if (configured) return configured.replace(/\/$/, "");
-  return `${window.location.protocol}//${window.location.hostname}:${API_PORT}`;
+  return resolveApiBase(ADDRESS_ENV, window.location);
 }
 
 export function wsBase(): string {
-  const configured = process.env.NEXT_PUBLIC_WS_URL;
-  if (configured) return configured;
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.hostname}:${API_PORT}/ws/chat`;
+  return resolveSocketUrl(ADDRESS_ENV, window.location);
+}
+
+/** One place that knows how a request to ANA is made and how it fails.
+ *
+ * Screens used to call `fetch` themselves, each with its own idea of what a
+ * non-2xx response meant — some threw, some returned empty, some showed the
+ * status and some did not. The URL was assembled at every one of those call
+ * sites too, which is exactly what has to be in one place for the address to
+ * be changeable.
+ */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    /** FastAPI's `detail`, when the body had one. Screens that can say
+     *  something better than the status code read this. */
+    readonly detail: string | null
+  ) {
+    super(detail ? `HTTP ${status}: ${detail}` : `HTTP ${status}`);
+    this.name = "ApiError";
+  }
+}
+
+export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${apiBase()}${path}`, init);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    let detail: string | null = body || null;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      // Not JSON; the raw text is the best there is.
+    }
+    throw new ApiError(response.status, detail);
+  }
+  if (response.status === 204 || response.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+  return (await response.json()) as T;
 }
 
 export type HistoryTool = {
@@ -336,4 +386,155 @@ export async function fetchModels(): Promise<LadderModel[]> {
   } catch {
     return [];
   }
+}
+
+// --- the screens' own endpoints ------------------------------------------
+//
+// These used to be `fetch` calls inside the six screens that have one each.
+// They are here for the same reason the rest of this file is: the address is
+// decided in one place, and so is what a failed response means. What each
+// screen does with the answer — its loading state, its error text, how it
+// lays the data out — stays in the screen.
+
+/** The gate's record of one tool call. */
+export type AuditEvent = {
+  id: number;
+  created_at: string;
+  thread_id: string | null;
+  agent: string | null;
+  tool_name: string;
+  tool_input: Record<string, unknown> | null;
+  rule_id: string | null;
+  category: string | null;
+  tool_use_id: string | null;
+  verdict: string;
+  decided_by: string;
+  reason: string | null;
+};
+
+export async function fetchAuditEvents(limit = 200): Promise<AuditEvent[]> {
+  const body = await api<{ events: AuditEvent[] }>(`/audit?limit=${limit}`);
+  return body.events;
+}
+
+export type SecretRow = { scope: string; name: string; updated_at: string };
+
+export async function fetchSecrets(): Promise<{ secrets: SecretRow[]; keyPersistent: boolean }> {
+  const body = await api<{ secrets: SecretRow[]; key_persistent?: boolean }>("/secrets");
+  return { secrets: body.secrets, keyPersistent: body.key_persistent !== false };
+}
+
+export async function saveSecret(secret: {
+  name: string;
+  value: string;
+  scope: string;
+}): Promise<void> {
+  await api("/secrets", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(secret),
+  });
+}
+
+export async function deleteSecret(scope: string, name: string): Promise<void> {
+  await api(`/secrets/${encodeURIComponent(scope)}/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+export type McpServer = { name: string; description: string; command: string };
+export type McpInactive = { name: string; reason: string };
+export type McpView = {
+  role: string;
+  enabled: boolean;
+  active: McpServer[];
+  inactive: McpInactive[];
+};
+
+export function fetchMcpServers(role: string): Promise<McpView> {
+  return api<McpView>(`/mcp/servers?role=${encodeURIComponent(role)}`);
+}
+
+export type SkillSummary = {
+  name: string;
+  title: string;
+  description: string;
+  roles: string[];
+  mcp: string[];
+};
+export type SkillLibrary = {
+  skills: SkillSummary[];
+  errors: { path: string; message: string }[];
+};
+
+export function fetchSkills(): Promise<SkillLibrary> {
+  return api<SkillLibrary>("/skills");
+}
+
+export type UsageWindow = {
+  label: string;
+  key: string;
+  tokens: number;
+  budget: number;
+  /** "tokens" or "usd": what this plan is capped in. */
+  unit: string;
+  usd: number;
+  utilization: number | null;
+  resets_at: number | null;
+  source: "reported" | "estimated" | "manual";
+};
+export type UsageSnapshot = Record<string, { windows: UsageWindow[] }>;
+
+export async function fetchUsage(): Promise<UsageSnapshot> {
+  const body = await api<{ agents: UsageSnapshot }>("/usage");
+  return body.agents ?? {};
+}
+
+export type UsageEstimate = { utilization: number; resets_at: number | null };
+export type UsageEstimates = Record<string, Record<string, UsageEstimate>>;
+
+export async function fetchUsageEstimates(): Promise<UsageEstimates> {
+  const body = await api<{ estimates: UsageEstimates }>("/usage/estimates");
+  return body.estimates;
+}
+
+export async function saveUsageEstimate(estimate: {
+  agent: string;
+  window: string;
+  utilization: number | null;
+  resets_at: string | null;
+}): Promise<void> {
+  await api("/usage/estimates", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(estimate),
+  });
+}
+
+export type RoutingRung = {
+  agent: string;
+  model: string;
+  effort: string;
+  window: string;
+  utilization: number | null;
+};
+export type RoutingLadders = { lead: RoutingRung[]; workers: Record<string, RoutingRung[]> };
+export type RoutingConfig = RoutingLadders & {
+  agents: string[];
+  efforts: Record<string, string[]>;
+  models?: Record<string, string[]>;
+  windows: { key: string; label: string }[];
+  windows_by_agent?: Record<string, string[]>;
+};
+
+export function fetchRouting(): Promise<RoutingConfig> {
+  return api<RoutingConfig>("/routing");
+}
+
+export function saveRouting(ladders: RoutingLadders): Promise<RoutingConfig> {
+  return api<RoutingConfig>("/routing", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(ladders),
+  });
 }
