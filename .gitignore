@@ -5,3 +5,5 @@ __pycache__/
 node_modules/
 .next/
 apps/web/.next/
+.agents/
+.pytest_cache/
