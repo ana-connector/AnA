@@ -88,6 +88,16 @@ with sync_playwright() as p:
         except Exception as cause:
             return f"could not read the turns of {thread}: {cause}"
 
+    def complaints() -> str:
+        # Whatever the server told the browser went wrong. A turn that fails
+        # after its text has streamed says so here and nowhere else: the
+        # relay reports it as a frame, not as a log line.
+        shown = page.evaluate(
+            "() => [...document.querySelectorAll('p, span')]"
+            ".map(n => n.textContent).filter(t => t && t.includes('⚠️')).slice(0, 2)"
+        )
+        return " | ".join(shown) if shown else "no error shown"
+
     page.reload(wait_until="networkidle")
     with phase("the conversation is still there after a reload"):
         # Waited for, not slept on: the transcript arrives over HTTP after the
@@ -96,7 +106,8 @@ with sync_playwright() as p:
             page.wait_for_selector("text=받은 말: 안녕", timeout=20000)
             check("the conversation is still there after a reload", True, "found")
         except Exception:
-            check("the conversation is still there after a reload", False, stored_turns())
+            check("the conversation is still there after a reload", False,
+                  f"{stored_turns()} | {complaints()}")
 
     # --- stopping a turn --------------------------------------------------
     page.fill("textarea", "SLOWMARK 기다려")

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Optional
 
@@ -18,7 +19,13 @@ async def store_turn(
     agent: str = "claude",
     meta: Optional[dict] = None,
 ) -> None:
-    embedding = embedding_model.embed_one(f"{prompt}\n{response}")
+    # Off the event loop: the embedding is ONNX inference, hundreds of
+    # milliseconds of pure CPU, and running it inline stops the server dead —
+    # every socket, every gate decision, and the connection pool's own
+    # housekeeping with them. On a two-core machine that was long enough for
+    # the pool to fail to hand out a connection on the next line, which lost
+    # the turn that had just been answered.
+    embedding = await asyncio.to_thread(embedding_model.embed_one, f"{prompt}\n{response}")
     async with pool.connection() as conn:
         await conn.execute(
             """
@@ -154,7 +161,7 @@ async def search_similar_turns(
     0.4 is a reasonable default for bge-small-en-v1.5 (empirically: paired
     Q/A on the same topic lands around 0.15-0.25 cosine distance, unrelated
     topics land around 0.45-0.65 -- see apps/server/tests/test_memory_rag.py)."""
-    embedding = embedding_model.embed_one(query)
+    embedding = await asyncio.to_thread(embedding_model.embed_one, query)
     async with pool.connection() as conn:
         # The turns_embedding_idx ivfflat index (packages/memory/db.py) is
         # created with lists=100 on the *empty* table at migration time, so
