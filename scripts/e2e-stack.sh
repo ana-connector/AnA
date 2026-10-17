@@ -27,6 +27,8 @@ E2E_DIR="${E2E_DIR:-${TMPDIR:-/tmp}/ana-e2e}"
 E2E_WEB_PORT="${E2E_WEB_PORT:-3211}"
 E2E_API_PORT="${E2E_API_PORT:-8123}"
 E2E_DB_PORT="${E2E_DB_PORT:-15499}"
+E2E_DB_HOST="${E2E_DB_HOST:-127.0.0.1}"
+E2E_DB_BIND="${E2E_DB_BIND:-127.0.0.1}"
 CONTAINER="ana-e2e-pg"
 # Resolved to a full path: the server is started with `env -i`, which drops
 # PATH, so a bare interpreter name would not be found there.
@@ -64,9 +66,14 @@ up() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker run -d --name "$CONTAINER" \
     -e POSTGRES_PASSWORD=test -e POSTGRES_DB=ana_e2e \
-    -p "127.0.0.1:${E2E_DB_PORT}:5432" pgvector/pgvector:pg16 >/dev/null
+    -p "${E2E_DB_BIND}:${E2E_DB_PORT}:5432" pgvector/pgvector:pg16 >/dev/null
   for _ in $(seq 1 60); do
-    docker exec "$CONTAINER" pg_isready -U postgres -d ana_e2e >/dev/null 2>&1 && break
+    # initdb starts a temporary server before the entrypoint replaces itself
+    # with the final postgres process. Connecting during that restart races.
+    if docker exec "$CONTAINER" sh -c '[ "$(cat /proc/1/comm)" = postgres ]' \
+      && docker exec "$CONTAINER" pg_isready -U postgres -d ana_e2e >/dev/null 2>&1; then
+      break
+    fi
     sleep 1
   done
 
@@ -75,11 +82,12 @@ up() {
   # DATABASE_URL or a gate token, for the same reason the test suite clears
   # them (apps/server/tests/conftest.py).
   setsid env -i HOME="$HOME" PATH="$E2E_DIR/bin:/usr/bin:/bin" \
-    DATABASE_URL="postgresql://postgres:test@127.0.0.1:${E2E_DB_PORT}/ana_e2e" \
+    DATABASE_URL="postgresql://postgres:test@${E2E_DB_HOST}:${E2E_DB_PORT}/ana_e2e" \
     ANA_ALLOWED_ORIGINS="${web_url},http://localhost:${E2E_WEB_PORT}" \
     ANA_STATE_DIR="$E2E_DIR/state" \
     ANA_WORKSPACE_ROOT="$E2E_DIR/workspaces" \
     ANA_SECRET_KEY="e2e" \
+    ANA_DISABLED_AGENTS="codex,kimi,tapie,cursor,opencode" \
     CLAUDE_AUTH_MODE="pro" \
     "$PYTHON" -u -m uvicorn apps.server.app.main:app \
       --app-dir "$ROOT" --host 127.0.0.1 --port "$E2E_API_PORT" \

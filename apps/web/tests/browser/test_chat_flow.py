@@ -153,23 +153,28 @@ with sync_playwright() as p:
                   "() => [...document.querySelectorAll('[data-slot=tab-title]')]"
                   ".map(e => e.textContent)")))
         page.locator('[data-slot="tab"][data-active="true"] [data-slot="tab-close"]').click()
-        page.wait_for_timeout(1000)
+        with phase("closing the preview returns to the conversation", page):
+            page.wait_for_url(workspace_url, timeout=10000)
+            check("closing the preview returns to the conversation", True, page.url)
 
     # --- stopping a turn --------------------------------------------------
     page.fill("textarea", "SLOWMARK 기다려")
+    page.wait_for_function("() => { const b = document.querySelector('button[type=submit]'); return b && !b.disabled; }")
     page.keyboard.press("Enter")
-    page.wait_for_timeout(2000)
     stop = page.get_by_role("button", name=re.compile("중단|중지|stop", re.I))
-    check("a running turn offers a stop", stop.count() > 0, f"buttons={stop.count()}")
+    with phase("a running turn offers a stop", page):
+        stop.first.wait_for(timeout=10000)
+        check("a running turn offers a stop", True, f"buttons={stop.count()}")
     if stop.count():
         stop.first.click()
-        page.wait_for_timeout(3000)
+        page.wait_for_selector('button[type=submit]', timeout=10000)
         still_running = page.get_by_role("button", name=re.compile("중단|중지|stop", re.I)).count()
         check("stopping ends the turn", still_running == 0, f"stop buttons left={still_running}")
 
     # the next prompt still works after a stop
     with phase("a prompt after a stop is answered"):
         page.fill("textarea", "다시")
+        page.wait_for_function("() => { const b = document.querySelector('button[type=submit]'); return b && !b.disabled; }")
         page.keyboard.press("Enter")
         page.wait_for_selector("text=받은 말: 다시", timeout=25000)
         check("a prompt after a stop is answered", True, "받은 말: 다시")
@@ -182,6 +187,7 @@ with sync_playwright() as p:
     check("no sideways scrolling at 360px", overflow <= 1, f"overflow={overflow}px")
     with phase("a turn works at 360px"):
         page.fill("textarea", "좁은 화면")
+        page.wait_for_function("() => { const b = document.querySelector('button[type=submit]'); return b && !b.disabled; }")
         page.keyboard.press("Enter")
         page.wait_for_selector("text=받은 말: 좁은 화면", timeout=25000)
         check("a turn works at 360px", True, "")
