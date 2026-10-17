@@ -75,7 +75,7 @@ SELF_WORKSPACE_NAME = "ANA (자기 자신)"
 # pages of their own, so a workspace with one of these ids would be unreachable.
 RESERVED_WORKSPACE_IDS = {
     SELF_WORKSPACE_ID, "start", "settings", "tools", "secrets",
-    "automation", "workspaces", "icon.svg",
+    "automation", "workspaces", "browser", "icon.svg",
 }
 
 

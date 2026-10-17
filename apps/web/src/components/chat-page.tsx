@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { clockTime, duration, shortPath, timeExact } from "@/lib/format";
+import { clockTime, duration, timeExact } from "@/lib/format";
 import { notify } from "@/lib/notify";
 import {
   Sheet,
@@ -131,7 +131,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     failingAgents,
     turnsFinished,
     loadingHistory,
-    workspace,
     workspaceName,
     approvals,
     questions,
@@ -226,10 +225,11 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
           and its rounded corners past the clipped edge of the window. As an
           ordinary flex child it takes the room the margins leave. */}
       <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {/* The tab says which workspace this is; what sits beside it is what
-            you cannot read off a tab — whether the socket is up, and which
-            CLI the ladder picked for the next turn. The ⌘K workspace search
-            that used to sit here is gone: the tabs are the switcher now. */}
+        {/* The tab says which workspace this is and which folder it works
+            in; what sits beside it is what a tab cannot say — whether the
+            socket is up, and which CLI the ladder picked for the next turn.
+            The ⌘K workspace search that used to sit here is gone: the tabs
+            are the switcher now. */}
         <TabBar
           actions={
             <>
@@ -239,15 +239,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                   anyway. */}
               {!connected && (
                 <span className="shrink-0 text-xs text-destructive">연결 끊김</span>
-              )}
-
-              {workspace && (
-                <span
-                  className="hidden max-w-48 min-w-0 shrink truncate font-mono text-[11px] text-muted-foreground lg:inline"
-                  title={workspace}
-                >
-                  {shortPath(workspace)}
-                </span>
               )}
 
               {route && (

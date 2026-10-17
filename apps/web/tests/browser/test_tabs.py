@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 from playwright.sync_api import sync_playwright
@@ -173,11 +174,39 @@ with sync_playwright() as p:
           page.locator(f'[data-slot="tab"][data-href="/{made[2]["id"]}"] img')
               .get_attribute("src") == PNG, "")
 
-    # A tab the width of the word on it reads as a link, not as a tab.
+    marker = page.evaluate("""() => {
+      const tab = document.querySelector('[data-slot="tab"][data-active="true"]');
+      const after = getComputedStyle(tab, '::after');
+      const bar = document.querySelector('[data-slot="tab-bar"]').getBoundingClientRect();
+      const detail = tab.querySelector('[data-slot="tab-detail"]');
+      return {
+        bottom: after.bottom, height: after.height, colour: after.backgroundColor,
+        folder: detail ? detail.textContent.trim() : null,
+        // Anything to the right of the tabs: the folder used to live there.
+        right: [...document.querySelectorAll('header > div')]
+          .map(node => node.textContent.trim()).filter(Boolean),
+        barRight: Math.round(bar.right),
+      };
+    }""")
+    check("the active tab is marked along its bottom edge",
+          marker["bottom"] == "0px" and marker["height"] == "2px", str(marker))
+    check("the tab carries the folder beside the name",
+          marker["folder"] and marker["folder"].endswith(made[2]["id"]), str(marker["folder"]))
+    check("and the folder is no longer parked at the end of the bar",
+          not any("/" in text for text in marker["right"]), str(marker["right"]))
+
+    # Compact: a tab is as wide as what is on it, up to a ceiling, so the bar
+    # does not stretch three tabs across a wide window.
     widths = page.evaluate("""() => [...document.querySelectorAll('[data-slot="tab"]')]
         .map(tab => Math.round(tab.getBoundingClientRect().width))""")
-    check("tabs share the width instead of hugging their names",
-          min(widths) >= 128, str(widths))
+    bar_width = page.evaluate(
+        "() => Math.round(document.querySelector('[data-slot=\"tab-bar\"]').getBoundingClientRect().width)")
+    check("a tab is no wider than its ceiling", max(widths) <= 224, str(widths))
+    check("and the tabs do not stretch across the bar",
+          sum(widths) < bar_width, f"{widths} in {bar_width}")
+    check("the bar is compact", page.evaluate(
+        "() => Math.round(document.querySelector('[data-slot=\"tab-bar\"]').parentElement"
+        ".getBoundingClientRect().height)") <= 40, "")
 
     # --- a narrow window scrolls the bar rather than widening the page ---
     page.set_viewport_size({"width": 390, "height": 780})
@@ -254,6 +283,50 @@ with sync_playwright() as p:
     check("closing the last tab lands on the start page",
           names(page) == ["시작"] and page.url.rstrip("/") == BASE.rstrip("/"),
           f"{names(page)} {page.url}")
+
+    # --- a page's own controls are not in the tab bar ---------------------
+    page.goto(f"{BASE}/settings", wait_until="networkidle")
+    page.wait_for_timeout(1200)
+    placed = page.evaluate("""() => {
+      const header = document.querySelector('[data-slot="tab-bar"]').parentElement;
+      const bar = document.querySelector('[data-slot="page-actions"]');
+      return {
+        inHeader: header.innerText.includes('저장'),
+        below: bar ? bar.innerText.includes('저장') : false,
+        order: bar ? (bar.getBoundingClientRect().top > header.getBoundingClientRect().bottom) : false,
+      };
+    }""")
+    check("the save button is below the tab bar, not in it",
+          not placed["inHeader"] and placed["below"] and placed["order"], str(placed))
+
+    # --- the browser tab --------------------------------------------------
+    page.click('[data-slot="tab-new"]')
+    page.wait_for_url(f"{BASE}/browser", timeout=20000)
+    page.wait_for_timeout(800)
+    check("the + button opens a browser tab", names(page)[-1] == "브라우저", str(names(page)))
+
+    page.fill('[data-slot="browser-address"]', f"{API.replace('http://', '')}/healthz")
+    page.get_by_role("button", name="열기", exact=True).click()
+    page.wait_for_timeout(2000)
+    framed = page.locator('[data-slot="browser-frame"]')
+    check("an address is loaded in the tab",
+          framed.count() == 1 and framed.get_attribute("src").endswith("/healthz"),
+          framed.get_attribute("src") if framed.count() else "no frame")
+    check("the framed page is really served",
+          "ok" in page.frame_locator('[data-slot="browser-frame"]').locator("body").inner_text(), "")
+    check("typing an address moves that tab rather than opening another",
+          names(page).count("브라우저") == 0 and names(page)[-1].endswith(API.split(":")[-1]),
+          str(names(page)))
+
+    # ANA framed inside ANA would share our origin, and a frame that does can
+    # step straight out of its sandbox.
+    page.goto(f"{BASE}/browser/{urllib.parse.quote(BASE, safe='')}", wait_until="networkidle")
+    page.wait_for_timeout(900)
+    check("AnA itself is refused",
+          page.locator('[data-slot="browser-frame"]').count() == 0
+          and "열 수 없는 주소" in page.inner_text("body"), "")
+    page.locator('[data-slot="tab"][data-active="true"] [data-slot="tab-close"]').click()
+    page.wait_for_timeout(800)
 
     # --- picking an icon --------------------------------------------------
     page.goto(f"{BASE}/workspaces/{made[0]['id']}", wait_until="networkidle")

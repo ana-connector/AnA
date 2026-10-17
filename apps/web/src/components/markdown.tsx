@@ -3,6 +3,8 @@
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useTabs } from "@/components/tabs";
+import { browserHref, isLoopback, previewLabel } from "@/lib/preview";
 
 /** Agent replies are markdown — code fences, lists, tables — so they are
  *  rendered rather than shown as literal asterisks and backticks.
@@ -14,6 +16,7 @@ import remarkGfm from "remark-gfm";
  *  Memoized on the text: parsing is the expensive part of a transcript render,
  *  and without this every streamed token re-parsed every earlier reply too. */
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
+  const { open } = useTabs();
   return (
     <div className="flex flex-col gap-2 text-sm leading-relaxed break-words">
       <ReactMarkdown
@@ -26,6 +29,16 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
               target="_blank"
               rel="noreferrer"
               className="underline underline-offset-4"
+              onClick={(event) => {
+                // A link to this machine is something the agent just started,
+                // so it opens in a browser tab beside the conversation rather
+                // than in a window that buries it. Anything else is somebody
+                // else's site and still opens where the user expects.
+                if (!href || !isLoopback(href)) return;
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+                event.preventDefault();
+                open(browserHref(href), { title: previewLabel(href) });
+              }}
             >
               {children}
             </a>

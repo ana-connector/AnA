@@ -53,9 +53,13 @@ export default function StartPage() {
     };
   }, [refresh]);
 
-  const open = useCallback((id: string, name?: string, icon?: string) => {
-    window.localStorage.setItem("ana_thread_id", id);
-    openHere(`/${encodeURIComponent(id)}`, name, icon);
+  const open = useCallback((workspace: WorkspaceSummary) => {
+    window.localStorage.setItem("ana_thread_id", workspace.id);
+    openHere(`/${encodeURIComponent(workspace.id)}`, {
+      title: workspace.name,
+      icon: workspace.icon,
+      detail: shortPath(workspace.path),
+    });
   }, [openHere]);
 
   const submit = async (event: FormEvent) => {
@@ -65,7 +69,7 @@ export default function StartPage() {
       // Straight into the new conversation: creating a workspace is something
       // you do because you are about to work in it.
       const created = await createWorkspace(name, path);
-      open(created.id, created.name);
+      open({ ...created, icon: "" } as WorkspaceSummary);
     } catch (e) {
       setError(String(e));
     }
@@ -87,7 +91,7 @@ export default function StartPage() {
       const index = Number(event.code.replace(/^Digit|^Numpad/, "")) - 1;
       if (!Number.isInteger(index) || index < 0 || !recent[index]) return;
       event.preventDefault();
-      open(recent[index].id, recent[index].name, recent[index].icon);
+      open(recent[index]);
     };
     window.addEventListener("keydown", onRecentShortcut);
     return () => window.removeEventListener("keydown", onRecentShortcut);
@@ -140,7 +144,7 @@ export default function StartPage() {
                       onClick={(event) => {
                         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
                         event.preventDefault();
-                        open(item.id, item.name, item.icon);
+                        open(item);
                       }}
                     />
                   }

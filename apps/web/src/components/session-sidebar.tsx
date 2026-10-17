@@ -87,8 +87,14 @@ export function SessionSidebar({
       return match[1];
     }
   })();
-  const onOpenWorkspace = (id: string | null, title?: string, icon?: string) =>
-    id ? openTab(href(id), title, icon) : openTab("/", "시작");
+  const onOpenWorkspace = (workspace: WorkspaceSummary | null) =>
+    workspace
+      ? openTab(href(workspace.id), {
+          title: workspace.name,
+          icon: workspace.icon,
+          detail: shortPath(workspace.path),
+        })
+      : openTab("/", { title: "시작" });
   const { resolvedTheme, setTheme } = useTheme();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   // The id of the workspace whose folder is ANA's own source tree, when the
@@ -115,7 +121,14 @@ export function SessionSidebar({
           // reliably knows what each workspace is called and what it looks
           // like. The tabs take their name and icon from here rather than
           // waiting for the conversation to connect.
-          describeWorkspaces(items);
+          describeWorkspaces(
+            items.map((item) => ({
+              id: item.id,
+              name: item.name,
+              icon: item.icon,
+              detail: shortPath(item.path),
+            }))
+          );
         }
         return items;
       },
@@ -176,8 +189,8 @@ export function SessionSidebar({
       setPath("");
       setAdding(false);
       setError(null);
-      await refresh();
-      onOpenWorkspace(created.id, created.name);
+      const items = await refresh();
+      onOpenWorkspace(items.find((item) => item.id === created.id) ?? null);
     } catch (e) {
       setError(String(e));
     }
@@ -198,7 +211,7 @@ export function SessionSidebar({
     // The tab goes with the workspace: leaving it open would offer a way back
     // into something that no longer exists.
     closeTab(href(deletedId));
-    onOpenWorkspace(next?.id ?? null, next?.name, next?.icon);
+    onOpenWorkspace(next ?? null);
   };
 
   /** One row, shared by the live list and the archive: the same workspace with
@@ -211,7 +224,7 @@ export function SessionSidebar({
     <SidebarMenuItem key={item.id}>
       <SidebarMenuButton
         isActive={selectable && href(item.id) === activeHref}
-        onClick={() => onOpenWorkspace(item.id, item.name, item.icon)}
+        onClick={() => onOpenWorkspace(item)}
         className="h-auto py-1.5"
         title={`${item.id}\n${item.path}`}
       >

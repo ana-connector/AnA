@@ -4,14 +4,17 @@ import { useEffect, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import {
   ClockIcon,
+  GlobeIcon,
   HomeIcon,
   LockIcon,
+  PlusIcon,
   Settings2Icon,
   TerminalIcon,
   XIcon,
   type LucideIcon,
 } from "lucide-react";
 import { useTabs } from "@/components/tabs";
+import { BROWSER_ROUTE } from "@/lib/preview";
 import { WorkspaceIcon } from "@/components/workspace-icon";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -35,7 +38,7 @@ const ROUTE_ICONS: Record<string, LucideIcon> = {
  *  nothing you could act on and gave you no way back to the page you had just
  *  left. A tab says both at once. */
 export function TabBar({ actions }: { actions?: ReactNode }) {
-  const { tabs, activeHref, close } = useTabs();
+  const { tabs, activeHref, close, open } = useTabs();
   const activeTab = useRef<HTMLDivElement | null>(null);
 
   // On a narrow window the bar scrolls, and the tab you just opened can be
@@ -66,7 +69,7 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
     // The strip is darker than the page and the open tab is the page's own
     // colour, which is what makes it read as the sheet in front: tabs drawn
     // on the same background as their content are only underlined words.
-    <header className="flex h-11 shrink-0 items-stretch border-b border-border bg-muted/40 pr-2">
+    <header className="flex h-9 shrink-0 items-stretch border-b border-border bg-muted/40 pr-2">
       <div className="flex shrink-0 items-center gap-2 pr-2 pl-3">
         <SidebarTrigger />
         <Separator orientation="vertical" className="h-4" />
@@ -82,7 +85,8 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
       >
         {tabs.map((tab) => {
           const active = tab.href === activeHref;
-          const RouteIcon = ROUTE_ICONS[tab.href];
+          const RouteIcon =
+            ROUTE_ICONS[tab.href] ?? (tab.href.startsWith(BROWSER_ROUTE) ? GlobeIcon : undefined);
           return (
             <div
               key={tab.href}
@@ -99,30 +103,50 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
                 close(tab.href);
               }}
               className={cn(
-                // They share the width rather than hugging their names: a tab
-                // the width of the word on it is a link. The floor keeps a
-                // long list readable and lets the strip scroll instead.
-                "group/tab relative flex min-w-32 max-w-72 flex-1 basis-0 items-center gap-2",
+                // As wide as what is on it and no wider, up to a ceiling: a
+                // tab that stretches to fill the bar is a toolbar button, and
+                // one that spans a wide window on its own looks broken. Past
+                // the ceiling the name is cut; past the floor the strip
+                // scrolls instead.
+                "group/tab relative flex min-w-28 max-w-56 shrink items-center gap-2",
                 "border-r border-border/60 pr-1 pl-3 text-sm transition-colors",
                 active
-                  ? // The 2px line marks it and the 1px strip underneath eats
-                    // the header's own border, joining the tab to the page.
-                    "bg-background text-foreground before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-primary after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-background"
+                  ? // The line sits along the bottom, on top of the header's
+                    // own border, so it reads as the edge the page hangs from.
+                    "bg-background text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary"
                   : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
               )}
             >
               <Link
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
-                title={tab.title}
-                className="flex min-w-0 flex-1 items-center gap-2 py-2 outline-none focus-visible:underline"
+                title={tab.detail ? `${tab.title}\n${tab.detail}` : tab.title}
+                className="flex min-w-0 flex-1 items-baseline gap-1.5 py-1.5 outline-none focus-visible:underline"
               >
                 {tab.icon ? (
-                  <WorkspaceIcon icon={tab.icon} />
+                  <WorkspaceIcon icon={tab.icon} className="self-center" />
                 ) : RouteIcon ? (
-                  <RouteIcon className="size-4 shrink-0" strokeWidth={1.5} />
+                  <RouteIcon className="size-4 shrink-0 self-center" strokeWidth={1.5} />
                 ) : null}
                 <span data-slot="tab-title" className="min-w-0 flex-1 truncate">{tab.title}</span>
+                {tab.detail ? (
+                  // The folder used to sit at the far right of the bar, where
+                  // it belonged to whichever tab happened to be open. It
+                  // belongs to the tab: two workspaces are often called the
+                  // same thing in different trees. Whichever of the two runs
+                  // out of room is the one that gets cut.
+                  <span
+                    data-slot="tab-detail"
+                    // Hidden outright on a tab too narrow to hold both: a
+                    // folder cut down to "…/…" takes room from the name and
+                    // says nothing. The title attribute still has it.
+                    // Capped rather than left to shrink with the name: when
+                    // both are too long, the name is the one worth reading.
+                    className="hidden max-w-[45%] shrink-0 truncate font-mono text-[11px] text-muted-foreground @[10rem]/tab:inline"
+                  >
+                    {tab.detail}
+                  </span>
+                ) : null}
               </Link>
               <button
                 type="button"
@@ -142,6 +166,18 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
             </div>
           );
         })}
+        {/* At the end of the tabs rather than pinned to the right edge, so
+            it stays where the last tab is however many there are. */}
+        <button
+          type="button"
+          data-slot="tab-new"
+          aria-label="브라우저 탭 열기"
+          title="브라우저 탭 열기"
+          onClick={() => open(BROWSER_ROUTE, { title: "브라우저" })}
+          className="my-1 ml-1 flex size-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground"
+        >
+          <PlusIcon className="size-4" strokeWidth={1.5} />
+        </button>
       </nav>
 
       {actions ? <div className="flex shrink-0 items-center gap-1 pl-2">{actions}</div> : null}

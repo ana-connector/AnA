@@ -12,6 +12,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("ANA_E2E_WEB", "http://127.0.0.1:3211")
+API = os.environ.get("ANA_E2E_API", "http://127.0.0.1:8123")
 run_id = time.strftime("%H%M%S")
 
 import contextlib
@@ -24,13 +25,21 @@ def check(name, ok, detail=""):
 
 
 @contextlib.contextmanager
-def phase(name):
+def phase(name, page=None):
     """Records a timed-out wait as a failed check instead of ending the run,
-    so one broken step does not hide the ones after it."""
+    so one broken step does not hide the ones after it. What was on screen
+    goes into the detail: "timed out waiting for the answer" and "timed out
+    because the turn was never sent" look identical without it."""
     try:
         yield
     except Exception as exc:
-        check(name, False, f"{type(exc).__name__}: {str(exc).splitlines()[0][:120]}")
+        detail = f"{type(exc).__name__}: {str(exc).splitlines()[0][:120]}"
+        if page is not None:
+            try:
+                detail += f" | on screen: {page.inner_text('body')[-200:]!r}"
+            except Exception:  # noqa: BLE001 - the page may be gone
+                pass
+        check(name, False, detail)
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
@@ -119,6 +128,32 @@ with sync_playwright() as p:
         except Exception:
             check("the conversation is still there after a reload", False,
                   f"{stored_turns()} | {complaints()}")
+
+    # --- a link to this machine opens beside the conversation --------------
+    # An agent that has just started a dev server writes its address; opening
+    # that in a new window buries the conversation that produced it.
+    with phase("a link to this machine opens in a browser tab", page):
+        page.fill("textarea", f"{API}/healthz 를 확인해줘")
+        page.keyboard.press("Enter")
+        page.wait_for_selector(f"text=받은 말: {API}/healthz", timeout=25000)
+        page.wait_for_selector(f'a[href="{API}/healthz"]', timeout=10000)
+        page.locator(f'a[href="{API}/healthz"]').first.click()
+        page.wait_for_url("**/browser/**", timeout=15000)
+        page.wait_for_timeout(1200)
+        framed = page.locator('[data-slot="browser-frame"]')
+        check("a link to this machine opens in a browser tab",
+              framed.count() == 1 and framed.get_attribute("src") == f"{API}/healthz",
+              framed.get_attribute("src") if framed.count() else page.url)
+        check("and the conversation is still open behind it",
+              page.locator('[data-slot="tab"]').count() >= 2
+              and any(f"검증 {run_id}" in name for name in page.evaluate(
+                  "() => [...document.querySelectorAll('[data-slot=tab-title]')]"
+                  ".map(e => e.textContent)")),
+              str(page.evaluate(
+                  "() => [...document.querySelectorAll('[data-slot=tab-title]')]"
+                  ".map(e => e.textContent)")))
+        page.locator('[data-slot="tab"][data-active="true"] [data-slot="tab-close"]').click()
+        page.wait_for_timeout(1000)
 
     # --- stopping a turn --------------------------------------------------
     page.fill("textarea", "SLOWMARK 기다려")
