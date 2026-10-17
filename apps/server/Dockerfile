@@ -29,8 +29,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     # OpenCode CLI: a single Bun executable from the vendor's installer, which
     # always writes under $HOME/.opencode/bin. Same treatment as Cursor's —
     # installed into a directory of its own and linked onto the system PATH, so
-    # the `ana` user finds it without a login shell.
-    && curl -fsSL https://opencode.ai/install | HOME=/opt/opencode-install bash \
+    # the `ana` user finds it without a login shell. Pinned like claude/codex/
+    # kimi above: the adapter's event mapping was read off this version, and a
+    # floating install would change the CLI under it without a code change.
+    && curl -fsSL https://opencode.ai/install \
+       | env HOME=/opt/opencode-install VERSION=1.18.26 bash \
     && ln -sf /opt/opencode-install/.opencode/bin/opencode /usr/local/bin/opencode \
     && rm -rf /var/lib/apt/lists/*
 
@@ -59,7 +62,14 @@ RUN groupadd -g ${APP_GID} ana \
     # Both are mount points for named volumes: an empty volume inherits the
     # ownership of the directory in the image, and a root-owned one makes the
     # CLI settings file unwritable ("Permission denied: .ana/claude_settings.json").
-    && mkdir -p /home/ana/.cache /home/ana/.ana && chown ana:ana /home/ana/.cache /home/ana/.ana
+    # OpenCode's data directory is a bind mount, and Docker creates a missing
+    # mount *parent* as root — which left `opencode` unable to create
+    # ~/.local/state and failing with EACCES, so model discovery silently fell
+    # back to the built-in list. Created here, owned by ana, so the mount
+    # lands inside a directory the service can still write next to.
+    && mkdir -p /home/ana/.cache /home/ana/.ana /home/ana/.config \
+       /home/ana/.local/share /home/ana/.local/state \
+    && chown -R ana:ana /home/ana/.cache /home/ana/.ana /home/ana/.config /home/ana/.local
 USER ana
 ENV HOME=/home/ana
 
