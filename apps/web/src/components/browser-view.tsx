@@ -111,6 +111,7 @@ export function BrowserView({
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ width: 0, height: 0 });
   const url = parseUrl(target);
+  const urlHref = url?.href;
   const allowed = target !== "" && canPreview(target);
   const framingSelf = Boolean(url && isOwnOrigin(url.href));
 
@@ -141,13 +142,13 @@ export function BrowserView({
   // Same-origin frame: read `<title>` (and watch SPA changes). Otherwise ask
   // the previewed server directly — never ANA.
   useEffect(() => {
-    if (!onDocumentTitle || !url || framingSelf) return;
+    if (!onDocumentTitle || !urlHref || framingSelf) return;
     const frame = frameRef.current;
     let observer: MutationObserver | null = null;
     let cancelled = false;
 
     const fromTarget = async () => {
-      const title = await titleFromTarget(url.href);
+      const title = await titleFromTarget(urlHref);
       if (title && !cancelled) onDocumentTitle(title);
     };
 
@@ -180,7 +181,7 @@ export function BrowserView({
       frame?.removeEventListener("load", watch);
       observer?.disconnect();
     };
-  }, [onDocumentTitle, target, reloads, url?.href, framingSelf]);
+  }, [onDocumentTitle, target, reloads, urlHref, framingSelf]);
 
   const go = (event: FormEvent) => {
     event.preventDefault();
