@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { XIcon } from "lucide-react";
 import { useTabs } from "@/components/tabs";
 import { paneSrc } from "@/hooks/use-pane-mode";
@@ -80,6 +80,10 @@ function Pane({
       onDrop={(event) => {
         const href = event.dataTransfer.getData(TAB_DRAG_TYPE);
         setHint(null);
+        // Cleared here as well as on dragend: a drop does not always produce
+        // one, and a mark left behind leaves an invisible cover over every
+        // pane that swallows the next click.
+        document.body.removeAttribute("data-dragging-tab");
         if (!href) return;
         event.preventDefault();
         dropTab(node.id, sideOf(event), href);
@@ -115,14 +119,15 @@ function Pane({
         />
       )}
       {hint && <DropHint side={hint} />}
-      {/* While something is being dragged, the iframe would eat the events:
-          a cover over it keeps the drop on this side of the frame. */}
-      {!focused && (
-        <div
-          data-slot="pane-drop-cover"
-          className="absolute inset-0 z-10 hidden [body[data-dragging-tab]_&]:block"
-        />
-      )}
+      {/* An iframe eats the drag events that would otherwise reach the pane
+          under it, so a cover goes over the whole pane for the length of a
+          drag. Every pane, not only the ones showing another page: the
+          browser tab has a frame of its own, and dropping onto it did
+          nothing at all. */}
+      <div
+        data-slot="pane-drop-cover"
+        className="absolute inset-0 z-10 hidden [body[data-dragging-tab]_&]:block"
+      />
     </div>
   );
 }
@@ -216,6 +221,23 @@ function Branch({ node, children }: { node: PaneNode; children: ReactNode }) {
  *  a rewrite of every page into something mountable twice. */
 export function PaneHost({ children }: { children: ReactNode }) {
   const { panes } = useTabs();
+
+  // The cover over each pane is up for as long as the body carries the mark,
+  // so the mark has to come down even when the drag ends somewhere that has
+  // no handler of ours — outside the window, on the sidebar, nowhere.
+  useEffect(() => {
+    const clear = () => document.body.removeAttribute("data-dragging-tab");
+    window.addEventListener("dragend", clear);
+    window.addEventListener("drop", clear);
+    window.addEventListener("mouseup", clear);
+    return () => {
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("drop", clear);
+      window.removeEventListener("mouseup", clear);
+      clear();
+    };
+  }, []);
+
   return (
     <div data-slot="pane-host" className="flex min-h-0 min-w-0 flex-1">
       <Branch node={panes}>{children}</Branch>

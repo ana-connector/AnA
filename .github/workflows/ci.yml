@@ -110,7 +110,7 @@ jobs:
         with:
           # Node strips the types itself from 22.6 on; no install step.
           node-version: "22"
-      - run: node --test apps/web/tests/urls.test.ts
+      - run: node --test apps/web/tests/urls.test.ts apps/web/tests/preview.test.ts apps/web/tests/ids.test.ts
 
   browser-checks:
     name: browser regression

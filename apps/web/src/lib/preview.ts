@@ -32,19 +32,36 @@ export function isLoopback(value: string): boolean {
   return url !== null && LOOPBACK.has(url.hostname.toLowerCase());
 }
 
-/** Whether this address may be framed. Anything that is not http(s) is out —
- *  `javascript:` and `data:` in an iframe run in our own page. So is ANA
- *  itself: a frame of the same origin can reach out of its sandbox, and a
- *  browser tab showing the app it lives in is a hall of mirrors anyway. */
-export function canPreview(value: string, ownOrigin?: string): boolean {
+/** Whether this address may be framed. Anything that is not http(s) is out:
+ *  `javascript:` and `data:` in an iframe run in our own page. ANA's own
+ *  address is allowed — it is the user's own app on their own machine, and
+ *  they asked to be able to look at it. */
+export function canPreview(value: string): boolean {
+  return parseUrl(value) !== null;
+}
+
+/** The same address as the machine *looking* at it would reach.
+ *
+ *  An agent writes "localhost:3000" meaning the machine it is working on.
+ *  Opened from another device — ANA on `http://192.168.0.33:3005` — that
+ *  address means the phone or laptop doing the looking, which is running
+ *  nothing, so the frame says "연결을 거부했습니다". When the page itself is
+ *  not on a loopback address, that host is the one the server is at, so a
+ *  loopback target is pointed there instead. */
+export function forViewer(value: string, pageHostname?: string): string {
   const url = parseUrl(value);
-  if (!url) return false;
-  return !ownOrigin || url.origin !== ownOrigin;
+  if (!url) return value;
+  const host = pageHostname ?? (typeof window === "undefined" ? "" : window.location.hostname);
+  if (!host || !LOOPBACK.has(url.hostname.toLowerCase()) || LOOPBACK.has(host.toLowerCase())) {
+    return url.href;
+  }
+  url.hostname = host;
+  return url.href;
 }
 
 export function browserHref(value: string): string {
   const url = parseUrl(value);
-  return url ? `${BROWSER_ROUTE}/${encodeURIComponent(url.href)}` : BROWSER_ROUTE;
+  return url ? `${BROWSER_ROUTE}/${encodeURIComponent(forViewer(url.href))}` : BROWSER_ROUTE;
 }
 
 /** The address back out of a `/browser/<encoded>` path segment. */

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AGENTS, type Agent } from "@/components/ui/agent-toggle";
 import { fetchThreadHistory, wsBase } from "@/lib/api";
+import { newId } from "@/lib/ids";
 import { withQuery } from "@/lib/urls";
 
 export type ChatEvent =
@@ -1009,7 +1010,7 @@ export function useChatSocket(initialThreadId: string) {
       if (!socket || socket.readyState !== WebSocket.OPEN || pendingAckRef.current) return Promise.resolve(false);
       const previous = retryPromptRef.current;
       const retrying = previous?.text === text && previous.agent === agent;
-      const id = retrying ? previous.id : crypto.randomUUID();
+      const id = retrying ? previous.id : newId();
       retryPromptRef.current = { id, text, agent };
       try {
         socket.send(JSON.stringify({ prompt: text, agent, client_id: id }));

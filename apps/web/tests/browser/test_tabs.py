@@ -314,17 +314,62 @@ with sync_playwright() as p:
           framed.get_attribute("src") if framed.count() else "no frame")
     check("the framed page is really served",
           "ok" in page.frame_locator('[data-slot="browser-frame"]').locator("body").inner_text(), "")
+    # --- the size the page is looked at ----------------------------------
+    def frame_box(page):
+        return page.evaluate("""() => {
+          const frame = document.querySelector('[data-slot="browser-frame"]');
+          const box = frame.getBoundingClientRect();
+          return { w: Math.round(box.width), h: Math.round(box.height) };
+        }""")
+
+    filled = frame_box(page)
+    page.click('[data-slot="browser-size"][data-size="390x844"]')
+    page.wait_for_timeout(600)
+    phone = frame_box(page)
+    check("the preview can be looked at at phone size",
+          phone["w"] == 390 and phone["h"] == 844, str(phone))
+    check("which is not simply the pane", filled["w"] != phone["w"], f"{filled} -> {phone}")
+
+    page.fill('[data-slot="browser-width"]', "500")
+    page.wait_for_timeout(600)
+    custom = frame_box(page)
+    check("and at any width you type", custom["w"] == 500 and custom["h"] == 844, str(custom))
+
+    page.click('[data-slot="browser-rotate"]')
+    page.wait_for_timeout(600)
+    turned = frame_box(page)
+    check("turning it swaps the two", turned["w"] == 844 and turned["h"] == 500, str(turned))
+
+    page.click('[data-slot="browser-size"][data-size="fill"]')
+    page.wait_for_timeout(600)
+    back = frame_box(page)
+    check("and it goes back to filling the pane",
+          back["w"] == filled["w"] and back["h"] == filled["h"], f"{filled} -> {back}")
+
     check("typing an address moves that tab rather than opening another",
           names(page).count("브라우저") == 0 and names(page)[-1].endswith(API.split(":")[-1]),
           str(names(page)))
 
-    # ANA framed inside ANA would share our origin, and a frame that does can
-    # step straight out of its sandbox.
+    # AnA in AnA: the user's own app on their own machine, so it is framed
+    # like anything else.
     page.goto(f"{BASE}/browser/{urllib.parse.quote(BASE, safe='')}", wait_until="networkidle")
-    page.wait_for_timeout(900)
-    check("AnA itself is refused",
-          page.locator('[data-slot="browser-frame"]').count() == 0
-          and "열 수 없는 주소" in page.inner_text("body"), "")
+    page.wait_for_timeout(1500)
+    own = page.locator('[data-slot="browser-frame"]')
+    check("AnA can be framed in its own browser tab",
+          own.count() == 1 and own.get_attribute("src").startswith(BASE), "")
+
+    # A tab dropped on a browser tab has to land: the preview is an iframe,
+    # and an iframe eats the drag unless the pane is covered for its length.
+    pane = page.locator('[data-slot="pane"]').first
+    size = pane.bounding_box()
+    page.locator('[data-slot="tab"][data-href="/"]').drag_to(
+        pane, target_position={"x": size["width"] * 0.9, "y": size["height"] * 0.5})
+    page.wait_for_timeout(1200)
+    check("a tab can be dropped onto a browser tab",
+          page.locator('[data-slot="pane"]').count() == 2,
+          str(page.locator('[data-slot="pane"]').count()))
+    page.locator('[data-slot="pane-close"]').first.click()
+    page.wait_for_timeout(800)
     page.locator('[data-slot="tab"][data-active="true"] [data-slot="tab-close"]').click()
     page.wait_for_timeout(800)
 
@@ -418,7 +463,27 @@ with sync_playwright() as p:
           and sum(1 for pane in side_by_side if pane["focused"]) == 1
           and not next(pane for pane in side_by_side if pane["focused"])["framed"],
           str(side_by_side))
-    check("splitting opens no new tab", len(names(page)) == open_tabs, str(names(page)))
+    group = page.evaluate("""() => {
+      const el = document.querySelector('[data-slot="tab"][data-group="true"]');
+      if (!el) return null;
+      const parts = [...el.querySelectorAll('[data-slot="tab-part"]')];
+      return {
+        parts: parts.map(part => ({
+          href: part.dataset.href,
+          title: part.querySelector('[data-slot="tab-title"]').textContent.trim(),
+          active: part.dataset.active === 'true',
+        })),
+        tabs: document.querySelectorAll('[data-slot="tab"]').length,
+      };
+    }""")
+    check("the two pages share one tab, drawn as the split they are",
+          group is not None and len(group["parts"]) == 2, str(group))
+    check("and that tab replaces the two it merged",
+          group is not None and group["tabs"] == open_tabs - 1,
+          f"{group['tabs'] if group else '?'} of {open_tabs}")
+    check("the part you are in is the marked one",
+          group is not None and sum(1 for part in group["parts"] if part["active"]) == 1,
+          str(group["parts"] if group else None))
 
     # --- a split inside a split ------------------------------------------
     target = page.locator('[data-slot="pane"]').first
@@ -454,11 +519,22 @@ with sync_playwright() as p:
     page.locator('[data-slot="pane-close"]').first.click()
     page.wait_for_timeout(1000)
     check("closing a pane collapses its split", len(panes(page)) == 2, str(panes(page)))
-    check("and leaves its tab open", len(names(page)) == open_tabs, str(names(page)))
+    # Every open page is named once, whether on a tab of its own or on one
+    # part of the split tab.
+    shown_names = page.locator('[data-slot="tab-title"]').count()
+    check("and leaves its tab open", shown_names == open_tabs, f"{shown_names} of {open_tabs}")
+    check("two panes are still one tab",
+          page.locator('[data-slot="tab"][data-group="true"]').count() == 1
+          and page.locator('[data-slot="tab-part"]').count() == 2,
+          str(page.locator('[data-slot="tab-part"]').count()))
 
-    page.locator(f'[data-slot="tab"][data-href="/{made[1]["id"]}"] [data-slot="tab-close"]').click()
+    # Closing one half of a split tab, from the split tab itself.
+    page.locator(f'[data-slot="tab-part"][data-href="/{made[1]["id"]}"] [data-slot="tab-close"]').click()
     page.wait_for_timeout(1200)
     check("closing a tab takes its pane with it", len(panes(page)) == 1, str(panes(page)))
+    check("and the bar goes back to separate tabs",
+          page.locator('[data-slot="tab"][data-group="true"]').count() == 0,
+          str(names(page)))
 
     check("no console or page errors", not errors, "; ".join(errors[:3]))
     browser.close()
