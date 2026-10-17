@@ -70,6 +70,62 @@ def write_kimi_mcp_config(
     return atomic.write_text(path / "mcp.json", json.dumps(payload, indent=2))
 
 
+def write_cursor_mcp_config(
+    servers: Sequence[ResolvedServer],
+    state_dir: os.PathLike | str,
+    cursor_home: os.PathLike | str,
+) -> Path:
+    """Writes `$HOME/.cursor/mcp.json` for a prepared Cursor Agent HOME.
+
+    Same `mcpServers` shape as Claude/Kimi. Cursor has no --strict-mcp-config;
+    the prepared HOME is the user level, so this file is the whole list
+    (plus any project `.cursor/mcp.json` inside the workspace)."""
+    launchers = write_launchers(servers, state_dir)
+    payload = {
+        "mcpServers": {
+            server.name: {"command": str(launchers[server.name]), "args": []}
+            for server in servers
+        }
+    }
+    path = Path(cursor_home) / ".cursor"
+    path.mkdir(parents=True, exist_ok=True)
+    return atomic.write_text(path / "mcp.json", json.dumps(payload, indent=2))
+
+
+def write_opencode_mcp_config(
+    servers: Sequence[ResolvedServer],
+    state_dir: os.PathLike | str,
+    opencode_home: os.PathLike | str,
+) -> Path:
+    """Writes the overlay config OPENCODE_CONFIG points at, and returns it.
+
+    OpenCode keeps MCP servers inside its own config file rather than in a file
+    of their own, under an `mcp` key whose entries are
+    `{"type": "local", "command": [...]}` — one list, not a `command`/`args`
+    pair as in the Claude/Kimi/Cursor shape. The command is still the launcher
+    script, so no secret reaches the file.
+
+    This is an *additional* config (`OPENCODE_CONFIG=<path>`): the user's own
+    config still loads from OPENCODE_CONFIG_DIR, which is where their
+    providers, keys and plugins live. Written even when the list is empty, so
+    that an earlier turn's servers are replaced rather than left behind."""
+    launchers = write_launchers(servers, state_dir)
+    payload = {
+        "$schema": "https://opencode.ai/config.json",
+        "mcp": {
+            server.name: {
+                "type": "local",
+                "command": [str(launchers[server.name])],
+                "enabled": True,
+            }
+            for server in servers
+        },
+    }
+    path = Path(opencode_home) / ".config" / "opencode"
+    path.mkdir(parents=True, exist_ok=True)
+    return atomic.write_text(path / "ana.json", json.dumps(payload, indent=2))
+
+
 def codex_mcp_args(
     servers: Sequence[ResolvedServer], state_dir: os.PathLike | str
 ) -> list[str]:

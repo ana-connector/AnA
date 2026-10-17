@@ -95,7 +95,9 @@ def test_chain_tries_the_other_account_before_the_other_cli():
     # TAPIE and the subscription are the same CLI billed to different
     # accounts, so the other account is the cheapest escape; switching CLI
     # costs the conversation its session.
-    assert [r.label for r in chain] == ["tapie", "claude", "codex", "kimi"]
+    assert [r.label for r in chain] == [
+        "tapie", "claude", "codex", "kimi", "cursor", "opencode",
+    ]
 
 
 def test_chain_from_pro_mode():
@@ -104,19 +106,35 @@ def test_chain_from_pro_mode():
         "tapie",
         "codex",
         "kimi",
+        "cursor",
+        "opencode",
     ]
 
 
 def test_unspecified_claude_mode_does_not_repeat_pro():
     assert [r.label for r in build_chain("claude", None)] == [
-        "claude", "tapie", "codex", "kimi",
+        "claude", "tapie", "codex", "kimi", "cursor", "opencode",
     ]
 
 
 def test_chain_from_codex_falls_back_to_claude():
     # Nothing to re-auth on the Codex side.
     assert [r.label for r in build_chain("codex", "pro")] == [
-        "codex", "claude", "tapie", "kimi",
+        "codex", "claude", "tapie", "kimi", "cursor", "opencode",
+    ]
+
+
+def test_chain_from_cursor_falls_back_to_other_clis():
+    assert [r.label for r in build_chain("cursor", None)] == [
+        "cursor", "claude", "tapie", "codex", "kimi", "opencode",
+    ]
+
+
+def test_chain_from_opencode_falls_back_to_other_clis():
+    # OpenCode is many providers behind one CLI: a limit on the model a rung
+    # named is not a limit the same CLI can route around on its own.
+    assert [r.label for r in build_chain("opencode", None)] == [
+        "opencode", "claude", "tapie", "codex", "kimi", "cursor",
     ]
 
 
@@ -126,7 +144,11 @@ def test_next_rung_skips_what_was_tried():
     assert next_rung(chain, ["claude"]).label == "tapie"
     assert next_rung(chain, ["claude", "tapie"]).label == "codex"
     assert next_rung(chain, ["claude", "tapie", "codex"]).label == "kimi"
-    assert next_rung(chain, ["claude", "tapie", "codex", "kimi"]) is None
+    assert next_rung(chain, ["claude", "tapie", "codex", "kimi"]).label == "cursor"
+    assert next_rung(chain, ["claude", "tapie", "codex", "kimi", "cursor"]).label == "opencode"
+    assert next_rung(
+        chain, ["claude", "tapie", "codex", "kimi", "cursor", "opencode"]
+    ) is None
 
 
 def test_breaker_state_expires_after_the_cooldown():

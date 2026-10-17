@@ -333,6 +333,12 @@ export type AnaSettings = {
    *  one applies to the very next tool call. */
   governance_mode?: string;
   governance_modes?: string[];
+  /** Every CLI this build knows about, and the ones the user switched off.
+   *  Stored as the disabled set so a CLI added by a later version arrives
+   *  switched on. The router, the failover chain and the composer all skip a
+   *  disabled CLI; at least one has to stay on. */
+  agents?: string[];
+  disabled_agents?: string[];
 };
 
 export async function fetchSettings(): Promise<AnaSettings> {
@@ -528,6 +534,9 @@ export type RoutingConfig = RoutingLadders & {
   models?: Record<string, string[]>;
   windows: { key: string; label: string }[];
   windows_by_agent?: Record<string, string[]>;
+  /** CLIs switched off on the settings page: a rung naming one is kept and
+   *  marked rather than dropped. */
+  disabled_agents?: string[];
 };
 
 export function fetchRouting(): Promise<RoutingConfig> {

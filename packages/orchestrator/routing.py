@@ -43,6 +43,16 @@ EFFORTS = {
     "kimi": ("low", "high", "max"),
     # The same CLI as claude, so the same flag and the same vocabulary.
     "tapie": ("low", "medium", "high", "xhigh", "max"),
+    # Cursor takes effort inside a parameterized --model string when needed;
+    # these names are accepted on a rung so the editor can store them, but the
+    # adapter does not pass a separate --effort flag.
+    "cursor": ("low", "medium", "high", "xhigh"),
+    # OpenCode calls it a variant (`--variant`), and which ones exist is the
+    # model's business rather than the CLI's: this is the union of the
+    # `variants` keys over every model `opencode models --verbose` lists, so a
+    # rung can store any of them. A variant the chosen model does not have is
+    # rejected by that provider at turn time, not here.
+    "opencode": ("none", "minimal", "low", "medium", "high", "xhigh", "max", "thinking"),
 }
 
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"
@@ -93,6 +103,22 @@ def _window_utilization(usage: Optional[dict], agent: str, window: str) -> float
     return 0.0
 
 
+def allowed_agents() -> set[str]:
+    """The CLIs the settings page has left switched on.
+
+    Imported lazily because settings.py reads this module for the rules path;
+    and failures fall back to "everything", since a router that refuses to
+    route because it could not read a preference file is worse than one that
+    ignores the preference."""
+    try:
+        from packages.orchestrator.settings import enabled_agents
+
+        allowed = set(enabled_agents())
+        return allowed or set(AGENTS)
+    except Exception:  # noqa: BLE001 - unreadable state directory, say
+        return set(AGENTS)
+
+
 class ModelLadder:
     def __init__(self, lead: list[Rung], workers: dict[str, list[Rung]]):
         self.lead = lead or [Rung(agent=DEFAULT_AGENT)]
@@ -123,7 +149,17 @@ class ModelLadder:
         usage: Optional[dict] = None,
         preference: Optional[str] = None,
     ) -> RoutingDecision:
-        rungs = self.rungs_for(role, preference)
+        allowed = allowed_agents()
+        rungs = [rung for rung in self.rungs_for(role, preference) if rung.agent in allowed]
+        if not rungs:
+            # Every rung on this ladder names a CLI that is switched off. The
+            # turn still has to be answered, so it goes to a CLI that is on,
+            # with no model: this ladder has nothing to say about which model
+            # that CLI should use.
+            fallback = next(
+                (agent for agent in AGENTS if agent in allowed), DEFAULT_AGENT
+            )
+            return RoutingDecision(agent=fallback, reason="래더의 CLI가 모두 꺼짐")
         for rung in rungs:
             if rung.window is None or rung.limit is None:
                 return RoutingDecision(
@@ -197,7 +233,14 @@ def load_routing_table(path: os.PathLike | str | None = None) -> ModelLadder:
 # "none" turns reasoning off entirely, and the judgement being made — does
 # this request need sub-agents, and which — is exactly the kind a model gets
 # wrong without any.
-PLANNING_EFFORT = {"claude": "low", "codex": "low", "kimi": "low", "tapie": "low"}
+PLANNING_EFFORT = {
+    "claude": "low",
+    "codex": "low",
+    "kimi": "low",
+    "tapie": "low",
+    "cursor": "low",
+    "opencode": "low",
+}
 
 
 def planning_effort(agent: str) -> Optional[str]:
@@ -252,7 +295,10 @@ def decide(
     override — but the model still comes from that agent's first rung, so an
     override picks the CLI without pinning a model nobody chose."""
     ladder = load_routing_table()
-    if requested_agent in AGENTS:
+    # A CLI the settings page has switched off is not honored even when the
+    # client names it: "off" is the stronger statement, and the alternative is
+    # a turn that fails in a CLI the user asked ANA not to use.
+    if requested_agent in AGENTS and requested_agent in allowed_agents():
         for rung in ladder.rungs_for(role, preference):
             if rung.agent == requested_agent:
                 return RoutingDecision(

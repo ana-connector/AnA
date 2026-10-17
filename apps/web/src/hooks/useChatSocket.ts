@@ -238,6 +238,12 @@ export type UsageTotals = {
 
 const THREAD_STORAGE_KEY = "ana_thread_id";
 
+/** CLIs that report tokens but no price, so a turn they answered makes the
+ *  thread's dollar total an understatement rather than a figure. OpenCode is
+ *  not among them: it reports a cost per step, and a free model's zero is a
+ *  real zero. */
+const UNPRICED_AGENTS = new Set<string>(["codex", "kimi", "cursor"]);
+
 function appendText(blocks: MessageBlock[], text: string): MessageBlock[] {
   const last = blocks[blocks.length - 1];
   if (last?.kind === "text") {
@@ -381,10 +387,8 @@ export function useChatSocket(initialThreadId: string) {
           // read "$0.0000 · 0 tok" for work that already happened.
           setUsage({ totalCostUsd: totals.cost_usd, totalTokens: totals.tokens });
           setHasUnpricedUsage(turns.some((turn) =>
-            turn.agent === "codex" || turn.agent === "kimi"
-            || (turn.meta?.subagents ?? []).some((task) =>
-              task.agent === "codex" || task.agent === "kimi"
-            )
+            UNPRICED_AGENTS.has(turn.agent ?? "")
+            || (turn.meta?.subagents ?? []).some((task) => UNPRICED_AGENTS.has(task.agent ?? ""))
           ));
           const restored: ChatMessage[] = [];
           for (const turn of turns) {
@@ -952,10 +956,8 @@ export function useChatSocket(initialThreadId: string) {
           // reload, instead of vanishing with the next prompt.
           const index = agentMessageIndexRef.current;
           const finishedPlan = planRef.current;
-          if (event.agent === "codex" || event.agent === "kimi"
-            || finishedPlan?.tasks.some((task) =>
-              task.agent === "codex" || task.agent === "kimi"
-            )) {
+          if (UNPRICED_AGENTS.has(event.agent ?? "")
+            || finishedPlan?.tasks.some((task) => UNPRICED_AGENTS.has(task.agent ?? ""))) {
             setHasUnpricedUsage(true);
           }
           if (index !== null) {

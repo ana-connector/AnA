@@ -19,6 +19,7 @@ const rows = [
   { agent: "kimi", window: "monthly", label: "Kimi · 이번 달" },
   { agent: "tapie", window: "five_hour", label: "TAPIE · 5시간 ($50)" },
   { agent: "tapie", window: "monthly", label: "TAPIE · 이번 달 ($1500)" },
+  { agent: "cursor", window: "monthly", label: "Cursor · 이번 달" },
 ] as const;
 
 

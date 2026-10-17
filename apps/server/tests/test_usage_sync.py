@@ -1,4 +1,4 @@
-"""The usage sync button: Codex off its log, Claude by one short probe turn."""
+"""The usage sync button: HTTP quota APIs first, Claude probe as fallback."""
 import asyncio
 import time
 
@@ -11,6 +11,13 @@ from apps.server.app.main import app
 from apps.server.app.usage_sync import sync_claude, sync_codex, sync_usage
 from packages.adapters.base import AdapterEvent, AgentAdapter
 from packages.observability.limits import UsageTracker
+
+
+def _no_http_quotas(monkeypatch):
+    """Keep probe-path tests off the live OAuth/Connect endpoints."""
+    monkeypatch.setattr(usage_sync, "fetch_claude_limits", lambda: None)
+    monkeypatch.setattr(usage_sync, "fetch_cursor_limits", lambda: None)
+    monkeypatch.setattr(usage_sync, "fetch_kimi_limits", lambda: None)
 
 
 class FakeProbe(AgentAdapter):
@@ -96,6 +103,7 @@ def test_an_unreadable_log_is_reported_not_raised(monkeypatch):
 
 async def test_the_probe_collects_the_rate_limit_event(monkeypatch):
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
     tracker = UsageTracker()
     probe = FakeProbe(reported={"windows": {"five_hour": {"utilization": 0.77}}})
 
@@ -114,6 +122,7 @@ async def test_the_probe_collects_the_rate_limit_event(monkeypatch):
 
 async def test_what_the_probe_spends_is_recorded_like_any_other_turn(monkeypatch):
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
     tracker = UsageTracker()
 
     result = await sync_claude(
@@ -131,6 +140,7 @@ async def test_what_the_probe_spends_is_recorded_like_any_other_turn(monkeypatch
 async def test_a_probe_that_reported_nothing_says_so(monkeypatch):
     """The user paid for a request; they are entitled to know it changed nothing."""
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
 
     result = await sync_claude(UsageTracker(), lambda: FakeProbe(reported=None))
 
@@ -141,6 +151,7 @@ async def test_a_probe_that_reported_nothing_says_so(monkeypatch):
 
 async def test_a_limit_message_becomes_the_reason(monkeypatch):
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
 
     result = await sync_claude(
         UsageTracker(),
@@ -154,6 +165,7 @@ async def test_a_limit_message_becomes_the_reason(monkeypatch):
 
 async def test_a_hanging_probe_gives_up_instead_of_holding_the_request(monkeypatch):
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
     monkeypatch.setenv("ANA_USAGE_PROBE_TIMEOUT_SECONDS", "0.2")
 
     result = await sync_claude(UsageTracker(), lambda: Hanging())
@@ -164,29 +176,49 @@ async def test_a_hanging_probe_gives_up_instead_of_holding_the_request(monkeypat
 
 async def test_a_cli_that_cannot_be_built_is_a_reason_not_a_crash(monkeypatch):
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
 
     def broken():
         raise RuntimeError("no credentials")
 
     result = await sync_claude(UsageTracker(), broken)
 
-    assert result == {"agent": "claude", "refreshed": False, "reason": "no credentials"}
+    assert result["agent"] == "claude"
+    assert result["refreshed"] is False
+    assert "no credentials" in result["reason"]
 
 
 async def test_the_probe_can_be_turned_off_entirely(monkeypatch):
     monkeypatch.setenv("ANA_USAGE_PROBE", "off")
+    _no_http_quotas(monkeypatch)
     called = []
 
     result = await sync_claude(UsageTracker(), lambda: called.append(1))
 
     assert result["refreshed"] is False
-    assert "ANA_USAGE_PROBE=off" in result["reason"]
+    assert "OAuth" in result["reason"] or "사용량" in result["reason"]
     assert called == []  # nothing was spent
+
+
+async def test_oauth_usage_skips_the_probe_turn(monkeypatch):
+    monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    monkeypatch.setattr(
+        usage_sync, "fetch_claude_limits",
+        lambda: {"five_hour": {"utilization": 0.2}},
+    )
+    called = []
+
+    result = await sync_claude(UsageTracker(), lambda: called.append(1) or FakeProbe())
+
+    assert result["refreshed"] is True
+    assert result["source"] == "oauth /usage"
+    assert called == []
 
 
 async def test_codex_is_synced_even_when_the_claude_probe_fails(monkeypatch):
     """Cheapest first: a probe that hangs must not cost the free half."""
     monkeypatch.delenv("ANA_USAGE_PROBE", raising=False)
+    _no_http_quotas(monkeypatch)
     monkeypatch.setenv("ANA_USAGE_PROBE_TIMEOUT_SECONDS", "0.2")
     monkeypatch.setattr(
         usage_sync, "read_codex_rate_limits",
@@ -196,9 +228,9 @@ async def test_codex_is_synced_even_when_the_claude_probe_fails(monkeypatch):
 
     results = await sync_usage(tracker, lambda: Hanging())
 
-    assert [r["agent"] for r in results] == ["codex", "claude"]
+    assert [r["agent"] for r in results] == ["codex", "cursor", "kimi", "claude"]
     assert results[0]["refreshed"] is True
-    assert results[1]["refreshed"] is False
+    assert results[-1]["refreshed"] is False
 
 
 # --- the endpoint ----------------------------------------------------------
@@ -221,12 +253,17 @@ def test_the_endpoint_returns_both_halves_and_the_fresh_snapshot(client, monkeyp
         usage_sync, "read_codex_rate_limits",
         lambda: {"five_hour": {"utilization": 0.33}},
     )
+    monkeypatch.setattr(usage_sync, "fetch_claude_limits", lambda: None)
+    monkeypatch.setattr(usage_sync, "fetch_cursor_limits", lambda: None)
+    monkeypatch.setattr(usage_sync, "fetch_kimi_limits", lambda: None)
 
     body = client.post("/usage/sync").json()
 
-    assert [entry["agent"] for entry in body["synced"]] == ["codex", "claude"]
+    assert [entry["agent"] for entry in body["synced"]] == [
+        "codex", "cursor", "kimi", "claude",
+    ]
     assert body["synced"][0]["refreshed"] is True
-    assert body["synced"][1]["refreshed"] is False  # probe off
+    assert body["synced"][-1]["refreshed"] is False  # probe off, no oauth
     window = next(
         w for w in body["agents"]["codex"]["windows"] if w["key"] == "five_hour"
     )

@@ -51,6 +51,17 @@ services:
       # an OAuth refresh is shared rather than diverging into two half-valid
       # copies. Read-write for that refresh.
       - ${HOME}/.kimi-code:/home/ana/.kimi-code
+      # Cursor Agent login session: auth.json (and cli-config) live here.
+      # prepare_cursor_home symlinks auth into ANA's prepared HOME so refreshes
+      # stay shared with the host `agent login`.
+      - ${HOME}/.config/cursor:/home/ana/.config/cursor
+      # OpenCode keeps credentials and sessions in its data directory and its
+      # providers, keys and plugins in its config directory. Both are the
+      # host's copies: prepare_opencode_home symlinks auth.json out of the
+      # first into ANA's prepared HOME, and OPENCODE_CONFIG_DIR points the CLI
+      # at the second. Read-write for a token refresh.
+      - ${HOME}/.local/share/opencode:/home/ana/.local/share/opencode
+      - ${HOME}/.config/opencode:/home/ana/.config/opencode
       # Keeps the fastembed model out of a re-download on every restart.
       - ana_model_cache:/home/ana/.cache
       # Shared with per-workspace containers: the CLI settings file carrying
@@ -121,6 +132,9 @@ services:
       - ANA_HOST_CLAUDE_JSON=${HOME}/.claude.json
       - ANA_HOST_CODEX_DIR=${HOME}/.codex
       - ANA_HOST_KIMI_DIR=${HOME}/.kimi-code
+      - ANA_HOST_CURSOR_CONFIG=${HOME}/.config/cursor
+      - ANA_HOST_OPENCODE_DATA=${HOME}/.local/share/opencode
+      - ANA_HOST_OPENCODE_CONFIG=${HOME}/.config/opencode
       # Answering approvals and questions from a phone
       # (docs/plans/2026-09-24-discord-remote-approvals.md). Nothing is
       # published for this: the bot dials Discord *out* over the gateway, and

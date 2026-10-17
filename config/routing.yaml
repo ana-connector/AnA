@@ -42,9 +42,22 @@ lead:
     until:
       window: five_hour
       utilization: 0.8
+  # No longer the last rung, so it needs an `until`: a rung without one is
+  # where everything lands, and the OpenCode rung below it would never be
+  # reached. 0.95 is "the subscription is about to refuse anyway".
   - agent: claude
     model: opus
     effort: high
+    until:
+      window: five_hour
+      utilization: 0.95
+  # Last resort: OpenCode on a free model. It is one CLI in front of many
+  # providers, so this is the rung that still answers when every subscription
+  # above it is spent — at the quality a free model gives. Model names here
+  # are `provider/model`; `opencode models` lists what the logged-in account
+  # can actually reach.
+  - agent: opencode
+    model: opencode/space-bunny-free
 
 # Sub-agents do the actual work (files, commands, edits), so they get the
 # models that are good at it, with the same "spend the cheap window first"
@@ -65,3 +78,9 @@ workers:
         utilization: 0.8
     - agent: claude
       model: opus
+      until:
+        window: five_hour
+        utilization: 0.95
+    # Same last resort as the lead ladder, for the same reason.
+    - agent: opencode
+      model: opencode/space-bunny-free

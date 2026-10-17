@@ -21,6 +21,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     # system PATH instead of a user home that the service never sources.
     && curl -fsSL https://code.kimi.com/kimi-code/install.sh \
        | env KIMI_INSTALL_DIR=/usr/local KIMI_VERSION=2.0.2 bash \
+    # Cursor Agent CLI (`agent` / `cursor-agent`). Installer always writes
+    # under $HOME/.local; put it on the system PATH for the `ana` user.
+    && curl -fsSL https://cursor.com/install | HOME=/opt/cursor-agent-install bash \
+    && ln -sf /opt/cursor-agent-install/.local/bin/agent /usr/local/bin/agent \
+    && ln -sf /opt/cursor-agent-install/.local/bin/cursor-agent /usr/local/bin/cursor-agent \
+    # OpenCode CLI: a single Bun executable from the vendor's installer, which
+    # always writes under $HOME/.opencode/bin. Same treatment as Cursor's —
+    # installed into a directory of its own and linked onto the system PATH, so
+    # the `ana` user finds it without a login shell.
+    && curl -fsSL https://opencode.ai/install | HOME=/opt/opencode-install bash \
+    && ln -sf /opt/opencode-install/.opencode/bin/opencode /usr/local/bin/opencode \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

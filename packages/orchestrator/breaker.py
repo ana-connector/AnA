@@ -20,6 +20,8 @@ CLAUDE = "claude"
 CODEX = "codex"
 KIMI = "kimi"
 TAPIE = "tapie"
+CURSOR = "cursor"
+OPENCODE = "opencode"
 
 # Substrings seen in a CLI's error output when the provider refuses on usage
 # rather than on the request itself. Deliberately broad: a missed match keeps
@@ -140,16 +142,58 @@ def build_chain(preferred_agent: str, preferred_mode: Optional[str]) -> list[Run
     if preferred_agent == CODEX:
         # Nothing to re-auth on the Codex side, so the rungs below it are the
         # other CLIs.
-        return [Rung(CODEX), Rung(CLAUDE), Rung(TAPIE), Rung(KIMI)]
+        return [
+            Rung(CODEX), Rung(CLAUDE), Rung(TAPIE), Rung(KIMI), Rung(CURSOR),
+            Rung(OPENCODE),
+        ]
     if preferred_agent == KIMI:
         # Same shape: one account, one bucket, so the way out of a Kimi limit
         # is another CLI entirely.
-        return [Rung(KIMI), Rung(CLAUDE), Rung(TAPIE), Rung(CODEX)]
+        return [
+            Rung(KIMI), Rung(CLAUDE), Rung(TAPIE), Rung(CODEX), Rung(CURSOR),
+            Rung(OPENCODE),
+        ]
+    if preferred_agent == CURSOR:
+        return [
+            Rung(CURSOR), Rung(CLAUDE), Rung(TAPIE), Rung(CODEX), Rung(KIMI),
+            Rung(OPENCODE),
+        ]
     if preferred_agent == TAPIE:
         # TAPIE is the same CLI on a key; the subscription is the nearest
         # place to land, for the same reason it is TAPIE's neighbour below.
-        return [Rung(TAPIE), Rung(CLAUDE), Rung(CODEX), Rung(KIMI)]
-    return [Rung(CLAUDE), Rung(TAPIE), Rung(CODEX), Rung(KIMI)]
+        return [
+            Rung(TAPIE), Rung(CLAUDE), Rung(CODEX), Rung(KIMI), Rung(CURSOR),
+            Rung(OPENCODE),
+        ]
+    if preferred_agent == OPENCODE:
+        # OpenCode is many providers behind one CLI, so a limit here is a
+        # limit on one of them: the other CLIs are the way out, and OpenCode
+        # on another model is a rung the ladder can name itself.
+        return [
+            Rung(OPENCODE), Rung(CLAUDE), Rung(TAPIE), Rung(CODEX), Rung(KIMI),
+            Rung(CURSOR),
+        ]
+    return [
+        Rung(CLAUDE), Rung(TAPIE), Rung(CODEX), Rung(KIMI), Rung(CURSOR),
+        Rung(OPENCODE),
+    ]
+
+
+def enabled_chain(chain: list[Rung]) -> list[Rung]:
+    """The chain without the CLIs the settings page has switched off.
+
+    Applied here rather than inside each `build_chain` branch so the orders
+    above stay readable as what they are: the preference, not the filter. A
+    chain filtered down to nothing keeps its first rung — failing over to a
+    CLI the user switched off is wrong, but so is having nowhere to go."""
+    try:
+        from packages.orchestrator.routing import allowed_agents
+
+        allowed = allowed_agents()
+    except Exception:  # noqa: BLE001
+        return chain
+    kept = [rung for rung in chain if rung.agent in allowed]
+    return kept or chain[:1]
 
 
 def next_rung(chain: list[Rung], tried: list[str]) -> Optional[Rung]:

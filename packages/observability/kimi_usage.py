@@ -1,4 +1,4 @@
-"""Token counts for a Kimi turn.
+"""Token counts for a Kimi turn, and account quota via GET /usages.
 
 `kimi -p --output-format stream-json` reports no usage at all — the stream is
 version, messages, resume hint, and nothing else. The CLI does record counts,
@@ -12,15 +12,25 @@ in the session's own wire log:
 way Codex's real rate limits are read out of its rollout log, so a Kimi turn
 still counts against the thread's token budget instead of looking free.
 
+Account windows come from the managed OAuth API the CLI's `/usage` calls
+(`.ana/KIMI_CODE_REA_REPORT.md`): `GET {base}/usages` with a Bearer token from
+`~/.kimi-code/credentials/`, refreshed through `auth.kimi.ai` when expired.
+
 Kimi's input fields are disjoint: `inputOther`, `inputCacheRead`, and
 `inputCacheCreation` must all be included to count the full input. Unlike
 Claude's usage payload, cached input is not already inside `inputOther`.
 """
 import json
 import os
+import platform
 import re
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 INDEX_FILENAME = "session_index.jsonl"
 WIRE_FILENAME = "wire.jsonl"
@@ -180,4 +190,182 @@ def _find_usage(node) -> Optional[dict]:
             found = _find_usage(value)
             if found:
                 return found
+    return None
+
+
+# --- Account quota (GET /usages) ---------------------------------------------
+
+FIVE_HOUR = "five_hour"
+MONTHLY = "monthly"
+KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+DEFAULT_API_BASE = "https://api.kimi.ai/coding/v1"
+DEFAULT_OAUTH_HOST = "https://auth.kimi.ai"
+USAGES_TIMEOUT = 8.0
+
+
+def fetch_rate_limits(kimi_home: Optional[os.PathLike | str] = None) -> Optional[dict]:
+    """Account windows from GET /usages, refreshing the OAuth token when needed.
+
+    Returns `{"five_hour": {"utilization": 0..1, "resets_at": …}, "monthly": …}`.
+    """
+    home = Path(kimi_home) if kimi_home else default_kimi_home()
+    token = _ensure_access_token(home)
+    if not token:
+        return None
+    base = (
+        os.environ.get("KIMI_CODE_BASE_URL")
+        or os.environ.get("KIMI_BASE_URL")
+        or DEFAULT_API_BASE
+    ).rstrip("/")
+    request = Request(
+        f"{base}/usages",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "kimi-code-cli/2.0.2",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=USAGES_TIMEOUT) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+    return normalize_usages(body)
+
+
+def normalize_usages(payload: dict) -> Optional[dict]:
+    if not isinstance(payload, dict):
+        return None
+    usages = payload.get("usages")
+    if not isinstance(usages, dict):
+        return None
+    out: dict = {}
+    mapping = (
+        ("limit_5h", FIVE_HOUR),
+        ("limit_month_total", MONTHLY),
+    )
+    for src, dst in mapping:
+        window = usages.get(src)
+        if not isinstance(window, dict):
+            continue
+        ratio = window.get("used_ratio")
+        if not isinstance(ratio, (int, float)):
+            continue
+        entry: dict = {"utilization": max(0.0, min(1.0, float(ratio)))}
+        resets = _parse_iso(window.get("reset_time"))
+        if resets is not None:
+            entry["resets_at"] = resets
+        out[dst] = entry
+    return out or None
+
+
+def _ensure_access_token(home: Path) -> Optional[str]:
+    path = _credentials_file(home)
+    if path is None:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    token = payload.get("access_token")
+    expires_at = payload.get("expires_at")
+    fresh = (
+        isinstance(token, str)
+        and token
+        and isinstance(expires_at, (int, float))
+        and float(expires_at) > time.time() + 30
+    )
+    if fresh:
+        return token
+    refresh = payload.get("refresh_token")
+    if not isinstance(refresh, str) or not refresh:
+        return token if isinstance(token, str) and token else None
+    renewed = _refresh_token(home, refresh)
+    if not renewed:
+        return token if isinstance(token, str) and token else None
+    try:
+        path.write_text(json.dumps(renewed, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return renewed.get("access_token")
+
+
+def _credentials_file(home: Path) -> Optional[Path]:
+    directory = home / "credentials"
+    if not directory.is_dir():
+        return None
+    files = sorted(directory.glob("kimi-code-env-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def _refresh_token(home: Path, refresh_token: str) -> Optional[dict]:
+    oauth_host = (
+        os.environ.get("KIMI_CODE_OAUTH_HOST")
+        or os.environ.get("KIMI_OAUTH_HOST")
+        or DEFAULT_OAUTH_HOST
+    ).rstrip("/")
+    body = urlencode(
+        {
+            "client_id": KIMI_CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }
+    ).encode("utf-8")
+    device_id = _device_id(home)
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": "kimi-code-cli/2.0.2",
+        "X-Msh-Platform": "linux",
+        "X-Msh-Version": "2.0.2",
+        "X-Msh-Device-Name": (platform.node() or "ana")[:64],
+        "X-Msh-Device-Model": platform.machine() or "unknown",
+        "X-Msh-Os-Version": platform.release() or "unknown",
+        "X-Msh-Device-Id": device_id,
+    }
+    request = Request(f"{oauth_host}/api/oauth/token", data=body, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=USAGES_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+    access = data.get("access_token")
+    if not isinstance(access, str) or not access:
+        return None
+    expires_in = data.get("expires_in")
+    expires_at = (
+        time.time() + float(expires_in)
+        if isinstance(expires_in, (int, float))
+        else time.time() + 900
+    )
+    return {
+        "access_token": access,
+        "refresh_token": data.get("refresh_token") or refresh_token,
+        "expires_at": int(expires_at),
+        "scope": data.get("scope") or "kimi-code",
+        "token_type": data.get("token_type") or "Bearer",
+        "expires_in": expires_in if isinstance(expires_in, (int, float)) else 900,
+    }
+
+
+def _device_id(home: Path) -> str:
+    path = home / "device_id"
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    return "ana-usage-sync"
+
+
+def _parse_iso(value) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value) / 1000.0 if value > 1e12 else float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
     return None

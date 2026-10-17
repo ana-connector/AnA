@@ -18,6 +18,7 @@ from packages.orchestrator.breaker import (
     BreakerConfig,
     BreakerState,
     build_chain,
+    enabled_chain,
     is_auth_failure,
     is_usage_limit,
     is_recoverable_failure,
@@ -530,7 +531,7 @@ async def _plan_with_failover(configurable, agent, model, effort, writer, tracer
     except ValueError:
         per_model_timeout, total_timeout = 60.0, 600.0
     deadline = time.monotonic() + total_timeout
-    chain = build_chain(agent, configurable.get("claude_auth_mode"))
+    chain = enabled_chain(build_chain(agent, configurable.get("claude_auth_mode")))
     start_index = next(
         (i for i, rung in enumerate(chain) if rung.label == start_rung), 0
     )
@@ -1271,7 +1272,7 @@ async def call_lead_agent(state: GraphState, config: RunnableConfig) -> dict:
     total_tokens = state.get("total_tokens") or 0
 
     preferred_mode = configurable.get("claude_auth_mode")
-    chain = build_chain(agent, preferred_mode)
+    chain = enabled_chain(build_chain(agent, preferred_mode))
 
     # A thread that already crossed its budget starts one rung down instead of
     # spending another turn proving the limit is still there.

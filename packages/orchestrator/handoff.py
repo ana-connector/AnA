@@ -1,7 +1,7 @@
 """Context handoff between the agent CLIs.
 
 Each CLI keeps its own native session (claude --resume / codex exec resume /
-kimi --session),
+kimi --session / agent --resume / opencode run --session),
 so switching agents mid-thread means the incoming CLI knows nothing about the
 turns the other one just ran. This module builds the brief that closes that
 gap: the thread's own recent turns, attributed by agent, prepended to the
@@ -12,7 +12,12 @@ user's prompt.
 # TAPIE's endpoint rather than the Pro subscription. It is its own agent
 # rather than a mode on `claude` because the two bill against different
 # accounts, which is the only thing routing cares about.
-AGENTS = ("claude", "codex", "kimi", "tapie")
+# "cursor" is the Cursor Agent CLI (`agent`), authenticated from the host
+# login session in ~/.config/cursor/auth.json.
+# "opencode" is the OpenCode CLI, which is one CLI in front of many providers:
+# its model names are `provider/model` and there are dozens of them, so the
+# ladder's model field matters more here than anywhere else.
+AGENTS = ("claude", "codex", "kimi", "tapie", "cursor", "opencode")
 DEFAULT_AGENT = "claude"
 
 # Bound on each past turn's prompt/response before interpolation, same

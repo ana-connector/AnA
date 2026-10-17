@@ -79,6 +79,54 @@ const TAPIE_DARK = ['#676767', '#2F2F2F', '#050505'];
  *
  *  `mono` drops the brand fills for currentColor at three weights, which is how
  *  the status bar turns it red without losing the layering. */
+// Cursor's mark needs evenodd so the diagonal cut reads as a cut, not a blob.
+// Path from @lobehub/icons (same geometry as Simple Icons / cursor.com).
+const CURSOR_PATH =
+  "M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z";
+
+export function CursorIcon({ className, ...props }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      fillRule="evenodd"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label={props["aria-label"] ?? "Cursor"}
+      className={className}
+    >
+      <path d={CURSOR_PATH} />
+    </svg>
+  );
+}
+
+// OpenCode ships its identity as an ASCII wordmark rather than a glyph, and no
+// icon set carries a mark for it, so this is a terminal frame with a prompt
+// block — a drawing of what the CLI is, not a brand mark pretending to be one.
+const OPENCODE_PATHS = [
+  "M3 3.75A1.75 1.75 0 014.75 2h14.5A1.75 1.75 0 0121 3.75v16.5A1.75 1.75 0 0119.25 22H4.75A1.75 1.75 0 013 20.25V3.75zm1.75 0v16.5h14.5V3.75H4.75z",
+  "M6.75 8.25h3.5v2.25h-3.5z",
+  "M6.75 13.5h10.5v2.25H6.75z",
+];
+
+export function OpenCodeIcon({ className, ...props }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      fillRule="evenodd"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label={props["aria-label"] ?? "OpenCode"}
+      className={className}
+    >
+      {OPENCODE_PATHS.map((path) => (
+        <path key={path.slice(0, 16)} d={path} />
+      ))}
+    </svg>
+  );
+}
+
 export function TapieIcon({ mono, className, ...props }: IconProps & { mono?: boolean }) {
   return (
     <svg

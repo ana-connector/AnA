@@ -11,7 +11,9 @@ from typing import Optional
 from packages.mcp.config_writer import (
     codex_mcp_args,
     write_claude_mcp_config,
+    write_cursor_mcp_config,
     write_kimi_mcp_config,
+    write_opencode_mcp_config,
 )
 from packages.mcp.registry import (
     LEAD,
@@ -173,6 +175,56 @@ def kimi_mcp(
         check_command=check_command,
     )
     write_kimi_mcp_config(servers, state_dir or state_dir_default(), kimi_home)
+    return {server.name for server in servers}
+
+
+def cursor_mcp(
+    role: str,
+    cursor_home: str,
+    *,
+    env: Optional[dict] = None,
+    workspace_dir: str = "",
+    state_dir: Optional[str] = None,
+    check_command: bool = True,
+) -> set[str]:
+    """Writes this role's servers into the prepared Cursor HOME and returns
+    their names. Same empty-file contract as `kimi_mcp`."""
+    if not mcp_enabled():
+        write_cursor_mcp_config([], state_dir or state_dir_default(), cursor_home)
+        return set()
+    servers, _ = resolve_for_role(
+        process_role(role),
+        env=env,
+        workspace_dir=workspace_dir,
+        state_dir=state_dir,
+        check_command=check_command,
+    )
+    write_cursor_mcp_config(servers, state_dir or state_dir_default(), cursor_home)
+    return {server.name for server in servers}
+
+
+def opencode_mcp(
+    role: str,
+    opencode_home: str,
+    *,
+    env: Optional[dict] = None,
+    workspace_dir: str = "",
+    state_dir: Optional[str] = None,
+    check_command: bool = True,
+) -> set[str]:
+    """Writes this role's servers into the prepared OpenCode HOME's overlay
+    config and returns their names. Same empty-file contract as `kimi_mcp`."""
+    if not mcp_enabled():
+        write_opencode_mcp_config([], state_dir or state_dir_default(), opencode_home)
+        return set()
+    servers, _ = resolve_for_role(
+        process_role(role),
+        env=env,
+        workspace_dir=workspace_dir,
+        state_dir=state_dir,
+        check_command=check_command,
+    )
+    write_opencode_mcp_config(servers, state_dir or state_dir_default(), opencode_home)
     return {server.name for server in servers}
 
 

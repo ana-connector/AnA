@@ -15,6 +15,7 @@ from typing import Optional
 import yaml
 
 from packages.adapters.env_builder import default_mode_from_settings
+from packages.orchestrator.handoff import AGENTS, DEFAULT_AGENT
 from packages.orchestrator.routing import DEFAULT_RULES_PATH, ModelLadder
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.txt"
@@ -29,6 +30,10 @@ GOVERNANCE_MODE_FILENAME = "governance_mode.txt"
 NORMAL_MODE = "normal"
 YOLO_MODE = "yolo"
 GOVERNANCE_MODES = (NORMAL_MODE, YOLO_MODE)
+# Which CLIs ANA is allowed to use at all. Stored as the *disabled* ones, so a
+# CLI added in a later version arrives switched on rather than silently
+# missing from an older installation's file.
+DISABLED_AGENTS_FILENAME = "disabled_agents.txt"
 
 
 def state_dir() -> Path:
@@ -250,6 +255,73 @@ def write_governance_mode(mode: str) -> None:
 def yolo() -> bool:
     """Whether the gate should approve on the user's behalf."""
     return read_governance_mode() == YOLO_MODE
+
+
+def disabled_agents_path() -> Path:
+    return state_dir() / DISABLED_AGENTS_FILENAME
+
+
+def _disabled_agents_file() -> Path:
+    """The same path without creating the state directory, for the same reason
+    `_governance_mode_file` has one: this is read on the hot path."""
+    return Path(os.environ.get("ANA_STATE_DIR", os.path.expanduser("~/.ana"))) / (
+        DISABLED_AGENTS_FILENAME
+    )
+
+
+def read_disabled_agents() -> tuple[str, ...]:
+    """CLIs the user has switched off, in AGENTS order.
+
+    Read per decision rather than cached, like the governance mode: switching a
+    CLI off has to take effect on the next turn, not at the next restart.
+    ANA_DISABLED_AGENTS is the deployment's starting position (a CLI that is
+    not installed in the image, say); the stored file wins over it so a change
+    made in the UI outlives a restart.
+
+    Names that are not CLIs ANA knows are dropped rather than rejected: this
+    list outlives the version that wrote it, and a removed agent should not
+    make the file unreadable. The default agent is dropped the same way — it
+    is what an unknown agent name and an empty ladder both fall back to, and
+    the runner builds it whatever this says, so listing it would only make the
+    UI disagree with what actually happens."""
+    try:
+        stored = _disabled_agents_file().read_text(encoding="utf-8")
+    except OSError:
+        stored = None
+    raw = stored if stored is not None else os.environ.get("ANA_DISABLED_AGENTS", "")
+    names = {
+        part.strip().lower()
+        for part in raw.replace("\n", ",").split(",")
+        if part.strip()
+    }
+    return tuple(agent for agent in AGENTS if agent in names and agent != DEFAULT_AGENT)
+
+
+def write_disabled_agents(agents) -> None:
+    """Stores the switched-off CLIs.
+
+    Raises on a name that is not a CLI and on the default agent, because both
+    are a UI bug rather than a preference to honor quietly: the default agent
+    is where an unknown agent name, an all-disabled ladder and a failed
+    failover chain all land, so "off" is not a state it can be in."""
+    names = [str(agent).strip().lower() for agent in (agents or []) if str(agent).strip()]
+    unknown = [name for name in names if name not in AGENTS]
+    if unknown:
+        raise ValueError(f"unknown agent: {', '.join(sorted(unknown))}")
+    if DEFAULT_AGENT in names:
+        raise ValueError(f"{DEFAULT_AGENT} is the default agent and cannot be switched off")
+    ordered = [agent for agent in AGENTS if agent in set(names)]
+    disabled_agents_path().write_text("\n".join(ordered), encoding="utf-8")
+
+
+def enabled_agents() -> tuple[str, ...]:
+    """The CLIs ANA may route to right now, in AGENTS order."""
+    off = set(read_disabled_agents())
+    return tuple(agent for agent in AGENTS if agent not in off)
+
+
+def agent_enabled(agent: str) -> bool:
+    return agent not in set(read_disabled_agents())
 
 
 def system_prompt_path() -> Path:

@@ -253,7 +253,8 @@ async def test_a_cli_error_on_every_rung_reports_the_error(db_pool):
     graph = build_graph(InMemorySaver())
     frames, _ = await _run(graph, _config(db_pool, factory, "fo-3x"))
 
-    assert len([f for f in frames if f["type"] == "failover"]) == 3
+    # claude → tapie → codex → kimi → cursor → opencode: one notice per hop.
+    assert len([f for f in frames if f["type"] == "failover"]) == 5
     error = next(f for f in frames if f["type"] == "error")
     assert "SyntaxError" in error["text"]
 
@@ -266,7 +267,8 @@ async def test_chain_exhaustion_reports_the_last_error(db_pool):
     graph = build_graph(InMemorySaver())
     frames, _ = await _run(graph, _config(db_pool, factory, "fo-4"))
 
-    assert len([f for f in frames if f["type"] == "failover"]) == 3  # pro→api→codex→kimi
+    # claude → tapie → codex → kimi → cursor → opencode
+    assert len([f for f in frames if f["type"] == "failover"]) == 5
     error = next(f for f in frames if f["type"] == "error")
     assert "usage limit" in error["text"]
 

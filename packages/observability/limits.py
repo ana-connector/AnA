@@ -88,6 +88,19 @@ AGENT_WINDOWS: dict[str, tuple[WindowSpec, ...]] = {
     "kimi": (FIVE_HOUR, MONTHLY_TOKENS),
     # TAPIE bills in dollars, and the CLI reports the cost of every turn.
     "tapie": (FIVE_HOUR_USD, MONTHLY_USD),
+    # Cursor's DashboardService reports one plan-period percentage (monthly),
+    # not rolling 5h/7d windows — see packages/observability/cursor_usage.py.
+    "cursor": (MONTHLY_TOKENS,),
+    # OpenCode has no window at all, which is why this is empty rather than a
+    # default pair. There is no usage or quota API to read: an REA teardown of
+    # opencode 1.18.26 went through all 188 endpoints it serves and every call
+    # it makes and found none reporting plan, quota, credit or spend, and its
+    # accounting is local — per-message tokens and cost summed into its
+    # SQLite database, which says what ANA already counts and nothing about a
+    # cap. A 5h/7d token bar here would be ANA's own guess at a budget nobody
+    # stated, so the status bar shows the mark alone (and turns it red when a
+    # call fails) instead of a meter that means nothing.
+    "opencode": (),
 }
 DEFAULT_WINDOWS = (FIVE_HOUR, SEVEN_DAY)
 

@@ -1,12 +1,17 @@
-"""Per-session CLI configuration that wires the PreToolUse hook into both
-CLIs.
+"""Per-session CLI configuration that wires the PreToolUse hook into the CLIs.
 
 Each CLI reads hooks from a different place — `claude` from a settings file
 passed with `--settings`, `codex` from `hooks.json` inside `$CODEX_HOME`,
 `kimi` from a `[[hooks]]` array in `config.toml` inside `$KIMI_CODE_HOME` —
-but all three accept the same `hookSpecificOutput` response contract, so one
-hook script backs all of them (see docs/plans/2026-09-22-governance-gate.md
+but those three accept the same `hookSpecificOutput` response contract, so one
+hook script backs them (see docs/plans/2026-09-22-governance-gate.md
 and docs/plans/2026-09-23-kimi-adapter.md).
+
+Cursor Agent has no PreToolUse hook; `prepare_cursor_home` only isolates HOME
+so MCP config and the host login (`auth.json`) can be shared safely. OpenCode
+has none either, and `prepare_opencode_home` does the same job for it — with
+the twist that OpenCode's credentials live in its data directory rather than
+its config directory.
 """
 import json
 import os
@@ -177,3 +182,69 @@ def _with_thinking_effort(text: str, effort: str) -> str:
     if _THINKING_EFFORT_RE.search(text):
         return _THINKING_EFFORT_RE.sub(rf'\g<1>"{effort}"', text, count=1)
     return text.rstrip() + f'\n\n[thinking]\nenabled = true\neffort = "{effort}"\n'
+
+
+def prepare_cursor_home(
+    directory: os.PathLike | str,
+    source_config_dir: os.PathLike | str,
+) -> Path:
+    """Builds a HOME for the Cursor Agent CLI subprocess.
+
+    Auth lives in `~/.config/cursor/auth.json` (the host login session). That
+    file is symlinked so an OAuth refresh stays shared rather than splitting
+    into two half-valid copies. MCP servers are written later into
+    `$HOME/.cursor/mcp.json` by `cursor_mcp`; chats land under the prepared
+    home so they do not collide with the user's interactive CLI sessions.
+    """
+    home = Path(directory)
+    config = home / ".config" / "cursor"
+    cursor_dir = home / ".cursor"
+    config.mkdir(parents=True, exist_ok=True)
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+
+    source = Path(source_config_dir)
+    auth_src = source / "auth.json"
+    auth_dst = config / "auth.json"
+    if auth_src.is_file() and not auth_dst.exists() and not auth_dst.is_symlink():
+        auth_dst.symlink_to(auth_src)
+    # Optional profile cache; missing is fine — the CLI rewrites it.
+    for name in ("cli-config.json",):
+        src = source / name
+        dst = config / name
+        if src.is_file() and not dst.exists() and not dst.is_symlink():
+            dst.symlink_to(src)
+    return home
+
+
+def prepare_opencode_home(
+    directory: os.PathLike | str,
+    source_data_dir: os.PathLike | str,
+) -> Path:
+    """Builds a HOME for the OpenCode CLI subprocess.
+
+    OpenCode keeps credentials in its *data* directory
+    (`~/.local/share/opencode/auth.json`), not its config directory, and keeps
+    sessions in `opencode.db` next to them. Pointing HOME (and XDG_DATA_HOME)
+    at a prepared directory therefore gives ANA its own session database —
+    which is the point, so a turn here does not show up in the user's
+    interactive `opencode` session list — while `auth.json` is symlinked so a
+    token refresh stays shared with the host login.
+
+    The user's *config* is not copied: the caller points OPENCODE_CONFIG_DIR at
+    the real one (providers, keys, plugins and their node_modules all live
+    there) and OPENCODE_CONFIG at the small overlay `ana.json` that
+    `write_opencode_mcp_config` writes under this home, which is how ANA's MCP
+    servers are added without editing a file the user owns.
+    """
+    home = Path(directory)
+    data = home / ".local" / "share" / "opencode"
+    config = home / ".config" / "opencode"
+    data.mkdir(parents=True, exist_ok=True)
+    config.mkdir(parents=True, exist_ok=True)
+
+    source = Path(source_data_dir)
+    auth_src = source / "auth.json"
+    auth_dst = data / "auth.json"
+    if auth_src.is_file() and not auth_dst.exists() and not auth_dst.is_symlink():
+        auth_dst.symlink_to(auth_src)
+    return home

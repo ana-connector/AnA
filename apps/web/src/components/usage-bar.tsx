@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, CircleDotIcon, RefreshCwIcon } from "lucide-react";
-import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
+import {
+  ClaudeIcon,
+  CursorIcon,
+  KimiIcon,
+  OpenAIIcon,
+  OpenCodeIcon,
+  TapieIcon,
+} from "@/components/agent-icons";
 import { fetchUsage, syncUsage, type UsageSnapshot, type UsageWindow } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
@@ -23,6 +30,8 @@ const AGENT_ICON: Record<string, (props: AgentIconProps) => React.ReactElement> 
   codex: OpenAIIcon,
   kimi: KimiIcon,
   tapie: TapieIcon,
+  cursor: CursorIcon,
+  opencode: OpenCodeIcon,
 };
 
 const AGENT_NAME: Record<string, string> = {
@@ -30,6 +39,8 @@ const AGENT_NAME: Record<string, string> = {
   codex: "Codex",
   kimi: "Kimi Code",
   tapie: "TAPIE",
+  cursor: "Cursor",
+  opencode: "OpenCode",
 };
 
 /** "4.3M", "10.0K", "840" — the magnitude is what a status bar is read for. */
@@ -232,7 +243,7 @@ export function UsageBar({
           }
         />
         <TooltipContent>
-          사용량 즉시 동기화 · Claude는 짧은 턴을 한 번 돌려 실제 수치를 받아옵니다
+          사용량 즉시 동기화 · 각 CLI 계정의 한도 API를 다시 읽습니다
         </TooltipContent>
       </Tooltip>
 
@@ -246,9 +257,36 @@ export function UsageBar({
           // same shape.
           const fiveHour = data.windows.find((w) => w.key === "five_hour") ?? data.windows[0];
           const longer = data.windows.find((w) => w.key !== fiveHour?.key);
-          if (!fiveHour) return null;
           const Icon = AGENT_ICON[agent] ?? CircleDotIcon;
           const failure = failingAgents[agent];
+          if (!fiveHour) {
+            // A CLI with no window to read — OpenCode, which exposes no usage
+            // or quota API at all. The mark still earns its place: it says the
+            // CLI is routable, and it turns red when its last call failed.
+            // What it must not do is show a meter ANA would have had to invent.
+            return (
+              <Tooltip key={agent}>
+                <TooltipTrigger
+                  render={
+                    <span className="flex cursor-default items-center gap-1.5">
+                      <Icon
+                        className={cn("size-3.5 shrink-0", failure && "text-destructive")}
+                        aria-label={AGENT_NAME[agent] ?? agent}
+                        mono={!!failure}
+                      />
+                    </span>
+                  }
+                />
+                <TooltipContent className="flex flex-col gap-0.5">
+                  <span className="font-medium">{AGENT_NAME[agent] ?? agent}</span>
+                  {failure ? (
+                    <span className="max-w-64 text-destructive">직전 호출 실패: {failure}</span>
+                  ) : null}
+                  <span>한도 API가 없어 사용량을 표시하지 않습니다</span>
+                </TooltipContent>
+              </Tooltip>
+            );
+          }
           return (
             <Tooltip key={agent}>
               <TooltipTrigger

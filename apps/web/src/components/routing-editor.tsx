@@ -9,8 +9,17 @@ import {
   type RoutingRung as Rung,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { ClaudeIcon, KimiIcon, OpenAIIcon, TapieIcon } from "@/components/agent-icons";
+import {
+  ClaudeIcon,
+  CursorIcon,
+  KimiIcon,
+  OpenAIIcon,
+  OpenCodeIcon,
+  TapieIcon,
+} from "@/components/agent-icons";
 import { AGENT_LABELS } from "@/components/ui/agent-toggle";
+import { ModelPicker } from "@/components/model-picker";
+import { MODEL_PICKER_THRESHOLD } from "@/lib/models";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +44,9 @@ type Vocabulary = {
   /** What each CLI will accept, discovered where the CLI can be asked. */
   models: Record<string, string[]>;
   windows: { key: string; label: string }[];
+  /** CLIs the settings page has switched off: still offered, because a rung
+   *  may be prepared before its CLI is turned back on, but marked. */
+  disabledAgents?: string[];
   /** Which of those windows each CLI actually has. */
   windowsByAgent: Record<string, string[]>;
 };
@@ -51,6 +63,8 @@ const AGENT_ICON: Record<string, (props: { className?: string }) => React.ReactE
   codex: OpenAIIcon,
   kimi: KimiIcon,
   tapie: TapieIcon,
+  cursor: CursorIcon,
+  opencode: OpenCodeIcon,
 };
 
 function spent(usage: Usage, agent: string, window: string): number | null {
@@ -60,9 +74,13 @@ function spent(usage: Usage, agent: string, window: string): number | null {
 
 /** Which rung answers right now, by the rule the router itself uses: the first
  *  one whose window still has room, and the last one when none does. */
-function activeIndex(rungs: Rung[], usage: Usage): number {
+function activeIndex(rungs: Rung[], usage: Usage, disabled: string[] = []): number {
+  const off = new Set(disabled);
   for (let index = 0; index < rungs.length; index += 1) {
     const rung = rungs[index];
+    // The router skips a switched-off CLI before it looks at any window, so
+    // the mark has to as well, or the page points at a rung that cannot run.
+    if (off.has(rung.agent)) continue;
     if (!rung.window || rung.utilization === null) return index;
     const used = spent(usage, rung.agent, rung.window) ?? 0;
     if (used < rung.utilization) return index;
@@ -99,6 +117,7 @@ export function RoutingEditor() {
           models: body.models ?? {},
           windows: body.windows,
           windowsByAgent: body.windows_by_agent ?? {},
+          disabledAgents: body.disabled_agents ?? [],
         });
       },
       (e) => {
@@ -233,7 +252,10 @@ function Ladder({
   usage: Usage;
   onChange: (rungs: Rung[]) => void;
 }) {
-  const active = useMemo(() => activeIndex(rungs, usage), [rungs, usage]);
+  const active = useMemo(
+    () => activeIndex(rungs, usage, vocabulary.disabledAgents ?? []),
+    [rungs, usage, vocabulary.disabledAgents]
+  );
   // Which rung is currently typing a model name by hand.
   const [customAt, setCustomAt] = useState<number | null>(null);
 
@@ -259,6 +281,10 @@ function Ladder({
           // A name the catalog does not carry is edited as text, so it is not
           // quietly replaced by whatever the dropdown lands on.
           const custom = customAt === index || (!!rung.model && !models.includes(rung.model));
+          // A CLI with no usage window cannot carry a threshold: OpenCode
+          // publishes no quota API, so there is no figure to compare against.
+          const agentWindows =
+            vocabulary.windowsByAgent[rung.agent] ?? vocabulary.windows.map((w) => w.key);
           const used = rung.window ? spent(usage, rung.agent, rung.window) : null;
           const threshold = rung.utilization;
           const over = used !== null && threshold !== null && used >= threshold;
@@ -294,7 +320,11 @@ function Ladder({
                   {rung.model ? (
                     <span className="font-mono text-xs text-muted-foreground">{rung.model}</span>
                   ) : null}
-                  {index === active ? (
+                  {(vocabulary.disabledAgents ?? []).includes(rung.agent) ? (
+                    // The rule is kept, the router just skips it: saying so
+                    // here is the difference between "spent" and "off".
+                    <Badge variant="outline">설정에서 꺼둔 CLI · 건너뜁니다</Badge>
+                  ) : index === active ? (
                     <Badge variant="secondary">지금 이 단계가 답합니다</Badge>
                   ) : null}
                   {last ? <Badge variant="outline">마지막</Badge> : null}
@@ -380,6 +410,16 @@ function Ladder({
                           if (!rung.model.trim()) setCustomAt(null);
                         }}
                       />
+                    ) : models.length > MODEL_PICKER_THRESHOLD ? (
+                      // OpenCode's list is dozens of `provider/model` names, so
+                      // this rung searches instead of scrolling.
+                      <ModelPicker
+                        label={`${index + 1}단계 모델`}
+                        value={rung.model}
+                        models={models}
+                        onChange={(model) => replace(index, { ...rung, model })}
+                        onCustom={() => setCustomAt(index)}
+                      />
                     ) : (
                       <Select
                         value={rung.model || NONE}
@@ -439,6 +479,11 @@ function Ladder({
                 {last ? (
                   <p className="text-xs text-muted-foreground">
                     마지막 단계에는 한도가 없습니다. 앞 단계가 모두 소진되면 여기로 떨어집니다.
+                  </p>
+                ) : agentWindows.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    이 CLI는 한도 API가 없어 사용률을 읽을 수 없습니다. 조건을 걸 수 없으니
+                    마지막 단계로 두세요 — 앞 단계가 모두 소진되면 여기로 떨어집니다.
                   </p>
                 ) : (
                   <div className="flex flex-col gap-2">

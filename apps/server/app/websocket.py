@@ -12,14 +12,24 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from packages.adapters.claude_code import ClaudeCodeAdapter, supports_permission_prompts
 from packages.adapters.codex import CodexAdapter
+from packages.adapters.cursor import CursorAdapter, default_executable as cursor_executable
+from packages.adapters.opencode import (
+    OpenCodeAdapter,
+    default_executable as opencode_executable,
+)
 from packages.adapters.kimi import KimiAdapter, default_executable as kimi_executable
 from packages.adapters.env_builder import (
     EnvBuilder,
     build_codex_env,
+    build_cursor_env,
+    build_opencode_env,
     build_kimi_env,
     default_codex_effort_from_settings,
     default_codex_model_from_settings,
     default_codex_sandbox_from_settings,
+    default_cursor_model_from_settings,
+    default_opencode_effort_from_settings,
+    default_opencode_model_from_settings,
     default_effort_from_settings,
     default_kimi_effort_from_settings,
     default_kimi_model_from_settings,
@@ -30,12 +40,20 @@ from packages.adapters.env_builder import (
 from packages.adapters.transcript import TranscriptLogger
 from packages.governance.cli_config import (
     prepare_codex_home,
+    prepare_cursor_home,
     prepare_kimi_home,
+    prepare_opencode_home,
     write_claude_settings,
 )
 from packages.governance.secrets import load_secrets
 from packages.governance.subagent_scope import Scope, with_instructions
-from packages.mcp.wiring import claude_mcp, codex_mcp, kimi_mcp
+from packages.mcp.wiring import (
+    claude_mcp,
+    codex_mcp,
+    cursor_mcp,
+    kimi_mcp,
+    opencode_mcp,
+)
 from packages.skills.catalog import with_catalog
 from packages.governance.workspace import session_workspace, workspace_root
 from packages.orchestrator.containers import (
@@ -59,6 +77,7 @@ from apps.server.app.delegation import DelegationManager, run_routed_task
 from packages.orchestrator.settings import (
     apply_workspace_prompt,
     commit_co_author_trailer,
+    enabled_agents,
     read_auth_mode,
     system_prompt_for,
 )
@@ -83,6 +102,21 @@ CODEX_SOURCE_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
 # The user's own Kimi data directory, which ANA copies its config from and
 # links credentials to (see prepare_kimi_home).
 KIMI_SOURCE_HOME = os.environ.get("KIMI_CODE_HOME", os.path.expanduser("~/.kimi-code"))
+# Cursor Agent login session directory (`auth.json`), symlinked into the
+# prepared HOME (see prepare_cursor_home).
+CURSOR_SOURCE_CONFIG = os.environ.get(
+    "CURSOR_CONFIG_DIR", os.path.expanduser("~/.config/cursor")
+)
+# OpenCode splits the two: credentials and sessions live in the data directory,
+# while providers, keys and plugins live in the config directory. ANA symlinks
+# the first into its prepared HOME (see prepare_opencode_home) and points the
+# CLI back at the second, which it reads as it is.
+OPENCODE_SOURCE_DATA = os.environ.get(
+    "OPENCODE_DATA_DIR", os.path.expanduser("~/.local/share/opencode")
+)
+OPENCODE_SOURCE_CONFIG = os.environ.get(
+    "OPENCODE_CONFIG_DIR", os.path.expanduser("~/.config/opencode")
+)
 # Image and network a workspace container gets when it does not name its own.
 # The server image already carries both CLIs, so it is the sane default.
 CONTAINER_IMAGE_DEFAULT = os.environ.get("ANA_WORKSPACE_IMAGE", "ana-server:latest")
@@ -328,6 +362,115 @@ def _strip_hooks(home) -> None:
         handle.write(head)
 
 
+def build_cursor_adapter(
+    gate_token: Optional[str] = None,
+    extra_env: Optional[dict] = None,
+    workspace_dir: Optional[str] = None,
+    command_prefix: Optional[list] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+    role: str = "lead",
+    scope: Optional[Scope] = None,
+) -> CursorAdapter:
+    """Factory mirroring the others, for the Cursor Agent (`agent`) CLI.
+
+    Auth is the host login under `~/.config/cursor/auth.json`. ANA prepares a
+    HOME that symlinks that file and writes MCP servers into `.cursor/mcp.json`.
+    Cursor has no PreToolUse hook, so the gate token is still passed for MCP
+    tools (ask/delegate) that call back into ANA, while shell/file tools are
+    auto-approved via `--force`."""
+    env = build_cursor_env()
+    env.update(extra_env or {})
+    env["ANA_GATE_ROLE"] = role
+    env.update((scope or Scope()).to_env())
+    home = prepare_cursor_home(
+        os.path.join(ANA_STATE_DIR, "cursor_home"),
+        CURSOR_SOURCE_CONFIG,
+    )
+    env["HOME"] = str(home)
+    # Keep XDG paths inside the prepared home so auth/config resolution does
+    # not escape back to the real user home when HOME alone is not enough.
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    if gate_token is not None and gate_enabled():
+        env = with_gate(env, GATE_URL, gate_token)
+    mcp_servers = cursor_mcp(
+        role,
+        str(home),
+        env=env,
+        workspace_dir=workspace_dir or WORKSPACE_DIR,
+        check_command=not command_prefix,
+    )
+    adapter = CursorAdapter(
+        workspace_dir=workspace_dir or WORKSPACE_DIR,
+        env=env,
+        executable=cursor_executable(),
+        model=model or default_cursor_model_from_settings(),
+        command_prefix=command_prefix,
+        system_prompt=with_instructions(
+            with_catalog(system_prompt_for("cursor", role), role, mcp_servers), scope
+        ),
+    )
+    adapter.effort = effort
+    return adapter
+
+
+def build_opencode_adapter(
+    gate_token: Optional[str] = None,
+    extra_env: Optional[dict] = None,
+    workspace_dir: Optional[str] = None,
+    command_prefix: Optional[list] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+    role: str = "lead",
+    scope: Optional[Scope] = None,
+) -> OpenCodeAdapter:
+    """Factory mirroring the others, for the OpenCode CLI.
+
+    Auth is the host login in OpenCode's data directory. ANA prepares a HOME
+    that symlinks it and keeps its own session database there, points
+    OPENCODE_CONFIG_DIR back at the user's real config (that is where the
+    providers, their keys and any plugins are configured) and OPENCODE_CONFIG
+    at the overlay carrying ANA's MCP servers. OpenCode has no PreToolUse hook,
+    so the gate token is still passed for MCP tools (ask/delegate) that call
+    back into ANA, while shell/file tools are auto-approved via `--auto`."""
+    env = build_opencode_env()
+    env.update(extra_env or {})
+    env["ANA_GATE_ROLE"] = role
+    env.update((scope or Scope()).to_env())
+    home = prepare_opencode_home(
+        os.path.join(ANA_STATE_DIR, "opencode_home"),
+        OPENCODE_SOURCE_DATA,
+    )
+    env["HOME"] = str(home)
+    # XDG_DATA_HOME is the one that matters — credentials and the session
+    # database are under it — but both are set so nothing resolves back to the
+    # real user home when HOME alone is not enough.
+    env["XDG_DATA_HOME"] = str(home / ".local" / "share")
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    env["OPENCODE_CONFIG_DIR"] = OPENCODE_SOURCE_CONFIG
+    env["OPENCODE_CONFIG"] = str(home / ".config" / "opencode" / "ana.json")
+    if gate_token is not None and gate_enabled():
+        env = with_gate(env, GATE_URL, gate_token)
+    mcp_servers = opencode_mcp(
+        role,
+        str(home),
+        env=env,
+        workspace_dir=workspace_dir or WORKSPACE_DIR,
+        check_command=not command_prefix,
+    )
+    return OpenCodeAdapter(
+        workspace_dir=workspace_dir or WORKSPACE_DIR,
+        env=env,
+        executable=opencode_executable(),
+        model=model or default_opencode_model_from_settings(),
+        effort=effort or default_opencode_effort_from_settings(),
+        command_prefix=command_prefix,
+        system_prompt=with_instructions(
+            with_catalog(system_prompt_for("opencode", role), role, mcp_servers), scope
+        ),
+    )
+
+
 def build_transcript() -> TranscriptLogger:
     """Factory mirroring build_adapter(), rather than constructing
     TranscriptLogger(WORKSPACE_DIR) inline in chat_ws(): WORKSPACE_DIR is
@@ -362,7 +505,7 @@ class ClientFrame:
 def _parse_client_frame(data: str) -> ClientFrame:
     """Parses one client frame.
 
-    The protocol is JSON — {"prompt": ..., "agent": "claude"|"codex"|"kimi"|"tapie"} for a
+    The protocol is JSON — {"prompt": ..., "agent": "claude"|"codex"|"kimi"|"tapie"|"cursor"|"opencode"} for a
     turn, {"type": "cancel"} to stop the in-flight one, {"type": "approval",
     "request_id": ..., "decision": "allow"|"deny"} to answer the governance
     gate — but a bare text frame is still accepted as a prompt, so clients
@@ -749,6 +892,12 @@ async def _build_runner(
     )
 
     adapters: dict = {}
+    # Which CLIs the settings page has left switched on. A CLI that is off is
+    # not built at all: building one writes a prepared home and an MCP config
+    # for a CLI the router and the failover chain will both skip. "claude"
+    # stays whatever the setting says — it is the default agent, and having
+    # nothing to route to is worse than ignoring the preference for one CLI.
+    allowed = set(enabled_agents()) | {"claude"}
     try:
         prefix = (
             [part.replace("__token__", gate_session.token) for part in container_prefix]
@@ -761,63 +910,127 @@ async def _build_runner(
             workspace_dir=workspace_dir,
             command_prefix=prefix,
         )
-        codex_adapter = build_codex_adapter(
-            gate_session.token,
-            extra_env=secret_env,
-            workspace_dir=workspace_dir,
-            # The Codex side needs its home inside the container too.
-            command_prefix=(
-                exec_prefix(
-                    container_spec,
-                    env={
-                        "ANA_GATE_URL": CONTAINER_GATE_URL,
-                        "ANA_GATE_TOKEN": gate_session.token,
-                        "CODEX_HOME": os.path.join(ANA_STATE_DIR, "codex_home"),
-                    },
-                )
-                if container_spec is not None
-                else None
-            ),
-        )
-        kimi_adapter = build_kimi_adapter(
-            gate_session.token,
-            extra_env=secret_env,
-            workspace_dir=workspace_dir,
-            # Kimi reads hooks, effort and MCP servers out of its home, so the
-            # container needs to see the same prepared directory.
-            command_prefix=(
-                exec_prefix(
-                    container_spec,
-                    env={
-                        "ANA_GATE_URL": CONTAINER_GATE_URL,
-                        "ANA_GATE_TOKEN": gate_session.token,
-                        "KIMI_CODE_HOME": os.path.join(
-                            ANA_STATE_DIR,
-                            "kimi_home",
-                            default_kimi_effort_from_settings() or "default",
-                        ),
-                    },
-                )
-                if container_spec is not None
-                else None
-            ),
-        )
+        codex_adapter = None
+        if "codex" in allowed:
+            codex_adapter = build_codex_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                # The Codex side needs its home inside the container too.
+                command_prefix=(
+                    exec_prefix(
+                        container_spec,
+                        env={
+                            "ANA_GATE_URL": CONTAINER_GATE_URL,
+                            "ANA_GATE_TOKEN": gate_session.token,
+                            "CODEX_HOME": os.path.join(ANA_STATE_DIR, "codex_home"),
+                        },
+                    )
+                    if container_spec is not None
+                    else None
+                ),
+            )
+        kimi_adapter = None
+        if "kimi" in allowed:
+            kimi_adapter = build_kimi_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                # Kimi reads hooks, effort and MCP servers out of its home, so the
+                # container needs to see the same prepared directory.
+                command_prefix=(
+                    exec_prefix(
+                        container_spec,
+                        env={
+                            "ANA_GATE_URL": CONTAINER_GATE_URL,
+                            "ANA_GATE_TOKEN": gate_session.token,
+                            "KIMI_CODE_HOME": os.path.join(
+                                ANA_STATE_DIR,
+                                "kimi_home",
+                                default_kimi_effort_from_settings() or "default",
+                            ),
+                        },
+                    )
+                    if container_spec is not None
+                    else None
+                ),
+            )
+        cursor_home = os.path.join(ANA_STATE_DIR, "cursor_home")
+        cursor_adapter = None
+        if "cursor" in allowed:
+            cursor_adapter = build_cursor_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                command_prefix=(
+                    exec_prefix(
+                        container_spec,
+                        env={
+                            "ANA_GATE_URL": CONTAINER_GATE_URL,
+                            "ANA_GATE_TOKEN": gate_session.token,
+                            "HOME": cursor_home,
+                            "XDG_CONFIG_HOME": os.path.join(cursor_home, ".config"),
+                        },
+                    )
+                    if container_spec is not None
+                    else None
+                ),
+            )
+        opencode_home = os.path.join(ANA_STATE_DIR, "opencode_home")
+        opencode_adapter = None
+        if "opencode" in allowed:
+            opencode_adapter = build_opencode_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                command_prefix=(
+                    exec_prefix(
+                        container_spec,
+                        env={
+                            "ANA_GATE_URL": CONTAINER_GATE_URL,
+                            "ANA_GATE_TOKEN": gate_session.token,
+                            "HOME": opencode_home,
+                            "XDG_DATA_HOME": os.path.join(opencode_home, ".local", "share"),
+                            "XDG_CONFIG_HOME": os.path.join(opencode_home, ".config"),
+                            "OPENCODE_CONFIG_DIR": "/home/ana/.config/opencode",
+                            "OPENCODE_CONFIG": os.path.join(
+                                opencode_home, ".config", "opencode", "ana.json"
+                            ),
+                        },
+                    )
+                    if container_spec is not None
+                    else None
+                ),
+            )
         transcript = build_transcript()
-        adapters.update({"claude": adapter, "codex": codex_adapter, "kimi": kimi_adapter})
+        adapters.update(
+            {
+                name: built
+                for name, built in (
+                    ("claude", adapter),
+                    ("codex", codex_adapter),
+                    ("kimi", kimi_adapter),
+                    ("cursor", cursor_adapter),
+                    ("opencode", opencode_adapter),
+                )
+                if built
+            }
+        )
         # TAPIE is the same CLI on a key rather than the subscription. Built
         # here so a rung that names it costs nothing extra at turn time, and
         # skipped without comment when no key is configured: an installation
         # without one simply has three agents, not a broken fourth.
-        try:
-            adapters["tapie"] = build_adapter(
-                gate_session.token,
-                auth_mode="api",
-                extra_env=secret_env,
-                workspace_dir=workspace_dir,
-                command_prefix=prefix,
-            )
-        except Exception:  # noqa: BLE001 - no key configured
-            pass
+        if "tapie" in allowed:
+            try:
+                adapters["tapie"] = build_adapter(
+                    gate_session.token,
+                    auth_mode="api",
+                    extra_env=secret_env,
+                    workspace_dir=workspace_dir,
+                    command_prefix=prefix,
+                )
+            except Exception:  # noqa: BLE001 - no key configured
+                pass
     except Exception:
         # Nothing to attach to: drop the token and let the caller report it.
         gate_registry.unregister(gate_session.token)
@@ -881,8 +1094,8 @@ async def _build_runner(
         would overwrite and terminate each other."""
         # role="worker": sub-agents are the ones allowed to touch files and run
         # commands, and the gate reads that from their environment.
-        built = (
-            build_codex_adapter(
+        if agent == "codex":
+            built = build_codex_adapter(
                 gate_session.token,
                 extra_env=secret_env,
                 workspace_dir=worker_workspace or workspace_dir,
@@ -891,8 +1104,8 @@ async def _build_runner(
                 role="worker",
                 scope=scope,
             )
-            if agent == "codex"
-            else build_kimi_adapter(
+        elif agent == "kimi":
+            built = build_kimi_adapter(
                 gate_session.token,
                 extra_env=secret_env,
                 workspace_dir=worker_workspace or workspace_dir,
@@ -901,8 +1114,28 @@ async def _build_runner(
                 role="worker",
                 scope=scope,
             )
-            if agent == "kimi"
-            else build_adapter(
+        elif agent == "cursor":
+            built = build_cursor_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=worker_workspace or workspace_dir,
+                model=model,
+                effort=effort,
+                role="worker",
+                scope=scope,
+            )
+        elif agent == "opencode":
+            built = build_opencode_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=worker_workspace or workspace_dir,
+                model=model,
+                effort=effort,
+                role="worker",
+                scope=scope,
+            )
+        else:
+            built = build_adapter(
                 gate_session.token,
                 # Same CLI as claude, different account.
                 auth_mode="api" if agent == "tapie" else None,
@@ -913,7 +1146,6 @@ async def _build_runner(
                 role="worker",
                 scope=scope,
             )
-        )
         apply_workspace_prompt(built, gate_session.workspace_prompt)
         _drop_finished_workers(adapters)
         adapters[f"worker/{agent}/{uuid.uuid4().hex[:8]}"] = built

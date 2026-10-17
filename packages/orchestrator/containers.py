@@ -86,6 +86,13 @@ def default_auth_mounts() -> tuple[str, ...]:
         (os.environ.get("ANA_HOST_CLAUDE_JSON"), "/home/ana/.claude.json"),
         (os.environ.get("ANA_HOST_CODEX_DIR"), "/home/ana/.codex"),
         (os.environ.get("ANA_HOST_KIMI_DIR"), "/home/ana/.kimi-code"),
+        # Cursor Agent login session (auth.json) and optional cli-config.
+        (os.environ.get("ANA_HOST_CURSOR_CONFIG"), "/home/ana/.config/cursor"),
+        # OpenCode keeps credentials in its data directory and providers,
+        # keys and plugins in its config directory — both are needed, and
+        # both stay the host's copies (see prepare_opencode_home).
+        (os.environ.get("ANA_HOST_OPENCODE_DATA"), "/home/ana/.local/share/opencode"),
+        (os.environ.get("ANA_HOST_OPENCODE_CONFIG"), "/home/ana/.config/opencode"),
     )
     return tuple(f"{host}:{inside}" for host, inside in pairs if host)
 

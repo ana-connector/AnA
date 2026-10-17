@@ -15,6 +15,7 @@ import { RoutingEditor } from "@/components/routing-editor";
 import { UsageEstimateEditor } from "@/components/usage-estimate-editor";
 import { CapabilityPanel } from "@/components/capability-panel";
 import { GovernanceMode } from "@/components/governance-mode";
+import { AgentSwitches } from "@/components/agent-switches";
 
 
 /** Settings the user should be able to change without touching the repo.
@@ -112,6 +113,7 @@ export default function SettingsPage() {
         <Tabs defaultValue="routing">
           <TabsList>
             <TabsTrigger value="routing">라우팅</TabsTrigger>
+            <TabsTrigger value="agents">CLI</TabsTrigger>
             <TabsTrigger value="prompt">시스템 프롬프트</TabsTrigger>
             <TabsTrigger value="usage">사용량</TabsTrigger>
             <TabsTrigger value="capabilities">MCP · 스킬</TabsTrigger>
@@ -122,6 +124,12 @@ export default function SettingsPage() {
             {/* Its own editor, with its own save: the ladder is structured
                 data, and the rest of this page is two text fields. */}
             <RoutingEditor />
+          </TabsContent>
+
+          <TabsContent value="agents">
+            {/* Its own save, like the permissions switch: which CLIs exist at
+                all decides where the next turn goes. */}
+            <AgentSwitches />
           </TabsContent>
 
           <TabsContent value="prompt">

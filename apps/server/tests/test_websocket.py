@@ -204,6 +204,13 @@ def test_websocket_relays_error_when_run_stream_raises(db_pool, postgres_dsn, mo
     ), patch(
         "apps.server.app.websocket.build_kimi_adapter", return_value=RaisingAdapter()
     ), patch(
+        # Patched like the others: without it the failover chain reaches the
+        # Cursor and OpenCode rungs and runs the real CLIs on the developer's
+        # machine, which answers the turn this test needs to see fail.
+        "apps.server.app.websocket.build_cursor_adapter", return_value=RaisingAdapter()
+    ), patch(
+        "apps.server.app.websocket.build_opencode_adapter", return_value=RaisingAdapter()
+    ), patch(
         "apps.server.app.websocket.build_transcript",
         return_value=TranscriptLogger(str(tmp_path)),
     ):
@@ -226,6 +233,13 @@ def test_websocket_accepts_another_prompt_after_turn_failure(db_pool, postgres_d
         "apps.server.app.websocket.build_codex_adapter", return_value=RaisingAdapter()
     ), patch(
         "apps.server.app.websocket.build_kimi_adapter", return_value=RaisingAdapter()
+    ), patch(
+        # Patched like the others: without it the failover chain reaches the
+        # Cursor and OpenCode rungs and runs the real CLIs on the developer's
+        # machine, which answers the turn this test needs to see fail.
+        "apps.server.app.websocket.build_cursor_adapter", return_value=RaisingAdapter()
+    ), patch(
+        "apps.server.app.websocket.build_opencode_adapter", return_value=RaisingAdapter()
     ), patch(
         "apps.server.app.websocket.build_transcript",
         return_value=TranscriptLogger(str(tmp_path)),

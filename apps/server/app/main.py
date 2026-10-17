@@ -34,7 +34,10 @@ from packages.memory.db import create_pool, run_migrations
 from packages.memory.embeddings import EmbeddingModel
 from packages.memory.rag import list_threads, thread_history
 from packages.governance.workspace import session_workspace, workspace_root
+from packages.observability.claude_usage import fetch_rate_limits as fetch_claude_limits
 from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
+from packages.observability.cursor_usage import fetch_rate_limits as fetch_cursor_limits
+from packages.observability.kimi_usage import fetch_rate_limits as fetch_kimi_limits
 from packages.observability.limits import UsageTracker
 from packages.orchestrator.containers import containers_enabled, parse_ports, stop_workspace
 from packages.orchestrator.handoff import AGENTS
@@ -54,7 +57,10 @@ from packages.orchestrator.schedules import (
 from packages.orchestrator.settings import (
     AUTH_MODES,
     GOVERNANCE_MODES,
+    enabled_agents,
     read_auth_mode,
+    read_disabled_agents,
+    write_disabled_agents,
     read_governance_mode,
     write_governance_mode,
     read_routing_structured,
@@ -390,6 +396,9 @@ async def delete_workspace(
 class SettingsUpdate(BaseModel):
     routing: str | None = None
     system_prompt: str | None = None
+    # CLIs to switch off. The router skips them, failover skips them, and the
+    # composer stops offering them; at least one has to stay on.
+    disabled_agents: list[str] | None = None
     # "pro" (subscription) or "api" (key + base URL) — the two modes
     # ~/.bashrc defines. Changing it used to mean editing .env and restarting.
     auth_mode: str | None = None
@@ -542,6 +551,10 @@ async def routing_rules() -> dict:
         "windows_by_agent": {
             agent: [spec.key for spec in windows_for(agent)] for agent in AGENTS
         },
+        # A rung naming a switched-off CLI is kept rather than dropped — the
+        # rules outlive the switch — so the editor needs to know which ones
+        # the router is currently skipping.
+        "disabled_agents": list(read_disabled_agents()),
     }
 
 
@@ -560,10 +573,16 @@ async def models() -> dict:
     offers exactly these, so a manual pick is always something the router could
     have chosen on its own."""
     ladder = load_routing_table()
+    # Only the CLIs that are switched on: the composer's manual picks are
+    # supposed to be choices the router could have made itself, and a rung
+    # naming a disabled CLI is no longer one of them.
+    allowed = set(enabled_agents())
     return {
         "auto": True,
         "lead": [
-            {"agent": r.agent, "model": r.model, "label": r.label} for r in ladder.lead
+            {"agent": r.agent, "model": r.model, "label": r.label}
+            for r in ladder.lead
+            if r.agent in allowed
         ],
     }
 
@@ -580,6 +599,11 @@ async def get_settings() -> dict:
         "auth_modes": list(AUTH_MODES),
         "governance_mode": read_governance_mode(),
         "governance_modes": list(GOVERNANCE_MODES),
+        # Which CLIs ANA may use, and which of them the user switched off. The
+        # full list travels with the answer so the page can offer a CLI this
+        # build knows about without hard-coding the names a second time.
+        "agents": list(AGENTS),
+        "disabled_agents": list(read_disabled_agents()),
     }
 
 
@@ -603,6 +627,11 @@ async def put_settings(body: SettingsUpdate) -> dict:
             write_governance_mode(body.governance_mode)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.disabled_agents is not None:
+        try:
+            write_disabled_agents(body.disabled_agents)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Takes effect on the next WebSocket connection: the adapters for an open
     # conversation were built with the mode that was current when it started.
     return {
@@ -614,6 +643,10 @@ async def put_settings(body: SettingsUpdate) -> dict:
         # the gate reads it per call, not per connection.
         "governance_mode": read_governance_mode(),
         "governance_modes": list(GOVERNANCE_MODES),
+        "agents": list(AGENTS),
+        # Like the routing rules: read back rather than echoed, so the page
+        # shows what was stored (ordered, filtered) and not what was sent.
+        "disabled_agents": list(read_disabled_agents()),
     }
 
 
@@ -621,26 +654,43 @@ async def put_settings(body: SettingsUpdate) -> dict:
 async def usage(request: Request) -> dict:
     """Per-agent usage windows for the status bar.
 
-    Both CLIs state their real utilization — Claude on stdout, Codex only in
-    its rollout log — so the bar shows the provider's numbers where they
-    exist and says "estimated" only where they do not. Codex's log is re-read
-    here as well as after each turn, so a restarted server has the real figure
-    before it has run anything."""
-    with contextlib.suppress(Exception):
-        request.app.state.usage_tracker.record_reported_windows(
-            "codex", read_codex_rate_limits()
-        )
-    return {"agents": request.app.state.usage_tracker.snapshot()}
+    Re-reads cheap disk/HTTP sources so a restarted server has real figures
+    before it has run a turn. Claude/Cursor/Kimi hit the same quota APIs their
+    CLIs' `/usage` commands use; Codex still comes from its rollout log.
+    OpenCode has no such API at all and therefore no window to report.
+
+    A CLI the settings page has switched off is left out entirely — including
+    its quota call, which is a network round trip for a CLI that will not be
+    answering anything."""
+    tracker = request.app.state.usage_tracker
+    allowed = set(enabled_agents())
+    sources = {
+        "codex": read_codex_rate_limits,
+        "claude": fetch_claude_limits,
+        "cursor": fetch_cursor_limits,
+        "kimi": fetch_kimi_limits,
+    }
+    for agent, read in sources.items():
+        if agent not in allowed:
+            continue
+        with contextlib.suppress(Exception):
+            tracker.record_reported_windows(agent, read())
+    return {
+        "agents": {
+            agent: data
+            for agent, data in tracker.snapshot().items()
+            if agent in allowed
+        }
+    }
 
 
 @app.post("/usage/sync")
 async def sync_usage_now(request: Request) -> dict:
     """Re-read the providers' real usage figures now, rather than at the next turn.
 
-    Codex's come off its own rollout log for nothing. Claude only emits its
-    windows while a turn streams, so this runs one short tool-free prompt to
-    collect them — a few hundred tokens, recorded like any other turn. See
-    apps/server/app/usage_sync.py; `ANA_USAGE_PROBE=off` skips that half."""
+    Codex is free (rollout log). Claude/Cursor/Kimi are the account-quota HTTP
+    APIs; Claude still has an optional stream probe fallback when OAuth fails
+    (`ANA_USAGE_PROBE`). See apps/server/app/usage_sync.py."""
     results = await sync_usage(
         request.app.state.usage_tracker,
         lambda: build_adapter(role="lead"),

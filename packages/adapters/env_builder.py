@@ -96,6 +96,52 @@ def build_kimi_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     return _without_inherited_gate(_with_mcp_tool_timeout(env))
 
 
+def build_cursor_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a Cursor Agent (`agent`) CLI subprocess.
+
+    Auth is the host login session under `~/.config/cursor/auth.json`, reached
+    via the prepared HOME from `prepare_cursor_home`. An optional
+    `CURSOR_API_KEY` in the environment is left alone when present (CI), but
+    the default path is login — no key is injected here.
+    """
+    env = dict(base_env if base_env is not None else os.environ)
+    env.pop("DATABASE_URL", None)
+    return _without_inherited_gate(_with_mcp_tool_timeout(env))
+
+
+def default_cursor_model_from_settings() -> str | None:
+    """Reads CURSOR_MODEL. None means: let the agent CLI use its default."""
+    return os.environ.get("CURSOR_MODEL") or None
+
+
+def build_opencode_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for an `opencode` CLI subprocess.
+
+    Auth is whatever the host login wrote into OpenCode's data directory
+    (`auth.json`), reached through the prepared HOME from
+    `prepare_opencode_home`; provider keys that are already in the environment
+    (the config file can read them) are left alone. The DATABASE_URL strip
+    applies for the same reason as the other four.
+    """
+    env = dict(base_env if base_env is not None else os.environ)
+    env.pop("DATABASE_URL", None)
+    return _without_inherited_gate(_with_mcp_tool_timeout(env))
+
+
+def default_opencode_model_from_settings() -> str | None:
+    """Reads OPENCODE_MODEL (`provider/model`). None means: no --model flag,
+    so the CLI uses the model its own config names."""
+    return os.environ.get("OPENCODE_MODEL") or None
+
+
+def default_opencode_effort_from_settings() -> str | None:
+    """Reads OPENCODE_VARIANT (OPENCODE_EFFORT is accepted too, because that is
+    what the other CLIs call it). None means: no --variant flag."""
+    return (
+        os.environ.get("OPENCODE_VARIANT") or os.environ.get("OPENCODE_EFFORT") or None
+    )
+
+
 def default_kimi_model_from_settings() -> str | None:
     """Reads KIMI_MODEL. None means: no --model flag, so the CLI uses
     `default_model` from its config."""

@@ -179,12 +179,26 @@ def test_usage_endpoint_lists_every_agent_before_any_turn(client, tmp_path, monk
     # log on every call, so the machine's real one would otherwise make this
     # test depend on whether anyone has run Codex here.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+    # Same reasoning for the quota APIs /usage calls: on a machine with a
+    # logged-in Claude, Cursor or Kimi account they answer with real figures,
+    # and "nothing reported yet" is the state this test is about.
+    for name in (
+        "fetch_claude_limits",
+        "fetch_cursor_limits",
+        "fetch_kimi_limits",
+        "read_codex_rate_limits",
+    ):
+        monkeypatch.setattr(f"apps.server.app.main.{name}", lambda: {})
     client.app.state.usage_tracker._samples.clear()
     client.app.state.usage_tracker._reported.clear()
 
     agents = client.get("/usage").json()["agents"]
 
-    assert set(agents) == {"claude", "codex", "kimi", "tapie"}
+    assert set(agents) == {"claude", "codex", "kimi", "tapie", "cursor", "opencode"}
+    # OpenCode has a row and no windows in it: the CLI publishes no usage or
+    # quota API, so the status bar shows its mark alone rather than a meter
+    # ANA would have had to invent a budget for.
+    assert agents["opencode"]["windows"] == []
     # The second window is the plan's, not one shape for everyone: Kimi and
     # TAPIE are billed by the month, and TAPIE in dollars.
     assert [w["key"] for w in agents["claude"]["windows"]] == ["five_hour", "seven_day"]
@@ -504,7 +518,7 @@ def test_routing_reads_as_rungs_not_yaml(client, tmp_path, monkeypatch):
     first = body["lead"][0]
     assert set(first) == {"agent", "model", "effort", "window", "utilization"}
     assert "tapie" in body["agents"]
-    assert set(body["efforts"]) >= {"claude", "codex", "kimi", "tapie"}
+    assert set(body["efforts"]) >= {"claude", "codex", "kimi", "tapie", "cursor"}
     assert [w["key"] for w in body["windows"]] == ["five_hour", "seven_day", "monthly"]
     # And which of them each CLI actually has, so a rung cannot point at a
     # window its plan does not run on.
@@ -620,3 +634,88 @@ def test_last_months_spending_is_not_in_this_months_window():
     windows = {w["key"]: w for w in tracker.snapshot(now=october)["tapie"]["windows"]}
 
     assert windows["monthly"]["usd"] == 0.0
+
+
+@pytest.fixture
+def switched_off(tmp_path, monkeypatch):
+    """A state directory of this test's own, so a CLI switched off here does
+    not touch the developer's real settings."""
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path / "state"))
+
+    def off(*agents):
+        from packages.orchestrator.settings import write_disabled_agents
+
+        write_disabled_agents(list(agents))
+
+    return off
+
+
+def test_ladder_skips_a_switched_off_cli(ladder, switched_off):
+    """A rung naming a CLI the settings page switched off is passed over, and
+    the rule itself stays in the file."""
+    switched_off("codex")
+
+    # claude/fable's five-hour window is spent, so the ladder would normally
+    # land on the codex rung; with codex off it carries on to the one below.
+    decision = decide(None, role=LEAD, usage=_usage(claude=0.9))
+
+    assert (decision.agent, decision.model) == ("claude", "opus")
+
+
+def test_switched_off_cli_is_not_honored_even_when_asked_for(ladder, switched_off):
+    switched_off("codex")
+
+    decision = decide("codex", role=LEAD, usage={})
+
+    # Not codex, and not an error either: the turn goes where the ladder says.
+    assert decision.agent == "claude"
+    assert decision.explicit is False
+
+
+def test_ladder_of_switched_off_clis_falls_back_to_one_that_is_on(ladder, switched_off):
+    switched_off("codex", "kimi", "tapie", "cursor", "opencode")
+    # Every rung but the claude ones is off; a ladder with nothing left at all
+    # is impossible, since claude cannot be switched off.
+    decision = decide(None, role=WORKER, usage=_usage(codex=0.95))
+
+    assert decision.agent == "claude"
+
+
+def test_failover_chain_skips_switched_off_clis(switched_off):
+    from packages.orchestrator.breaker import build_chain, enabled_chain
+
+    switched_off("kimi", "cursor", "opencode")
+
+    chain = enabled_chain(build_chain("claude", None))
+
+    assert [rung.label for rung in chain] == ["claude", "tapie", "codex"]
+
+
+def test_default_agent_cannot_be_switched_off(switched_off):
+    from packages.orchestrator.settings import write_disabled_agents
+
+    with pytest.raises(ValueError):
+        write_disabled_agents(["claude"])
+
+
+def test_settings_endpoint_round_trips_switched_off_clis(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path / "state"))
+
+    stored = client.put("/settings", json={"disabled_agents": ["cursor", "kimi"]}).json()
+
+    # Stored in AGENTS order, whatever order they were sent in.
+    assert stored["disabled_agents"] == ["kimi", "cursor"]
+    assert client.get("/settings").json()["disabled_agents"] == ["kimi", "cursor"]
+    # And the CLIs that are off leave the status bar and the composer's list.
+    assert "kimi" not in client.get("/usage").json()["agents"]
+    assert all(
+        entry["agent"] != "kimi" for entry in client.get("/models").json()["lead"]
+    )
+
+
+def test_settings_endpoint_rejects_switching_off_the_default_agent(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path / "state"))
+
+    response = client.put("/settings", json={"disabled_agents": ["claude"]})
+
+    assert response.status_code == 422
