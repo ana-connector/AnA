@@ -13,12 +13,9 @@ import { ApprovalCard } from "@/components/ui/approval-card";
 import { QuestionCard } from "@/components/ui/question-card";
 import { Markdown } from "@/components/markdown";
 import { ToolCalls } from "@/components/tool-calls";
-import { UsageBar } from "@/components/usage-bar";
 import { PlanGraph } from "@/components/plan-graph";
 import { Reasoning } from "@/components/reasoning";
-import { SessionSidebar } from "@/components/session-sidebar";
-import { TabBar } from "@/components/tab-bar";
-import { useTabTitle } from "@/components/tabs";
+import { PageShell } from "@/components/page-shell";
 import { TurnStatusLine } from "@/components/turn-status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +40,6 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 const TASK_STATUS_LABEL: Record<SubagentTask["status"], string> = {
   running: "실행 중",
@@ -153,12 +149,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   // transcript on screen is the point.
   const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
 
-  // The tab is where this conversation is named now. Only once the name is
-  // known: naming it "새 대화" in the meantime meant every tab you opened
-  // flashed that before settling on the workspace's own name, and the tab
-  // already carries the name the sidebar or the start page opened it with.
-  useTabTitle(workspaceName);
-
   // Finished turns are what create and rename sessions, so the sidebar list is
   // refetched when the count of completed turns changes rather than on a timer.
   const completedTurns = useMemo(
@@ -215,52 +205,52 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    // h-svh + overflow-hidden bounds the transcript so it scrolls while the
-    // composer and status bar remain visible at the bottom of the window.
-    <SidebarProvider className="h-svh overflow-hidden">
-      <SessionSidebar reloadKey={completedTurns} />
+    <>
+    <PageShell
+      // Empty until the socket says what this workspace is called: the tab
+      // was opened with its name already, and a placeholder here would
+      // overwrite it for a moment on every visit.
+      title={workspaceName ?? ""}
+      fill
+      sidebarReloadKey={completedTurns}
+      usage={{
+        refreshKey: turnsFinished,
+        totalCostUsd: usage.totalCostUsd,
+        totalTokens: usage.totalTokens,
+        failingAgents,
+      }}
+      // Beside the tabs rather than under the page: what a tab cannot say —
+      // whether the socket is up, and which CLI the ladder picked.
+      barActions={
+          <>
+            {/* Silence while the socket is up: a badge that is always green
+                says nothing. Only the broken state is worth a word, and it
+                is a word rather than a badge -- the composer is disabled
+                anyway. */}
+            {!connected && (
+              <span className="shrink-0 text-xs text-destructive">연결 끊김</span>
+            )}
 
-      {/* No h-full: the inset's own m-2 is added *outside* its box, so a
-          child told to be the full height of the row pushes its bottom margin
-          and its rounded corners past the clipped edge of the window. As an
-          ordinary flex child it takes the room the margins leave. */}
-      <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {/* The tab says which workspace this is and which folder it works
-            in; what sits beside it is what a tab cannot say — whether the
-            socket is up, and which CLI the ladder picked for the next turn.
-            The ⌘K workspace search that used to sit here is gone: the tabs
-            are the switcher now. */}
-        <TabBar
-          actions={
-            <>
-              {/* Silence while the socket is up: a badge that is always green
-                  says nothing. Only the broken state is worth a word, and it
-                  is a word rather than a badge -- the composer is disabled
-                  anyway. */}
-              {!connected && (
-                <span className="shrink-0 text-xs text-destructive">연결 끊김</span>
-              )}
-
-              {route && (
-                // Which CLI the ladder picked, and why. Hidden below md: at
-                // that width the tabs matter more than the explanation.
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Badge variant="outline" className="hidden max-w-56 md:inline-flex">
-                        <span className="truncate">
-                          {models[route.agent] ?? AGENT_LABELS[route.agent as Agent] ?? route.agent}
-                        </span>
-                      </Badge>
-                    }
-                  />
-                  <TooltipContent>자동 선택: {route.reason}</TooltipContent>
-                </Tooltip>
-              )}
-            </>
-          }
-        />
-
+            {route && (
+              // Which CLI the ladder picked, and why. Hidden below md: at
+              // that width the tabs matter more than the explanation.
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Badge variant="outline" className="hidden max-w-56 md:inline-flex">
+                      <span className="truncate">
+                        {models[route.agent] ?? AGENT_LABELS[route.agent as Agent] ?? route.agent}
+                      </span>
+                    </Badge>
+                  }
+                />
+                <TooltipContent>자동 선택: {route.reason}</TooltipContent>
+              </Tooltip>
+            )}
+          </>
+      }
+    >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* A phone shows one screen at a time, and the one thing that cannot
             wait is the request blocking the turn. Above the transcript, not
             inside it: the transcript is scrolled to its end, so anything
@@ -552,13 +542,8 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
           placeholder="무엇을 해야 하는지 적으세요. Enter로 전송"
         />
 
-        <UsageBar
-          refreshKey={turnsFinished}
-          totalCostUsd={usage.totalCostUsd}
-          totalTokens={usage.totalTokens}
-          failingAgents={failingAgents}
-        />
-      </SidebarInset>
+      </div>
+    </PageShell>
 
       {/* One sub-agent's own record: what it was told, what it ran, what it
           answered. Opened from the plan it belongs to, and closed with Esc. */}
@@ -648,6 +633,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
           )}
         </SheetContent>
       </Sheet>
-    </SidebarProvider>
+    </>
   );
 }

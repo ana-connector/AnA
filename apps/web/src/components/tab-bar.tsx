@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useTabs } from "@/components/tabs";
+import { TAB_DRAG_TYPE } from "@/components/pane-host";
 import { BROWSER_ROUTE } from "@/lib/preview";
 import { WorkspaceIcon } from "@/components/workspace-icon";
 import { Separator } from "@/components/ui/separator";
@@ -94,6 +95,18 @@ export function TabBar({ actions }: { actions?: ReactNode }) {
               data-slot="tab"
               data-active={active}
               data-href={tab.href}
+              // Dragged onto the page, a tab splits it. The body is marked
+              // for the length of the drag: a pane showing another page is
+              // an iframe, and an iframe swallows the drag events that would
+              // otherwise reach the pane — a cover goes over it while the
+              // mark is there.
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.setData(TAB_DRAG_TYPE, tab.href);
+                event.dataTransfer.effectAllowed = "move";
+                document.body.setAttribute("data-dragging-tab", tab.href);
+              }}
+              onDragEnd={() => document.body.removeAttribute("data-dragging-tab")}
               // Middle click closes, the way it does in every browser. The
               // link would otherwise open the page in a new window, which is
               // not what that button means on a tab.

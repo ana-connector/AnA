@@ -380,6 +380,86 @@ with sync_playwright() as p:
           len(archived_marked) == 1 and archived_marked[0] in ("false", "unset"),
           str(archived_marked))
 
+    # --- dragging a tab splits the page ----------------------------------
+    page.goto(BASE, wait_until="networkidle")
+    page.wait_for_timeout(1000)
+    for item in (made[1], made[2]):
+        sidebar_row(page, item["name"]).click()
+        page.wait_for_url(f"{BASE}/{item['id']}", timeout=20000)
+        page.wait_for_timeout(1000)
+
+    def panes(page):
+        return page.evaluate("""() => [...document.querySelectorAll('[data-slot="pane"]')].map(p => ({
+          id: p.dataset.pane,
+          focused: p.dataset.focused === 'true',
+          framed: !!p.querySelector(':scope > [data-slot="pane-frame"]'),
+          box: (b => ({ x: Math.round(b.x), y: Math.round(b.y),
+                        w: Math.round(b.width), h: Math.round(b.height) }))(p.getBoundingClientRect()),
+        }))""")
+
+    check("a page starts as one pane", len(panes(page)) == 1, str(panes(page)))
+    open_tabs = len(names(page))
+
+    first = page.locator('[data-slot="pane"]').first
+    size = first.bounding_box()
+    page.locator(f'[data-slot="tab"][data-href="/{made[1]["id"]}"]').drag_to(
+        first, target_position={"x": size["width"] * 0.9, "y": size["height"] * 0.5})
+    page.wait_for_timeout(1200)
+    side_by_side = panes(page)
+    check("a tab dropped on the right edge splits the page in two",
+          len(side_by_side) == 2, str(side_by_side))
+    check("and the two sit side by side",
+          len(side_by_side) == 2
+          and side_by_side[0]["box"]["x"] < side_by_side[1]["box"]["x"]
+          and abs(side_by_side[0]["box"]["y"] - side_by_side[1]["box"]["y"]) <= 2,
+          str([pane["box"] for pane in side_by_side]))
+    check("the pane you dropped into is the live page, the other an iframe",
+          sum(1 for pane in side_by_side if pane["framed"]) == 1
+          and sum(1 for pane in side_by_side if pane["focused"]) == 1
+          and not next(pane for pane in side_by_side if pane["focused"])["framed"],
+          str(side_by_side))
+    check("splitting opens no new tab", len(names(page)) == open_tabs, str(names(page)))
+
+    # --- a split inside a split ------------------------------------------
+    target = page.locator('[data-slot="pane"]').first
+    size = target.bounding_box()
+    page.locator('[data-slot="tab"][data-href="/"]').drag_to(
+        target, target_position={"x": size["width"] * 0.5, "y": size["height"] * 0.9})
+    page.wait_for_timeout(1200)
+    nested = panes(page)
+    check("a tab dropped on the bottom edge splits that pane again",
+          len(nested) == 3, str([pane["box"] for pane in nested]))
+    stacked = [pane for pane in nested
+               if abs(pane["box"]["x"] - nested[0]["box"]["x"]) <= 2]
+    check("and the new pane is stacked under the one it was dropped on",
+          len(stacked) == 2 and stacked[0]["box"]["y"] < stacked[1]["box"]["y"],
+          str([pane["box"] for pane in nested]))
+
+    # --- the status bar is under all of it --------------------------------
+    under = page.evaluate("""() => {
+      const bar = document.querySelector('footer');
+      const host = document.querySelector('[data-slot="pane-host"]');
+      if (!bar || !host) return null;
+      return {
+        bar: Math.round(bar.getBoundingClientRect().top),
+        host: Math.round(host.getBoundingClientRect().bottom),
+        text: bar.innerText.trim().slice(0, 20),
+      };
+    }""")
+    check("the status bar stays under the split",
+          under is not None and under["bar"] >= under["host"] - 1 and "한도" in under["text"],
+          str(under))
+
+    # --- closing ----------------------------------------------------------
+    page.locator('[data-slot="pane-close"]').first.click()
+    page.wait_for_timeout(1000)
+    check("closing a pane collapses its split", len(panes(page)) == 2, str(panes(page)))
+    check("and leaves its tab open", len(names(page)) == open_tabs, str(names(page)))
+
+    page.locator(f'[data-slot="tab"][data-href="/{made[1]["id"]}"] [data-slot="tab-close"]').click()
+    page.wait_for_timeout(1200)
+    check("closing a tab takes its pane with it", len(panes(page)) == 1, str(panes(page)))
+
     check("no console or page errors", not errors, "; ".join(errors[:3]))
     browser.close()
 

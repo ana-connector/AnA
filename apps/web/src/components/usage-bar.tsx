@@ -76,18 +76,25 @@ function barClass(value: number | null): string {
  *  enough to be something you look up — so it lives in the tooltip, next to
  *  when each window rolls over. */
 export function UsageBar({
-  refreshKey,
-  totalCostUsd,
-  totalTokens,
+  refreshKey = 0,
+  totalCostUsd = 0,
+  totalTokens = 0,
   failingAgents = {},
 }: {
-  refreshKey: number;
-  totalCostUsd: number;
-  totalTokens: number;
+  refreshKey?: number;
+  /** What the conversation on screen has spent. Left out on a page that is
+   *  not a conversation — the limits below belong to the installation, the
+   *  two figures beside them do not. */
+  totalCostUsd?: number;
+  totalTokens?: number;
   /** agent -> what its last attempt said. Its mark turns red until the agent
    *  answers again. */
   failingAgents?: Record<string, string>;
 }) {
+  // Nothing spent means this is not a conversation's bar, so the two
+  // per-conversation figures are left off rather than reading "$0.00 · 0 tok"
+  // on every settings page.
+  const spent = totalCostUsd > 0 || totalTokens > 0;
   const [usage, setUsage] = useState<UsageSnapshot>({});
   const [syncing, setSyncing] = useState(false);
   // Closed by default: this is reference, not something being watched.
@@ -187,9 +194,11 @@ export function UsageBar({
           <span className="tabular-nums">
             {agents.length === 0 ? "사용량" : `한도 ${percent(tightest)}`}
           </span>
-          <span className="tabular-nums">
-            ${totalCostUsd.toFixed(2)} · {compactTokens(totalTokens)} tok
-          </span>
+          {spent && (
+            <span className="tabular-nums">
+              ${totalCostUsd.toFixed(2)} · {compactTokens(totalTokens)} tok
+            </span>
+          )}
         </button>
       </footer>
     );
@@ -296,9 +305,11 @@ export function UsageBar({
       {/* This conversation, in two figures. The caveat that Codex and Kimi
           report no price was a sentence explaining a number nobody had asked
           about yet. */}
-      <span className="ml-auto tabular-nums">
-        ${totalCostUsd.toFixed(2)} · {compactTokens(totalTokens)} tok
-      </span>
+      {spent && (
+        <span className="ml-auto tabular-nums">
+          ${totalCostUsd.toFixed(2)} · {compactTokens(totalTokens)} tok
+        </span>
+      )}
     </footer>
   );
 }

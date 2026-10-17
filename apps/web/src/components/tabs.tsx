@@ -12,6 +12,18 @@ import {
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { BROWSER_ROUTE, previewLabel, previewTarget } from "@/lib/preview";
+import {
+  adoptIds,
+  findLeaf,
+  leaf,
+  leaves,
+  mapNode,
+  remove as removePane,
+  removeHref,
+  split as splitPaneTree,
+  type DropSide,
+  type PaneNode,
+} from "@/lib/panes";
 
 /** One open tab. The route it shows is its identity: two tabs on the same
  *  page would be two views of the same thing, and closing one of them would
@@ -75,9 +87,60 @@ function titleFor(href: string): string {
  * ---------------------------------------------------------------------- */
 
 const SERVER_TABS: Tab[] = [START];
+const SERVER_LAYOUT: PaneNode = { kind: "leaf", id: "p0", href: START_HREF };
 let tabs: Tab[] = SERVER_TABS;
+/** Which tabs are on screen at once, and where. One pane until something is
+ *  dragged onto the page. */
+let layout: PaneNode = SERVER_LAYOUT;
+/** The pane the router is driving: whatever it shows is the address bar's
+ *  page, and clicking a tab changes that pane rather than the others. */
+let focused: string = SERVER_LAYOUT.id;
 let restored = false;
 const listeners = new Set<() => void>();
+
+function announce() {
+  for (const listener of listeners) listener();
+}
+
+/** A pane is the same app in an iframe, and an iframe shares this tab's
+ *  session storage. Left to run, it would restore the window's tabs into
+ *  itself, add its own address to them and write the result back over the
+ *  window's own view. So in a pane the store keeps to itself: it holds
+ *  whatever this document needs and never reads or writes the record. */
+let paneChecked = false;
+let inPane = false;
+function isPane(): boolean {
+  if (!paneChecked && typeof window !== "undefined") {
+    paneChecked = true;
+    inPane = new URLSearchParams(window.location.search).get("pane") === "1";
+  }
+  return inPane;
+}
+
+function save() {
+  if (isPane()) return;
+  try {
+    window.sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ tabs, layout, focused })
+    );
+  } catch {
+    // A browser with storage switched off keeps its tabs for this page only.
+  }
+}
+
+/** Replaces the layout, keeping the focused pane pointed at something real. */
+function publishLayout(next: PaneNode | null, focus?: string) {
+  layout = next ?? leaf(tabs[0]?.href ?? START_HREF);
+  const all = leaves(layout);
+  focused = focus && all.some((pane) => pane.id === focus)
+    ? focus
+    : all.some((pane) => pane.id === focused)
+      ? focused
+      : all[0].id;
+  save();
+  announce();
+}
 
 function publish(next: Tab[]) {
   if (next.length === tabs.length && next.every((tab, index) =>
@@ -85,28 +148,47 @@ function publish(next: Tab[]) {
     && (tab.icon ?? "") === (tabs[index].icon ?? "")
     && (tab.detail ?? "") === (tabs[index].detail ?? ""))) return;
   tabs = next;
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(tabs));
-  } catch {
-    // A browser with storage switched off keeps its tabs for this page only.
-  }
-  for (const listener of listeners) listener();
+  save();
+  announce();
 }
 
-/** Reads the saved list once, on the client, after hydration has committed. */
+/** Reads the saved view once, on the client, after hydration has committed.
+ *  Older sessions stored the tabs as a bare array; those still load. */
 function restore() {
   restored = true;
+  if (isPane()) return;
   try {
     const stored = window.sessionStorage.getItem(STORAGE_KEY);
     if (!stored) return;
     const parsed: unknown = JSON.parse(stored);
-    if (!Array.isArray(parsed)) return;
-    const saved = parsed.filter(
+    const savedTabs: unknown = Array.isArray(parsed)
+      ? parsed
+      : (parsed as { tabs?: unknown })?.tabs;
+    if (!Array.isArray(savedTabs)) return;
+    const valid = savedTabs.filter(
       (tab): tab is Tab =>
         typeof tab === "object" && tab !== null &&
         typeof (tab as Tab).href === "string" && typeof (tab as Tab).title === "string"
     );
-    if (saved.length) publish(saved);
+    if (!valid.length) return;
+    tabs = valid;
+
+    const savedLayout = (parsed as { layout?: PaneNode })?.layout;
+    const open = new Set(valid.map((tab) => tab.href));
+    // A layout is only restored while every pane in it still has a tab: a
+    // pane pointing at something that is no longer open is a window onto
+    // nothing, and one bad entry should not cost the whole session.
+    if (savedLayout && leaves(savedLayout).every((pane) => open.has(pane.href))) {
+      adoptIds(savedLayout);
+      layout = savedLayout;
+      const focus = (parsed as { focused?: string })?.focused;
+      focused = focus && findLeaf(layout, focus) ? focus : leaves(layout)[0].id;
+    } else {
+      layout = leaf(valid[0].href);
+      focused = layout.id;
+    }
+    save();
+    announce();
   } catch {
     // Unreadable storage is no reason to lose the page.
   }
@@ -120,6 +202,10 @@ function subscribe(listener: () => void) {
 
 const readTabs = () => tabs;
 const readServerTabs = () => SERVER_TABS;
+const readLayout = () => layout;
+const readServerLayout = () => SERVER_LAYOUT;
+const readFocused = () => focused;
+const readServerFocused = () => SERVER_LAYOUT.id;
 
 type TabsValue = {
   tabs: Tab[];
@@ -135,6 +221,16 @@ type TabsValue = {
   close: (href: string) => void;
   /** The page naming itself once it knows what it is. */
   setTitle: (href: string, title: string) => void;
+  /** The panes on screen, and which of them the router is driving. */
+  panes: PaneNode;
+  focusedPane: string;
+  /** A tab dropped on a pane: on an edge it splits that pane, in the middle
+   *  it takes it over. */
+  dropTab: (paneId: string, side: DropSide, href: string) => void;
+  /** Clicking into a pane makes it the one the tabs and the router act on. */
+  focusPane: (paneId: string) => void;
+  closePane: (paneId: string) => void;
+  resizePane: (splitId: string, ratio: number) => void;
   /** The workspace list, whenever whoever is holding it reloads it. A tab for
    *  a workspace is named and iconed from here, so opening one by its address
    *  does not have to wait for its conversation to connect before the tab
@@ -156,6 +252,8 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname() ?? START_HREF;
   const openTabs = useSyncExternalStore(subscribe, readTabs, readServerTabs);
+  const panes = useSyncExternalStore(subscribe, readLayout, readServerLayout);
+  const focusedPane = useSyncExternalStore(subscribe, readFocused, readServerFocused);
   // Where we have asked the router to go. Until the address catches up, the
   // bar already shows the destination, and the effect below must not read the
   // page we are leaving as a tab that went missing and put it back.
@@ -201,6 +299,8 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       const index = tabs.findIndex((tab) => tab.href === href);
       if (index < 0) return;
       const rest = tabs.filter((tab) => tab.href !== href);
+      // A pane showing a closed tab is a window onto nothing.
+      publishLayout(removeHref(layout, href));
       if (href !== pathname) {
         publish(rest);
         return;
@@ -218,6 +318,49 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     if (!title) return;
     if (!tabs.some((tab) => tab.href === href && tab.title !== title)) return;
     publish(tabs.map((tab) => (tab.href === href ? { ...tab, title } : tab)));
+  }, []);
+
+  const dropTab = useCallback(
+    (paneId: string, side: DropSide, href: string) => {
+      const { layout: next, focus } = splitPaneTree(layout, paneId, side, href);
+      publishLayout(next, focus);
+      navigate(href);
+    },
+    [navigate]
+  );
+
+  const focusPane = useCallback(
+    (paneId: string) => {
+      const pane = findLeaf(layout, paneId);
+      if (!pane || paneId === focused) return;
+      publishLayout(layout, paneId);
+      // The address bar follows the focused pane: it is the one the tabs,
+      // the back button and the sidebar all act on.
+      if (pane.href !== pathname) navigate(pane.href);
+    },
+    [navigate, pathname]
+  );
+
+  const closePane = useCallback(
+    (paneId: string) => {
+      const remaining = removePane(layout, paneId);
+      publishLayout(remaining);
+      const pane = findLeaf(layout, focused);
+      if (paneId === focused || !pane) {
+        const next = findLeaf(layout, focused) ?? leaves(layout)[0];
+        if (next && next.href !== pathname) navigate(next.href);
+      }
+    },
+    [navigate, pathname]
+  );
+
+  const resizePane = useCallback((splitId: string, ratio: number) => {
+    publishLayout(
+      mapNode(layout, splitId, (found) =>
+        found.kind === "split" ? { ...found, ratio: Math.min(0.85, Math.max(0.15, ratio)) } : found
+      ),
+      focused
+    );
   }, []);
 
   const describeWorkspaces = useCallback(
@@ -242,21 +385,42 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   );
 
   // Whatever the address bar says must have a tab, however it got there — a
-  // bookmark, the back button, a redirect, a link we do not own.
+  // bookmark, the back button, a redirect, a link we do not own. And the
+  // focused pane is where it is shown: the router drives exactly one pane.
   useEffect(() => {
-    if (UNTABBED.includes(pathname)) return;
+    if (isPane() || UNTABBED.includes(pathname)) return;
     if (pending.current && pending.current !== pathname) return;
     pending.current = null;
     if (!tabs.some((tab) => tab.href === pathname)) {
       publish([...tabs, { href: pathname, title: titleFor(pathname) }]);
     }
-  }, [pathname, openTabs]);
+    const pane = findLeaf(layout, focused);
+    if (pane && pane.href !== pathname) {
+      publishLayout(
+        mapNode(layout, focused, (found) => ({ ...found, kind: "leaf", href: pathname })),
+        focused
+      );
+    }
+  }, [pathname, openTabs, panes, focusedPane]);
 
   const value = useMemo<TabsValue>(
     () => ({
-      tabs: openTabs, activeHref: pathname, open, openHere, close, setTitle, describeWorkspaces,
+      tabs: openTabs,
+      activeHref: pathname,
+      open,
+      openHere,
+      close,
+      setTitle,
+      describeWorkspaces,
+      panes,
+      focusedPane,
+      dropTab,
+      focusPane,
+      closePane,
+      resizePane,
     }),
-    [openTabs, pathname, open, openHere, close, setTitle, describeWorkspaces]
+    [openTabs, pathname, open, openHere, close, setTitle, describeWorkspaces,
+     panes, focusedPane, dropTab, focusPane, closePane, resizePane]
   );
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;
