@@ -27,6 +27,8 @@ results = []
 
 def check(name, ok, detail=""):
     results.append((name, ok, detail))
+    if not ok:
+        print(f"FAIL {name}: {detail}", flush=True)
 
 
 def make_workspace(name):
@@ -350,13 +352,19 @@ with sync_playwright() as p:
           names(page).count("브라우저") == 0 and names(page)[-1].endswith(API.split(":")[-1]),
           str(names(page)))
 
-    # AnA in AnA: the user's own app on their own machine, so it is framed
-    # like anything else.
+    # Framing AnA itself would nest the whole UI inside its own browser tab.
     page.goto(f"{BASE}/browser/{urllib.parse.quote(BASE, safe='')}", wait_until="networkidle")
     page.wait_for_timeout(1500)
     own = page.locator('[data-slot="browser-frame"]')
-    check("AnA can be framed in its own browser tab",
-          own.count() == 1 and own.get_attribute("src").startswith(BASE), "")
+    check("AnA refuses to frame its own UI",
+          own.count() == 0 and page.get_by_text("ANA 자신은 미리볼 수 없습니다", exact=True).count() == 1,
+          f"frames={own.count()}")
+
+    # Use a real iframe for the drop check below: it can otherwise consume
+    # pointer events that the pane needs to receive.
+    page.goto(f"{BASE}/browser/{urllib.parse.quote(f'{API}/healthz', safe='')}",
+              wait_until="networkidle")
+    page.wait_for_selector('[data-slot="browser-frame"]')
 
     # A tab dropped on a browser tab has to land: the preview is an iframe,
     # and an iframe eats the drag unless the pane is covered for its length.
@@ -368,8 +376,12 @@ with sync_playwright() as p:
     check("a tab can be dropped onto a browser tab",
           page.locator('[data-slot="pane"]').count() == 2,
           str(page.locator('[data-slot="pane"]').count()))
-    page.locator('[data-slot="pane-close"]').first.click()
+    page.locator('[data-slot="pane"]:has([data-slot="tab"][data-href="/"]) '
+                 '[data-slot="tab"][data-href="/"] [data-slot="tab-close"]').first.click()
     page.wait_for_timeout(800)
+    check("closing the dropped tab removes its pane",
+          page.locator('[data-slot="pane"]').count() == 1,
+          str(page.locator('[data-slot="pane"]').count()))
     page.locator('[data-slot="tab"][data-active="true"] [data-slot="tab-close"]').click()
     page.wait_for_timeout(800)
 
@@ -437,7 +449,7 @@ with sync_playwright() as p:
         return page.evaluate("""() => [...document.querySelectorAll('[data-slot="pane"]')].map(p => ({
           id: p.dataset.pane,
           focused: p.dataset.focused === 'true',
-          framed: !!p.querySelector(':scope > [data-slot="pane-frame"]'),
+          framed: !!p.querySelector('[data-slot="pane-frame"]:not(.hidden)'),
           box: (b => ({ x: Math.round(b.x), y: Math.round(b.y),
                         w: Math.round(b.width), h: Math.round(b.height) }))(p.getBoundingClientRect()),
         }))""")
@@ -458,32 +470,17 @@ with sync_playwright() as p:
           and side_by_side[0]["box"]["x"] < side_by_side[1]["box"]["x"]
           and abs(side_by_side[0]["box"]["y"] - side_by_side[1]["box"]["y"]) <= 2,
           str([pane["box"] for pane in side_by_side]))
-    check("the pane you dropped into is the live page, the other an iframe",
-          sum(1 for pane in side_by_side if pane["framed"]) == 1
-          and sum(1 for pane in side_by_side if pane["focused"]) == 1
-          and not next(pane for pane in side_by_side if pane["focused"])["framed"],
+    check("each split pane keeps its active page mounted in an iframe",
+          len(side_by_side) == 2 and all(pane["framed"] for pane in side_by_side)
+          and sum(1 for pane in side_by_side if pane["focused"]) == 1,
           str(side_by_side))
-    group = page.evaluate("""() => {
-      const el = document.querySelector('[data-slot="tab"][data-group="true"]');
-      if (!el) return null;
-      const parts = [...el.querySelectorAll('[data-slot="tab-part"]')];
-      return {
-        parts: parts.map(part => ({
-          href: part.dataset.href,
-          title: part.querySelector('[data-slot="tab-title"]').textContent.trim(),
-          active: part.dataset.active === 'true',
-        })),
-        tabs: document.querySelectorAll('[data-slot="tab"]').length,
-      };
-    }""")
-    check("the two pages share one tab, drawn as the split they are",
-          group is not None and len(group["parts"]) == 2, str(group))
-    check("and that tab replaces the two it merged",
-          group is not None and group["tabs"] == open_tabs - 1,
-          f"{group['tabs'] if group else '?'} of {open_tabs}")
-    check("the part you are in is the marked one",
-          group is not None and sum(1 for part in group["parts"] if part["active"]) == 1,
-          str(group["parts"] if group else None))
+    check("each pane has its own tab strip",
+          page.locator('[data-slot="tab-strip"]').count() == 2
+          and page.locator('[data-slot="tab"]').count() == open_tabs,
+          f"strips={page.locator('[data-slot="tab-strip"]').count()}, tabs={page.locator('[data-slot="tab"]').count()}")
+    check("the focused pane has the only active tab",
+          page.locator('[data-slot="tab"][data-active="true"]').count() == 1,
+          str(page.locator('[data-slot="tab"][data-active="true"]').count()))
 
     # --- a split inside a split ------------------------------------------
     target = page.locator('[data-slot="pane"]').first
@@ -516,24 +513,23 @@ with sync_playwright() as p:
           str(under))
 
     # --- closing ----------------------------------------------------------
-    page.locator('[data-slot="pane-close"]').first.click()
+    page.locator('[data-slot="pane"]:has([data-slot="tab"][data-href="/"]) '
+                 '[data-slot="tab"][data-href="/"] [data-slot="tab-close"]').first.click()
     page.wait_for_timeout(1000)
-    check("closing a pane collapses its split", len(panes(page)) == 2, str(panes(page)))
-    # Every open page is named once, whether on a tab of its own or on one
-    # part of the split tab.
+    check("closing a pane's sole tab collapses its split", len(panes(page)) == 2, str(panes(page)))
+    # Closing one tab removes its name, while the other panes and tabs remain.
     shown_names = page.locator('[data-slot="tab-title"]').count()
-    check("and leaves its tab open", shown_names == open_tabs, f"{shown_names} of {open_tabs}")
-    check("two panes are still one tab",
-          page.locator('[data-slot="tab"][data-group="true"]').count() == 1
-          and page.locator('[data-slot="tab-part"]').count() == 2,
-          str(page.locator('[data-slot="tab-part"]').count()))
+    check("and leaves the other tabs open", shown_names == open_tabs - 1,
+          f"{shown_names} of {open_tabs}")
 
-    # Closing one half of a split tab, from the split tab itself.
-    page.locator(f'[data-slot="tab-part"][data-href="/{made[1]["id"]}"] [data-slot="tab-close"]').click()
+    # Closing the second pane's sole tab collapses back to one pane.
+    page.locator(f'[data-slot="pane"]:has([data-slot="tab"][data-href="/{made[1]["id"]}"]) '
+                 f'[data-slot="tab"][data-href="/{made[1]["id"]}"] [data-slot="tab-close"]').click()
     page.wait_for_timeout(1200)
-    check("closing a tab takes its pane with it", len(panes(page)) == 1, str(panes(page)))
-    check("and the bar goes back to separate tabs",
-          page.locator('[data-slot="tab"][data-group="true"]').count() == 0,
+    check("closing another sole tab returns to one pane", len(panes(page)) == 1,
+          str(panes(page)))
+    check("the remaining pane keeps its tabs",
+          page.locator('[data-slot="tab"]').count() == open_tabs - 2,
           str(names(page)))
 
     check("no console or page errors", not errors, "; ".join(errors[:3]))

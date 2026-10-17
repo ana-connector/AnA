@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import {
   ExternalLinkIcon,
   MaximizeIcon,
@@ -87,6 +87,8 @@ const SIZES: { label: string; icon: typeof MaximizeIcon; size: [number, number] 
   { label: "노트북", icon: MonitorIcon, size: [1280, 800] },
 ];
 
+const subscribeToOrigin = () => () => {};
+
 export function BrowserView({
   target,
   onDocumentTitle,
@@ -113,7 +115,13 @@ export function BrowserView({
   const url = parseUrl(target);
   const urlHref = url?.href;
   const allowed = target !== "" && canPreview(target);
-  const framingSelf = Boolean(url && isOwnOrigin(url.href));
+  // Client Components also render on the server. Use the same first value on
+  // both sides of hydration, then read location once the browser takes over.
+  const framingSelf = useSyncExternalStore(
+    subscribeToOrigin,
+    () => Boolean(urlHref && isOwnOrigin(urlHref)),
+    () => false
+  );
 
   // Layout effect, so the first paint already has the scale: measuring in a
   // plain effect showed the frame at full size for a frame or two, which
