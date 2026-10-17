@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { XIcon } from "lucide-react";
+import { TabStrip } from "@/components/tab-bar";
 import { useTabs } from "@/components/tabs";
 import { paneSrc } from "@/hooks/use-pane-mode";
-import { sideAt, type DropSide, type PaneNode } from "@/lib/panes";
+import { leaves, sideAt, type DropSide, type Leaf, type PaneNode } from "@/lib/panes";
 import { cn } from "@/lib/utils";
 
 /** What a tab carries while it is being dragged. A private type keeps a file
  *  or a link dragged in from elsewhere from being read as a tab. */
 export const TAB_DRAG_TYPE = "application/x-ana-tab";
+export const PANE_DRAG_TYPE = "application/x-ana-pane";
 
 /** Where a drop would put the tab, drawn over the pane it is over. */
 function DropHint({ side }: { side: DropSide }) {
@@ -35,19 +36,22 @@ function DropHint({ side }: { side: DropSide }) {
 function Pane({
   node,
   focused,
-  splitView,
+  split,
+  leading,
+  actions,
   children,
 }: {
-  node: Extract<PaneNode, { kind: "leaf" }>;
+  node: Leaf;
   focused: boolean;
-  /** Whether there is more than one pane: a single pane needs no header. */
-  splitView: boolean;
+  /** True when more than one pane is on screen — then this pane is iframe-only. */
+  split: boolean;
+  leading?: ReactNode;
+  actions?: ReactNode;
   children: ReactNode;
 }) {
-  const { tabs, dropTab, focusPane, closePane } = useTabs();
+  const { dropTab, focusPane } = useTabs();
   const [hint, setHint] = useState<DropSide | null>(null);
   const box = useRef<HTMLDivElement>(null);
-  const title = tabs.find((tab) => tab.href === node.href)?.title ?? node.href;
 
   const sideOf = (event: React.DragEvent) => {
     const rect = box.current?.getBoundingClientRect();
@@ -60,11 +64,7 @@ function Pane({
       data-slot="pane"
       data-pane={node.id}
       data-focused={focused}
-      className={cn(
-        "relative flex min-h-0 min-w-0 flex-1 flex-col",
-        splitView && "border border-transparent",
-        splitView && focused && "border-primary/40"
-      )}
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col"
       onMouseDown={() => focusPane(node.id)}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes(TAB_DRAG_TYPE)) return;
@@ -79,6 +79,7 @@ function Pane({
       }}
       onDrop={(event) => {
         const href = event.dataTransfer.getData(TAB_DRAG_TYPE);
+        const from = event.dataTransfer.getData(PANE_DRAG_TYPE);
         setHint(null);
         // Cleared here as well as on dragend: a drop does not always produce
         // one, and a mark left behind leaves an invisible cover over every
@@ -86,48 +87,48 @@ function Pane({
         document.body.removeAttribute("data-dragging-tab");
         if (!href) return;
         event.preventDefault();
-        dropTab(node.id, sideOf(event), href);
+        dropTab(node.id, sideOf(event), href, from);
       }}
     >
-      {splitView && (
-        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-muted/40 pr-1 pl-2 text-xs">
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">{title}</span>
-          <button
-            type="button"
-            data-slot="pane-close"
-            aria-label={`${title} 분할 닫기`}
-            onClick={() => closePane(node.id)}
-            className="flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <XIcon className="size-3.5" />
-          </button>
-        </div>
-      )}
+      {/* Every pane carries its own tabs. Splitting the screen is how a
+          second strip comes about — there is no separate window-wide bar to
+          disagree with it. */}
+      <TabStrip pane={node} leading={leading} actions={actions} />
 
-      {focused ? (
-        children
-      ) : (
-        // The same app, told to render only the page. Its own socket, its own
-        // scroll position: a pane is a window onto the page, not a copy of
-        // the one next to it.
-        <iframe
-          key={node.href}
-          src={paneSrc(node.href)}
-          title={title}
-          data-slot="pane-frame"
-          className="min-h-0 w-full flex-1 border-0 bg-background"
+      {/* When the window is split, every pane is an iframe — including the
+          focused one. Swapping the live router tree between panes remounted
+          both sides on every cross-pane click. Frames stay mounted; only
+          which one is visible changes. A single pane still uses the live
+          router document (no iframe tax for the common case). */}
+      <div className="relative flex min-h-0 min-w-0 flex-1">
+        {node.tabs.map((href) => {
+          const showFrame = split
+            ? href === node.active
+            : !focused && href === node.active;
+          return (
+            <iframe
+              key={href}
+              src={paneSrc(href)}
+              title={href}
+              data-slot="pane-frame"
+              className={cn(
+                "min-h-0 w-full flex-1 border-0 bg-background",
+                !showFrame && "hidden"
+              )}
+            />
+          );
+        })}
+        {focused && !split ? (
+          <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden">
+            {children}
+          </div>
+        ) : null}
+        <div
+          data-slot="pane-drop-cover"
+          className="absolute inset-0 z-10 hidden [body[data-dragging-tab]_&]:block"
         />
-      )}
+      </div>
       {hint && <DropHint side={hint} />}
-      {/* An iframe eats the drag events that would otherwise reach the pane
-          under it, so a cover goes over the whole pane for the length of a
-          drag. Every pane, not only the ones showing another page: the
-          browser tab has a frame of its own, and dropping onto it did
-          nothing at all. */}
-      <div
-        data-slot="pane-drop-cover"
-        className="absolute inset-0 z-10 hidden [body[data-dragging-tab]_&]:block"
-      />
     </div>
   );
 }
@@ -178,7 +179,17 @@ function Divider({
   );
 }
 
-function Split({ node, children }: { node: Extract<PaneNode, { kind: "split" }>; children: ReactNode }) {
+function Split({
+  node,
+  leading,
+  actions,
+  children,
+}: {
+  node: Extract<PaneNode, { kind: "split" }>;
+  leading?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const [first, second] = node.children;
   return (
@@ -189,24 +200,46 @@ function Split({ node, children }: { node: Extract<PaneNode, { kind: "split" }>;
       className={cn("flex min-h-0 min-w-0 flex-1", node.dir === "row" ? "flex-row" : "flex-col")}
     >
       <div className="flex min-h-0 min-w-0" style={{ flex: `${node.ratio} 1 0%` }}>
-        <Branch node={first}>{children}</Branch>
+        {/* The sidebar trigger belongs to the leftmost strip, wherever that
+            ends up in the tree. */}
+        <Branch node={first} leading={leading} actions={actions}>{children}</Branch>
       </div>
       <Divider id={node.id} dir={node.dir} container={container} />
       <div className="flex min-h-0 min-w-0" style={{ flex: `${1 - node.ratio} 1 0%` }}>
-        <Branch node={second}>{children}</Branch>
+        <Branch node={second} actions={actions}>{children}</Branch>
       </div>
     </div>
   );
 }
 
-function Branch({ node, children }: { node: PaneNode; children: ReactNode }) {
+function Branch({
+  node,
+  leading,
+  actions,
+  children,
+}: {
+  node: PaneNode;
+  leading?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   const { focusedPane, panes } = useTabs();
-  if (node.kind === "split") return <Split node={node}>{children}</Split>;
+  if (node.kind === "split") {
+    return (
+      <Split node={node} leading={leading} actions={actions}>
+        {children}
+      </Split>
+    );
+  }
+  const focused = node.id === focusedPane;
+  const split = leaves(panes).length > 1;
   return (
     <Pane
       node={node}
-      focused={node.id === focusedPane}
-      splitView={panes.kind === "split"}
+      focused={focused}
+      split={split}
+      leading={leading}
+      actions={focused ? actions : undefined}
     >
       {children}
     </Pane>
@@ -215,11 +248,22 @@ function Branch({ node, children }: { node: PaneNode; children: ReactNode }) {
 
 /** The page, or several of them side by side.
  *
+ *  Each pane carries its own tab strip, so the window has no bar of its
+ *  own: with nothing split there is one pane, and its strip is the header.
+ *
  *  `children` is the page the router is on, and it is rendered in exactly one
  *  pane — the focused one. Everything else is the same app in an iframe,
  *  which is what makes a second page on screen cost one line here instead of
  *  a rewrite of every page into something mountable twice. */
-export function PaneHost({ children }: { children: ReactNode }) {
+export function PaneHost({
+  leading,
+  actions,
+  children,
+}: {
+  leading?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   const { panes } = useTabs();
 
   // The cover over each pane is up for as long as the body carries the mark,
@@ -240,7 +284,9 @@ export function PaneHost({ children }: { children: ReactNode }) {
 
   return (
     <div data-slot="pane-host" className="flex min-h-0 min-w-0 flex-1">
-      <Branch node={panes}>{children}</Branch>
+      <Branch node={panes} leading={leading} actions={actions}>
+        {children}
+      </Branch>
     </div>
   );
 }

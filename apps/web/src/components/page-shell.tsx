@@ -1,23 +1,16 @@
 "use client";
 
-import { type ReactNode } from "react";
-import { PaneHost } from "@/components/pane-host";
-import { SessionSidebar } from "@/components/session-sidebar";
-import { TabBar } from "@/components/tab-bar";
+import { useLayoutEffect, type ReactNode } from "react";
 import { useTabTitle } from "@/components/tabs";
-import { UsageBar } from "@/components/usage-bar";
+import { useShellMetaPublisher, type ShellUsage } from "@/components/shell-meta";
 import { usePaneMode } from "@/hooks/use-pane-mode";
 import { cn } from "@/lib/utils";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
-/** The frame every non-chat page sits in: project navigation on the left, the
- *  open tabs across the top, and one content column.
+/** The focused page's body: title, column layout, and chrome slots.
  *
- *  Each page used to build its own header — a back-to-chat button, a bold
- *  span, and its own container width — so the three utility pages looked like
- *  three different apps. Then the shell owned a breadcrumb that said the same
- *  thing the sidebar highlight already said. Now the page says only what it is
- *  called, the tab carries that name, and the page owns only its content. */
+ *  Window chrome (sidebar, panes, usage bar) lives in `AppShell` above the
+ *  router. This component only styles the page and publishes bar/usage props
+ *  so a tab switch does not remount the surrounding UI. */
 export function PageShell({
   title,
   description,
@@ -49,16 +42,31 @@ export function PageShell({
   barActions?: ReactNode;
   /** What this conversation has spent, for the status bar. Left out by a
    *  page that is not a conversation; the bar still shows the limits. */
-  usage?: { refreshKey: number; totalCostUsd: number; totalTokens: number;
-            failingAgents?: Record<string, string> };
+  usage?: ShellUsage;
   /** Bumped when a turn finishes, so the sidebar's list follows along. */
   sidebarReloadKey?: number;
   children: ReactNode;
 }) {
   useTabTitle(title);
-  // One pane of a split view: the window around it owns the sidebar, the
-  // tabs and the status bar, so this document renders only the page.
   const pane = usePaneMode();
+  const { setMeta, resetMeta } = useShellMetaPublisher();
+
+  // Publish into the window chrome. Skipped inside a pane iframe — that
+  // document has no chrome of its own, and writing here would fight the
+  // outer window's focused page.
+  useLayoutEffect(() => {
+    if (pane) return;
+    setMeta({
+      barActions: barActions ?? null,
+      usage: usage ?? null,
+      sidebarReloadKey,
+    });
+  }, [pane, barActions, usage, sidebarReloadKey, setMeta]);
+
+  useLayoutEffect(() => {
+    if (pane) return;
+    return () => resetMeta();
+  }, [pane, resetMeta]);
 
   const column = fill ? (
     children
@@ -102,32 +110,9 @@ export function PageShell({
   }
 
   return (
-    // Bounded rather than min-height: the content panel is what scrolls, not
-    // the window.
-    <SidebarProvider className="h-svh overflow-hidden">
-      <SessionSidebar reloadKey={sidebarReloadKey} />
-      <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Outside the scroll area rather than sticky inside it: which pages
-            are open does not move while you read one of them. */}
-        <TabBar actions={barActions} />
-
-        {/* The page, or several of them side by side: a tab dragged onto the
-            panel splits it. Only the focused pane is this document; the rest
-            are the same app in an iframe. */}
-        <PaneHost>
-          {column}
-          {actionBar}
-        </PaneHost>
-
-        {/* The status bar belongs to the window, not to the page in it: it
-            stays put across every page and under every split. */}
-        <UsageBar
-          refreshKey={usage?.refreshKey ?? 0}
-          totalCostUsd={usage?.totalCostUsd ?? 0}
-          totalTokens={usage?.totalTokens ?? 0}
-          failingAgents={usage?.failingAgents}
-        />
-      </SidebarInset>
-    </SidebarProvider>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      {column}
+      {actionBar}
+    </div>
   );
 }

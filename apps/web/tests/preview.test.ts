@@ -13,6 +13,7 @@ import {
   canPreview,
   forViewer,
   isLoopback,
+  isOwnOrigin,
   parseUrl,
   previewLabel,
   previewTarget,
@@ -32,8 +33,24 @@ test("only http and https can be framed", () => {
   assert.equal(canPreview("localhost:3000"), true)
 })
 
-test("ANA's own address is allowed, because it is the user's own app", () => {
+test("ANA's own origin is detectable so the browser tab does not nest itself", () => {
   assert.equal(canPreview("http://localhost:3005/settings"), true)
+  assert.equal(
+    isOwnOrigin("http://localhost:3005/settings", {
+      hostname: "localhost",
+      port: "3005",
+      protocol: "http:",
+    }),
+    true
+  )
+  assert.equal(
+    isOwnOrigin("http://localhost:3000/", {
+      hostname: "localhost",
+      port: "3005",
+      protocol: "http:",
+    }),
+    false
+  )
 })
 
 test("a loopback address is pointed at the machine serving the page", () => {

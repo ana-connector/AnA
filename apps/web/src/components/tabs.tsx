@@ -11,17 +11,19 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { usePaneMode } from "@/hooks/use-pane-mode";
 import { BROWSER_ROUTE, previewLabel, previewTarget } from "@/lib/preview";
 import {
   adoptIds,
+  closeTab as closeTabIn,
   findLeaf,
   leaf,
   leaves,
   mapNode,
-  remove as removePane,
-  removeHref,
   split as splitPaneTree,
+  withTab,
   type DropSide,
+  type Leaf,
   type PaneNode,
 } from "@/lib/panes";
 
@@ -45,6 +47,11 @@ export type TabInfo = { title?: string; icon?: string; detail?: string };
 
 const START_HREF = "/";
 const START: Tab = { href: START_HREF, title: "시작" };
+
+/** postMessage type from a pane iframe (`?pane=1`) naming its tab in the
+ *  outer window. Split panes are iframe-only, so the page cannot call
+ *  `setTitle` on the shell's store directly. */
+export const TAB_TITLE_MESSAGE = "ana:set-tab-title";
 const STORAGE_KEY = "ana_tabs";
 
 /** Pages that belong to the installation rather than to a workspace. A tab
@@ -83,17 +90,21 @@ function titleFor(href: string): string {
  * provider's state instead meant restoring the saved list was a setState
  * inside an effect — a second render on every load, and either a hydration
  * mismatch or a visible flash. A store also hands React a server snapshot to
- * hydrate against, which is the default list.
+ * hydrate against, which is the default view.
+ *
+ * Two things are stored. `tabs` is the registry: what each open page is
+ * called and what it looks like, one entry per address. `layout` is the
+ * window: a tree of panes, each with its own list of those addresses and
+ * one of them showing. Splitting the screen is how a second list comes
+ * about, which is why the tabs live in the panes and not in one bar.
  * ---------------------------------------------------------------------- */
 
 const SERVER_TABS: Tab[] = [START];
-const SERVER_LAYOUT: PaneNode = { kind: "leaf", id: "p0", href: START_HREF };
+const SERVER_LAYOUT: Leaf = { kind: "leaf", id: "p0", tabs: [START_HREF], active: START_HREF };
 let tabs: Tab[] = SERVER_TABS;
-/** Which tabs are on screen at once, and where. One pane until something is
- *  dragged onto the page. */
 let layout: PaneNode = SERVER_LAYOUT;
 /** The pane the router is driving: whatever it shows is the address bar's
- *  page, and clicking a tab changes that pane rather than the others. */
+ *  page, and the sidebar acts on that pane rather than on the others. */
 let focused: string = SERVER_LAYOUT.id;
 let restored = false;
 const listeners = new Set<() => void>();
@@ -120,40 +131,71 @@ function isPane(): boolean {
 function save() {
   if (isPane()) return;
   try {
-    window.sessionStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ tabs, layout, focused })
-    );
+    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ tabs, layout, focused }));
   } catch {
     // A browser with storage switched off keeps its tabs for this page only.
   }
 }
 
-/** Replaces the layout, keeping the focused pane pointed at something real. */
-function publishLayout(next: PaneNode | null, focus?: string) {
-  layout = next ?? leaf(tabs[0]?.href ?? START_HREF);
+/** Every address open in any pane. The registry is trimmed to it, so a page
+ *  nobody is showing stops being carried around. */
+function openHrefs(node: PaneNode): Set<string> {
+  return new Set(leaves(node).flatMap((pane) => pane.tabs));
+}
+
+function commit(nextLayout: PaneNode | null, focus?: string) {
+  layout = nextLayout ?? leaf(START_HREF);
   const all = leaves(layout);
-  focused = focus && all.some((pane) => pane.id === focus)
-    ? focus
-    : all.some((pane) => pane.id === focused)
-      ? focused
-      : all[0].id;
+  focused =
+    focus && all.some((pane) => pane.id === focus)
+      ? focus
+      : all.some((pane) => pane.id === focused)
+        ? focused
+        : all[0].id;
+  const open = openHrefs(layout);
+  tabs = tabs.filter((tab) => open.has(tab.href));
+  for (const href of open) {
+    if (!tabs.some((tab) => tab.href === href)) tabs = [...tabs, { href, title: titleFor(href) }];
+  }
   save();
   announce();
 }
 
-function publish(next: Tab[]) {
-  if (next.length === tabs.length && next.every((tab, index) =>
-    tab.href === tabs[index].href && tab.title === tabs[index].title
-    && (tab.icon ?? "") === (tabs[index].icon ?? "")
-    && (tab.detail ?? "") === (tabs[index].detail ?? ""))) return;
+/** Records what a page is called, leaving the window alone. */
+function describe(next: Tab[]) {
+  if (
+    next.length === tabs.length &&
+    next.every(
+      (tab, index) =>
+        tab.href === tabs[index].href &&
+        tab.title === tabs[index].title &&
+        (tab.icon ?? "") === (tabs[index].icon ?? "") &&
+        (tab.detail ?? "") === (tabs[index].detail ?? "")
+    )
+  ) {
+    return;
+  }
   tabs = next;
   save();
   announce();
 }
 
+function register(href: string, info?: TabInfo) {
+  const existing = tabs.find((tab) => tab.href === href);
+  const entry: Tab = { href, title: info?.title || existing?.title || titleFor(href), ...info };
+  describe(existing ? tabs.map((tab) => (tab.href === href ? { ...tab, ...entry } : tab)) : [...tabs, entry]);
+}
+
+/** Prefer the current pane when a sole tab was split into two views. */
+function paneHolding(href: string): Leaf | null {
+  const current = findLeaf(layout, focused);
+  if (current?.tabs.includes(href)) return current;
+  return leaves(layout).find((pane) => pane.tabs.includes(href)) ?? null;
+}
+
 /** Reads the saved view once, on the client, after hydration has committed.
- *  Older sessions stored the tabs as a bare array; those still load. */
+ *  A record written before panes owned their tabs — or one naming a page
+ *  that is no longer open — is dropped rather than half-applied. */
 function restore() {
   restored = true;
   if (isPane()) return;
@@ -161,34 +203,36 @@ function restore() {
     const stored = window.sessionStorage.getItem(STORAGE_KEY);
     if (!stored) return;
     const parsed: unknown = JSON.parse(stored);
-    const savedTabs: unknown = Array.isArray(parsed)
-      ? parsed
-      : (parsed as { tabs?: unknown })?.tabs;
+    const savedTabs = (parsed as { tabs?: unknown })?.tabs;
     if (!Array.isArray(savedTabs)) return;
     const valid = savedTabs.filter(
       (tab): tab is Tab =>
-        typeof tab === "object" && tab !== null &&
-        typeof (tab as Tab).href === "string" && typeof (tab as Tab).title === "string"
+        typeof tab === "object" &&
+        tab !== null &&
+        typeof (tab as Tab).href === "string" &&
+        typeof (tab as Tab).title === "string"
     );
     if (!valid.length) return;
     tabs = valid;
 
     const savedLayout = (parsed as { layout?: PaneNode })?.layout;
-    const open = new Set(valid.map((tab) => tab.href));
-    // A layout is only restored while every pane in it still has a tab: a
-    // pane pointing at something that is no longer open is a window onto
-    // nothing, and one bad entry should not cost the whole session.
-    if (savedLayout && leaves(savedLayout).every((pane) => open.has(pane.href))) {
+    const known = new Set(valid.map((tab) => tab.href));
+    const usable =
+      savedLayout &&
+      leaves(savedLayout).every(
+        (pane) =>
+          Array.isArray(pane.tabs) &&
+          pane.tabs.length > 0 &&
+          pane.tabs.every((href) => known.has(href)) &&
+          pane.tabs.includes(pane.active)
+      );
+    if (usable && savedLayout) {
       adoptIds(savedLayout);
-      layout = savedLayout;
       const focus = (parsed as { focused?: string })?.focused;
-      focused = focus && findLeaf(layout, focus) ? focus : leaves(layout)[0].id;
+      commit(savedLayout, focus && findLeaf(savedLayout, focus) ? focus : undefined);
     } else {
-      layout = leaf(valid[0].href);
-      focused = layout.id;
+      commit(leaf(valid[0].href, valid.map((tab) => tab.href)));
     }
-    save();
-    announce();
   } catch {
     // Unreadable storage is no reason to lose the page.
   }
@@ -197,39 +241,47 @@ function restore() {
 function subscribe(listener: () => void) {
   listeners.add(listener);
   if (!restored) restore();
-  return () => { listeners.delete(listener); };
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 const readTabs = () => tabs;
 const readServerTabs = () => SERVER_TABS;
 const readLayout = () => layout;
-const readServerLayout = () => SERVER_LAYOUT;
+const readServerLayout = (): PaneNode => SERVER_LAYOUT;
 const readFocused = () => focused;
 const readServerFocused = () => SERVER_LAYOUT.id;
 
 type TabsValue = {
+  /** What every open page is called. The order a strip shows them in is the
+   *  pane's, not this one's. */
   tabs: Tab[];
-  /** The route on screen. Derived from the address rather than stored: the
-   *  active tab *is* whatever the router is showing, so there is no second
-   *  copy of that fact to fall out of step. */
+  /** The page on screen in the focused pane. Derived from the address rather
+   *  than stored: the active tab *is* whatever the router is showing, so
+   *  there is no second copy of that fact to fall out of step. */
   activeHref: string;
-  /** Sidebar navigation: a workspace joins the bar and keeps the others. */
+  /** Sidebar navigation: the page opens in the focused pane, beside whatever
+   *  else is open there. */
   open: (href: string, info?: TabInfo) => void;
   /** Navigation from inside a page: the tab you are in becomes the new page,
    *  the way a start page hands its own tab over to what you picked on it. */
   openHere: (href: string, info?: TabInfo) => void;
-  close: (href: string) => void;
+  /** Closes a page in the pane that is showing it. The pane goes with it
+   *  when that was its last tab. */
+  close: (href: string, paneId?: string) => void;
+  /** Raises a tab inside its own pane, and makes that pane the current one. */
+  selectTab: (paneId: string, href: string) => void;
   /** The page naming itself once it knows what it is. */
   setTitle: (href: string, title: string) => void;
   /** The panes on screen, and which of them the router is driving. */
   panes: PaneNode;
   focusedPane: string;
-  /** A tab dropped on a pane: on an edge it splits that pane, in the middle
-   *  it takes it over. */
-  dropTab: (paneId: string, side: DropSide, href: string) => void;
-  /** Clicking into a pane makes it the one the tabs and the router act on. */
+  /** A tab dropped on a pane: on an edge it splits that pane and moves the
+   *  tab into the new one, in the middle it joins that pane's strip. */
+  dropTab: (paneId: string, side: DropSide, href: string, from?: string) => void;
+  /** Clicking into a pane makes it the one the sidebar and the router act on. */
   focusPane: (paneId: string) => void;
-  closePane: (paneId: string) => void;
   resizePane: (splitId: string, ratio: number) => void;
   /** The workspace list, whenever whoever is holding it reloads it. A tab for
    *  a workspace is named and iconed from here, so opening one by its address
@@ -255,8 +307,8 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   const panes = useSyncExternalStore(subscribe, readLayout, readServerLayout);
   const focusedPane = useSyncExternalStore(subscribe, readFocused, readServerFocused);
   // Where we have asked the router to go. Until the address catches up, the
-  // bar already shows the destination, and the effect below must not read the
-  // page we are leaving as a tab that went missing and put it back.
+  // view already shows the destination, and the effect below must not read
+  // the page we are leaving as one that went missing and put it back.
   const pending = useRef<string | null>(null);
 
   const navigate = useCallback(
@@ -269,9 +321,9 @@ export function TabsProvider({ children }: { children: ReactNode }) {
 
   const open = useCallback(
     (href: string, info?: TabInfo) => {
-      if (!tabs.some((tab) => tab.href === href)) {
-        publish([...tabs, { href, ...info, title: info?.title ?? titleFor(href) }]);
-      }
+      register(href, info);
+      const pane = paneHolding(href) ?? findLeaf(layout, focused) ?? leaves(layout)[0];
+      commit(mapNode(layout, pane.id, (found) => withTab(found as Leaf, href)), pane.id);
       navigate(href);
     },
     [navigate]
@@ -279,37 +331,52 @@ export function TabsProvider({ children }: { children: ReactNode }) {
 
   const openHere = useCallback(
     (href: string, info?: TabInfo) => {
-      const here = tabs.findIndex((tab) => tab.href === pathname);
-      const existing = tabs.findIndex((tab) => tab.href === href);
-      if (existing >= 0) {
-        // Already open somewhere: go there, and let the tab we are leaving go
-        // rather than leaving a second way into the same page behind.
-        if (here >= 0 && here !== existing) publish(tabs.filter((_, index) => index !== here));
-      } else {
-        const next = { href, ...info, title: info?.title ?? titleFor(href) };
-        publish(here < 0 ? [...tabs, next] : tabs.map((tab, index) => (index === here ? next : tab)));
+      register(href, info);
+      const elsewhere = paneHolding(href);
+      if (elsewhere) {
+        // Already open: go to it rather than opening a second way in.
+        commit(mapNode(layout, elsewhere.id, (found) => ({ ...(found as Leaf), active: href })), elsewhere.id);
+        navigate(href);
+        return;
       }
+      const pane = findLeaf(layout, focused) ?? leaves(layout)[0];
+      // In place of the tab you are on: the start page hands its own tab
+      // over to what you picked on it rather than piling up beside it.
+      const tabsAfter = pane.tabs.map((tab) => (tab === pane.active ? href : tab));
+      commit(
+        mapNode(layout, pane.id, (found) => ({ ...(found as Leaf), tabs: tabsAfter, active: href })),
+        pane.id
+      );
       navigate(href);
+    },
+    [navigate]
+  );
+
+  const close = useCallback(
+    (href: string, paneId?: string) => {
+      const pane = (paneId && findLeaf(layout, paneId)) || paneHolding(href);
+      if (!pane) return;
+      const next = closeTabIn(layout, pane.id, href);
+      const stillFocused = next && findLeaf(next, focused) ? focused : undefined;
+      commit(next, stillFocused);
+      const landing = findLeaf(layout, focused);
+      if (landing && landing.active !== pathname) navigate(landing.active);
     },
     [navigate, pathname]
   );
 
-  const close = useCallback(
-    (href: string) => {
-      const index = tabs.findIndex((tab) => tab.href === href);
-      if (index < 0) return;
-      const rest = tabs.filter((tab) => tab.href !== href);
-      // A pane showing a closed tab is a window onto nothing.
-      publishLayout(removeHref(layout, href));
-      if (href !== pathname) {
-        publish(rest);
-        return;
-      }
-      // Closing the tab you are reading moves you to its right, the way every
-      // editor does it, and to its left when it was the last one on that side.
-      const target = rest[index] ?? rest[index - 1];
-      publish(target ? rest : [START]);
-      navigate(target?.href ?? START_HREF);
+  const selectTab = useCallback(
+    (paneId: string, href: string) => {
+      const pane = findLeaf(layout, paneId);
+      if (!pane) return;
+      const alreadyFocused = paneId === focused && pane.active === href;
+      commit(mapNode(layout, paneId, (found) => ({ ...(found as Leaf), active: href })), paneId);
+      // Same tab already on screen: do not push the router again — that used
+      // to remount the focused document for a no-op click.
+      if (alreadyFocused) return;
+      // A tab in another pane: raising it focuses that pane. Navigate only
+      // when the address bar would actually move.
+      if (href !== pathname) navigate(href);
     },
     [navigate, pathname]
   );
@@ -317,45 +384,59 @@ export function TabsProvider({ children }: { children: ReactNode }) {
   const setTitle = useCallback((href: string, title: string) => {
     if (!title) return;
     if (!tabs.some((tab) => tab.href === href && tab.title !== title)) return;
-    publish(tabs.map((tab) => (tab.href === href ? { ...tab, title } : tab)));
+    describe(tabs.map((tab) => (tab.href === href ? { ...tab, title } : tab)));
   }, []);
 
+  // Pane iframes name their tabs through postMessage — the shell's store is
+  // not the one inside `?pane=1`.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data;
+      if (
+        !data ||
+        data.type !== TAB_TITLE_MESSAGE ||
+        typeof data.href !== "string" ||
+        typeof data.title !== "string"
+      ) {
+        return;
+      }
+      setTitle(data.href, data.title);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [setTitle]);
+
   const dropTab = useCallback(
-    (paneId: string, side: DropSide, href: string) => {
-      const { layout: next, focus } = splitPaneTree(layout, paneId, side, href);
-      publishLayout(next, focus);
-      navigate(href);
+    (paneId: string, side: DropSide, href: string, from?: string) => {
+      const source = (from && findLeaf(layout, from)) || paneHolding(href);
+      if (source?.id === paneId && side === "center") {
+        // Dropped back where it came from: just raise it.
+        commit(mapNode(layout, paneId, (found) => ({ ...(found as Leaf), active: href })), paneId);
+        navigate(href);
+        return;
+      }
+      const { layout: next, focus } = splitPaneTree(layout, paneId, side, href, source?.id);
+      commit(next, focus);
+      if (href !== pathname) navigate(href);
     },
-    [navigate]
+    [navigate, pathname]
   );
 
   const focusPane = useCallback(
     (paneId: string) => {
       const pane = findLeaf(layout, paneId);
       if (!pane || paneId === focused) return;
-      publishLayout(layout, paneId);
-      // The address bar follows the focused pane: it is the one the tabs,
-      // the back button and the sidebar all act on.
-      if (pane.href !== pathname) navigate(pane.href);
-    },
-    [navigate, pathname]
-  );
-
-  const closePane = useCallback(
-    (paneId: string) => {
-      const remaining = removePane(layout, paneId);
-      publishLayout(remaining);
-      const pane = findLeaf(layout, focused);
-      if (paneId === focused || !pane) {
-        const next = findLeaf(layout, focused) ?? leaves(layout)[0];
-        if (next && next.href !== pathname) navigate(next.href);
-      }
+      commit(layout, paneId);
+      // The address bar follows the focused pane: it is the one the sidebar,
+      // the back button and a new tab all act on.
+      if (pane.active !== pathname) navigate(pane.active);
     },
     [navigate, pathname]
   );
 
   const resizePane = useCallback((splitId: string, ratio: number) => {
-    publishLayout(
+    commit(
       mapNode(layout, splitId, (found) =>
         found.kind === "split" ? { ...found, ratio: Math.min(0.85, Math.max(0.15, ratio)) } : found
       ),
@@ -368,7 +449,7 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       const known = new Map(
         workspaces.map((workspace) => [`/${encodeURIComponent(workspace.id)}`, workspace])
       );
-      publish(
+      describe(
         tabs.map((tab) => {
           const workspace = known.get(tab.href);
           if (!workspace) return tab;
@@ -384,23 +465,27 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  // Whatever the address bar says must have a tab, however it got there — a
-  // bookmark, the back button, a redirect, a link we do not own. And the
-  // focused pane is where it is shown: the router drives exactly one pane.
+  // Whatever the address bar says must be open in the focused pane, however
+  // it got there — a bookmark, the back button, a redirect, a link we do not
+  // own. The router drives exactly one pane.
   useEffect(() => {
     if (isPane() || UNTABBED.includes(pathname)) return;
     if (pending.current && pending.current !== pathname) return;
     pending.current = null;
-    if (!tabs.some((tab) => tab.href === pathname)) {
-      publish([...tabs, { href: pathname, title: titleFor(pathname) }]);
+    const current = findLeaf(layout, focused);
+    const holder = current?.tabs.includes(pathname) ? current : paneHolding(pathname);
+    if (holder) {
+      if (holder.active !== pathname || holder.id !== focused) {
+        commit(
+          mapNode(layout, holder.id, (found) => ({ ...(found as Leaf), active: pathname })),
+          holder.id
+        );
+      }
+      return;
     }
-    const pane = findLeaf(layout, focused);
-    if (pane && pane.href !== pathname) {
-      publishLayout(
-        mapNode(layout, focused, (found) => ({ ...found, kind: "leaf", href: pathname })),
-        focused
-      );
-    }
+    const pane = findLeaf(layout, focused) ?? leaves(layout)[0];
+    register(pathname);
+    commit(mapNode(layout, pane.id, (found) => withTab(found as Leaf, pathname)), pane.id);
   }, [pathname, openTabs, panes, focusedPane]);
 
   const value = useMemo<TabsValue>(
@@ -410,17 +495,17 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       open,
       openHere,
       close,
+      selectTab,
       setTitle,
       describeWorkspaces,
       panes,
       focusedPane,
       dropTab,
       focusPane,
-      closePane,
       resizePane,
     }),
-    [openTabs, pathname, open, openHere, close, setTitle, describeWorkspaces,
-     panes, focusedPane, dropTab, focusPane, closePane, resizePane]
+    [openTabs, pathname, open, openHere, close, selectTab, setTitle, describeWorkspaces,
+     panes, focusedPane, dropTab, focusPane, resizePane]
   );
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;
@@ -429,7 +514,17 @@ export function TabsProvider({ children }: { children: ReactNode }) {
 /** Keeps one tab's name in step with the page inside it. */
 export function useTabTitle(title: string | null | undefined) {
   const { activeHref, setTitle } = useTabs();
+  const pane = usePaneMode();
   useEffect(() => {
-    if (title) setTitle(activeHref, title);
-  }, [activeHref, title, setTitle]);
+    if (!title) return;
+    if (pane) {
+      // Outer shell owns the tab strip; this document is only the page body.
+      window.parent.postMessage(
+        { type: TAB_TITLE_MESSAGE, href: window.location.pathname, title },
+        window.location.origin
+      );
+      return;
+    }
+    setTitle(activeHref, title);
+  }, [activeHref, title, setTitle, pane]);
 }

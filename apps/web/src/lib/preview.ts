@@ -33,11 +33,24 @@ export function isLoopback(value: string): boolean {
 }
 
 /** Whether this address may be framed. Anything that is not http(s) is out:
- *  `javascript:` and `data:` in an iframe run in our own page. ANA's own
- *  address is allowed — it is the user's own app on their own machine, and
- *  they asked to be able to look at it. */
+ *  `javascript:` and `data:` in an iframe run in our own page. */
 export function canPreview(value: string): boolean {
   return parseUrl(value) !== null;
+}
+
+/** ANA framing itself: the iframe would be another copy of this UI (tabs,
+ *  browser chrome, …), which is never what a preview is for. */
+export function isOwnOrigin(
+  value: string,
+  page: Pick<Location, "hostname" | "port" | "protocol"> = window.location
+): boolean {
+  const url = parseUrl(value);
+  if (!url) return false;
+  const pagePort = page.port || (page.protocol === "https:" ? "443" : "80");
+  const urlPort = url.port || (url.protocol === "https:" ? "443" : "80");
+  return (
+    url.hostname.toLowerCase() === page.hostname.toLowerCase() && urlPort === pagePort
+  );
 }
 
 /** The same address as the machine *looking* at it would reach.
@@ -74,9 +87,9 @@ export function previewTarget(segment: string | undefined): string {
   }
 }
 
-/** What the tab is called: the host and port, which is how people refer to a
- *  dev server. The path is left out — it changes as you click around inside
- *  the frame, and a tab whose name moves is hard to aim at. */
+/** Fallback tab name before (or when we cannot read) the framed page's
+ *  `<title>`: host and port, which is how people refer to a dev server. The
+ *  path is left out — it changes as you click around inside the frame. */
 export function previewLabel(value: string): string {
   const url = parseUrl(value);
   if (!url) return "브라우저";
