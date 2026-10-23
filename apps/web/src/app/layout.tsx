@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Geist_Mono } from "next/font/google";
-import localFont from "next/font/local";
+// Pretendard as its dynamic subset rather than next/font/local: one variable
+// woff2 is 2.06 MB and was preloaded on every page, which is most of what a
+// first load spent its bandwidth on. See pretendard.css.
+import "./pretendard.css";
 import "./globals.css";
 import { AppShell } from "@/components/app-shell";
 import { ShellMetaProvider } from "@/components/shell-meta";
@@ -8,13 +11,6 @@ import { TabsProvider } from "@/components/tabs";
 import { ThemeProvider } from "@/components/theme";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
-
-const pretendard = localFont({
-  src: "../fonts/PretendardVariable.woff2",
-  variable: "--font-pretendard",
-  display: "swap",
-  weight: "100 900",
-});
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
@@ -33,7 +29,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       // next-themes writes the class before paint; without this React warns
       // about the attribute it did not render.
       suppressHydrationWarning
-      className={`${pretendard.variable} ${geistMono.variable} h-full font-sans antialiased`}
+      className={`${geistMono.variable} h-full font-sans antialiased`}
     >
       <body className="flex min-h-full flex-col">
         <ThemeProvider>

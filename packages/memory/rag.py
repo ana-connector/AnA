@@ -45,6 +45,7 @@ async def thread_history(
     *,
     thread_id: str,
     limit: int = 50,
+    before_id: Optional[int] = None,
 ) -> list[dict]:
     """Returns one thread's turns oldest-first, for redrawing the chat after a
     browser reload. The server-side conversation already survives a refresh
@@ -52,17 +53,22 @@ async def thread_history(
     survive it too.
 
     Newest `limit` rows are selected and then reversed, so a long thread
-    shows its most recent turns rather than its first ones."""
+    shows its most recent turns rather than its first ones.
+
+    `before_id` pages backwards: the newest turn older than that id, which is
+    how "이전 대화 더 보기" asks for the page above the one on screen. A
+    keyset, not an offset, because turns keep arriving at the other end while
+    someone reads."""
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
             SELECT prompt, response, agent, cost_usd, created_at, meta, id
             FROM turns
-            WHERE thread_id = %s
+            WHERE thread_id = %s AND (%s::bigint IS NULL OR id < %s::bigint)
             ORDER BY created_at DESC, id DESC
             LIMIT %s
             """,
-            (thread_id, limit),
+            (thread_id, before_id, before_id, limit),
         )
         rows = await cur.fetchall()
     return [
@@ -77,6 +83,65 @@ async def thread_history(
         }
         for r in reversed(rows)
     ]
+
+
+async def thread_turn(
+    pool: AsyncConnectionPool, *, thread_id: str, turn_id: int
+) -> Optional[dict]:
+    """One turn, whole. What the transcript asks for when someone opens a tool
+    call the history payload only carried a label for."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT prompt, response, agent, cost_usd, created_at, meta, id
+            FROM turns
+            WHERE thread_id = %s AND id = %s
+            """,
+            (thread_id, turn_id),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "prompt": row[0],
+        "response": row[1],
+        "agent": row[2],
+        "cost_usd": row[3],
+        "created_at": row[4].isoformat(),
+        "meta": row[5] or {},
+        "id": row[6],
+    }
+
+
+async def thread_totals(pool: AsyncConnectionPool, *, thread_id: str) -> dict:
+    """What the whole thread cost, whichever page of it is on screen.
+
+    Summed in SQL rather than over the returned turns: the transcript is
+    paginated now, and a conversation that reopens showing its last ten turns
+    must still report what all of it cost."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT COALESCE(SUM(cost_usd), 0),
+                   -- Guarded cast: meta is JSONB written by several code
+                   -- paths over time, and one row with a non-numeric
+                   -- `tokens` would otherwise fail the whole sum.
+                   COALESCE(SUM(
+                     CASE WHEN meta->>'tokens' ~ '^[0-9]+$'
+                          THEN (meta->>'tokens')::bigint ELSE 0 END
+                   ), 0),
+                   COUNT(*)
+            FROM turns
+            WHERE thread_id = %s
+            """,
+            (thread_id,),
+        )
+        row = await cur.fetchone()
+    return {
+        "cost_usd": float(row[0] or 0.0),
+        "tokens": int(row[1] or 0),
+        "turn_count": int(row[2] or 0),
+    }
 
 
 async def list_threads(pool: AsyncConnectionPool, *, limit: int = 50) -> list[dict]:

@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -14,6 +15,8 @@ from dotenv import load_dotenv
 # docker-compose's `env_file:` path actually works. No-op if no .env file is
 # present (e.g. inside Docker), and does not override already-set env vars.
 load_dotenv()
+
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel
@@ -32,7 +35,12 @@ from packages.governance.secrets import SecretCipher, run_secret_migrations
 from packages.governance.session import GateRegistry
 from packages.memory.db import create_pool, run_migrations
 from packages.memory.embeddings import EmbeddingModel
-from packages.memory.rag import list_threads, thread_history
+from packages.memory.rag import (
+    list_threads,
+    thread_history,
+    thread_totals,
+    thread_turn,
+)
 from packages.governance.workspace import session_workspace, workspace_root
 from packages.observability.claude_usage import fetch_rate_limits as fetch_claude_limits
 from packages.observability.codex_usage import read_rate_limits as read_codex_rate_limits
@@ -650,6 +658,34 @@ async def put_settings(body: SettingsUpdate) -> dict:
     }
 
 
+# How long a provider's own usage figure is reused before it is read again.
+# The status bar polls every 20 seconds per open tab, and each read is an HTTP
+# round trip to someone else's API (or an OAuth refresh): without this, three
+# tabs meant nine provider calls a minute for numbers that move in percent.
+USAGE_READ_TTL_SECONDS = float(os.environ.get("ANA_USAGE_READ_TTL_SECONDS", 60))
+_usage_reads: dict[str, tuple[float, dict]] = {}
+
+
+async def _reported_windows(agent: str, read) -> dict:
+    """One provider's reported windows, cached and read off the event loop.
+
+    The readers are blocking HTTP/disk calls. Awaited inline they stalled
+    every other request on the server — including a turn's frames — for as
+    long as the provider took to answer."""
+    cached = _usage_reads.get(agent)
+    now = time.monotonic()
+    if cached and now - cached[0] < USAGE_READ_TTL_SECONDS:
+        return cached[1]
+    try:
+        windows = await asyncio.to_thread(read)
+    except Exception:  # noqa: BLE001 - a provider that cannot be asked is not an error
+        windows = None
+    # The attempt is cached either way: a provider that is down should not be
+    # retried on every poll.
+    _usage_reads[agent] = (now, windows or {})
+    return windows or {}
+
+
 @app.get("/usage")
 async def usage(request: Request) -> dict:
     """Per-agent usage windows for the status bar.
@@ -670,11 +706,16 @@ async def usage(request: Request) -> dict:
         "cursor": fetch_cursor_limits,
         "kimi": fetch_kimi_limits,
     }
-    for agent, read in sources.items():
-        if agent not in allowed:
-            continue
-        with contextlib.suppress(Exception):
-            tracker.record_reported_windows(agent, read())
+    wanted = [(agent, read) for agent, read in sources.items() if agent in allowed]
+    # Together rather than one after another: four providers in series is four
+    # round trips of waiting on the first poll after a restart.
+    results = await asyncio.gather(
+        *(_reported_windows(agent, read) for agent, read in wanted)
+    )
+    for (agent, _), windows in zip(wanted, results):
+        if windows:
+            with contextlib.suppress(Exception):
+                tracker.record_reported_windows(agent, windows)
     return {
         "agents": {
             agent: data
@@ -691,6 +732,9 @@ async def sync_usage_now(request: Request) -> dict:
     Codex is free (rollout log). Claude/Cursor/Kimi are the account-quota HTTP
     APIs; Claude still has an optional stream probe fallback when OAuth fails
     (`ANA_USAGE_PROBE`). See apps/server/app/usage_sync.py."""
+    # "now" means now: the button exists because somebody wants the provider's
+    # current figure, so the read cache above is dropped first.
+    _usage_reads.clear()
     results = await sync_usage(
         request.app.state.usage_tracker,
         lambda: build_adapter(role="lead"),
@@ -751,18 +795,220 @@ async def threads(request: Request, limit: int = Query(default=50, ge=1, le=200)
     return {"threads": rows}
 
 
+# How many tool-call records the transcript carries whole. Below this a thread
+# is short enough that nothing is gained by trimming; above it, a reopened
+# conversation was shipping every argument of every call it ever made —
+# measured at 2.4 MB for a 50-turn thread, 1.9 MB of it tool inputs for cards
+# that render collapsed.
+LIGHT_TOOLS_OVER = 40
+# Argument keys worth keeping in the trimmed form: between them they are what
+# the one-line label in the transcript is built from (apps/web/src/lib/
+# tool-display.ts), so a trimmed call still reads as the thing it ran.
+TOOL_LABEL_KEYS = (
+    "command",
+    "task_name",
+    "target",
+    "message",
+    "file_path",
+    "path",
+    "pattern",
+    "url",
+    "query",
+    "description",
+)
+MAX_TOOL_VALUE_CHARS = 200
+
+
+def _light_tool_input(value) -> tuple[dict, bool]:
+    """A tool call's arguments cut down to what the transcript shows, plus
+    whether anything was left out.
+
+    The full record stays in the audit log and comes back from the per-turn
+    route below when someone opens the call."""
+    if not isinstance(value, dict) or not value:
+        return ({} if not isinstance(value, dict) else value), False
+    kept: dict = {}
+    dropped = False
+    for key, raw in value.items():
+        if key not in TOOL_LABEL_KEYS:
+            dropped = True
+            continue
+        if isinstance(raw, str) and len(raw) > MAX_TOOL_VALUE_CHARS:
+            kept[key] = raw[:MAX_TOOL_VALUE_CHARS] + "…"
+            dropped = True
+        elif isinstance(raw, (str, int, float, bool)) or raw is None:
+            kept[key] = raw
+        else:
+            # A nested structure says nothing in one line of transcript.
+            dropped = True
+    if not kept:
+        # Nothing recognizable: keep the first key so the row is not blank.
+        first_key = next(iter(value))
+        first = value[first_key]
+        if isinstance(first, str):
+            kept[first_key] = first[:MAX_TOOL_VALUE_CHARS]
+        dropped = True
+    return kept, dropped
+
+
+def _lighten_tool(record) -> None:
+    if not isinstance(record, dict):
+        return
+    trimmed, dropped = _light_tool_input(record.get("input"))
+    record["input"] = trimmed
+    if dropped:
+        record["input_truncated"] = True
+
+
+def _collapse_tool_runs(blocks, index: list[int]) -> list:
+    """Replaces each run of consecutive tool blocks with one `tool_run`.
+
+    The transcript already draws a run of calls as a single collapsed card, so
+    what it needs per run is a count, how many were denied or are still
+    pending, and the last command — not every argument of every call.
+
+    `index` is a one-element counter shared across the turn: runs are numbered
+    in the order they appear (the turn's own blocks, then each sub-agent's in
+    turn), which is how the card asks for its rows later. A number rather
+    than the call ids, because three thousand ids are themselves 130 KB of
+    payload."""
+    if not isinstance(blocks, list):
+        return blocks
+    collapsed: list = []
+    run: list[dict] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        last = run[-1]
+        collapsed.append(
+            {
+                "kind": "tool_run",
+                "run": {
+                    "index": index[0],
+                    "count": len(run),
+                    "denied": sum(1 for r in run if r.get("verdict") == "deny"),
+                    "pending": sum(1 for r in run if r.get("verdict") == "pending"),
+                    "last_tool_name": last.get("tool_name"),
+                    "last_label": _tool_label(last),
+                },
+            }
+        )
+        index[0] += 1
+        run.clear()
+
+    for block in blocks:
+        if isinstance(block, dict) and block.get("kind") == "tool":
+            record = block.get("tool")
+            run.append(record if isinstance(record, dict) else {})
+            continue
+        flush()
+        collapsed.append(block)
+    flush()
+    return collapsed
+
+
+def _tool_label(record: dict) -> str:
+    """The one line the collapsed card shows for a call: its command when it
+    has one, its first string argument otherwise. The same choice the
+    transcript makes (apps/web/src/lib/tool-display.ts), made here because the
+    arguments it reads are what this payload is dropping."""
+    value = record.get("input")
+    if isinstance(value, dict):
+        command = value.get("command")
+        if isinstance(command, str) and command.strip():
+            return command[:MAX_TOOL_VALUE_CHARS]
+        for key in TOOL_LABEL_KEYS:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return f"{key}: {candidate[:MAX_TOOL_VALUE_CHARS]}"
+    return str(record.get("tool_name") or "도구")
+
+
+def _lighten_turns(turns: list[dict]) -> None:
+    """Takes the tool calls out of a page of history, in place.
+
+    What is left is what the transcript draws before anybody clicks: text,
+    notices, and one line per run of calls. The calls themselves come back
+    from the per-turn route when a card is opened."""
+    for turn in turns:
+        meta = turn.get("meta") or {}
+        blocks = meta.get("blocks") or []
+        # One counter per turn: the detail route serves the same turn, and the
+        # transcript numbers its runs the same way to find them.
+        index = [0]
+        if blocks:
+            meta["blocks"] = _collapse_tool_runs(blocks, index)
+            # The audit-derived list is a fallback for turns recorded before
+            # blocks existed; with blocks on the turn it is the same calls a
+            # second time.
+            turn["tools"] = []
+        else:
+            for record in turn.get("tools") or []:
+                _lighten_tool(record)
+        for task in meta.get("subagents") or []:
+            if not isinstance(task, dict):
+                continue
+            task_blocks = task.get("blocks") or []
+            if task_blocks:
+                task["blocks"] = _collapse_tool_runs(task_blocks, index)
+                task["tools"] = []
+            else:
+                for record in task.get("tools") or []:
+                    _lighten_tool(record)
+
+
+def _count_tool_records(turns: list[dict]) -> int:
+    total = 0
+    for turn in turns:
+        total += len(turn.get("tools") or [])
+        meta = turn.get("meta") or {}
+        total += sum(
+            1
+            for block in meta.get("blocks") or []
+            if isinstance(block, dict) and block.get("kind") == "tool"
+        )
+        for task in meta.get("subagents") or []:
+            if not isinstance(task, dict):
+                continue
+            total += len(task.get("tools") or [])
+            total += sum(
+                1
+                for block in task.get("blocks") or []
+                if isinstance(block, dict) and block.get("kind") == "tool"
+            )
+    return total
+
+
 @app.get("/threads/{thread_id}/turns")
 async def thread_turns(
     request: Request,
     thread_id: str,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=12, ge=1, le=200),
+    before: Optional[int] = Query(default=None, ge=1),
 ) -> dict:
     """Past turns of one thread, oldest-first, so the browser can redraw the
     chat after a reload. The conversation itself already survives a refresh
     (CLI sessions plus LangGraph checkpoints); without this the screen came
-    back empty while the agent still remembered everything."""
+    back empty while the agent still remembered everything.
+
+    One page at a time, newest first, with `before` asking for the page above
+    it: reopening a long conversation used to mean downloading and rebuilding
+    every turn it ever had before anything appeared.
+
+    `totals` is the whole thread's, not this page's — what the conversation
+    cost does not depend on how much of it is on screen."""
     pool = request.app.state.pool
-    turns = await thread_history(pool, thread_id=thread_id, limit=limit)
+    # One row more than asked for: whether an older page exists is then a fact
+    # about this query rather than arithmetic on counts that move.
+    page = await thread_history(
+        pool, thread_id=thread_id, limit=limit + 1, before_id=before
+    )
+    has_more = len(page) > limit
+    # Oldest-first, so the extra row is the first one.
+    turns = page[1:] if has_more else page
+    totals = await thread_totals(pool, thread_id=thread_id)
+    oldest_id = turns[0]["id"] if turns else None
 
     # Tool calls are not stored on the turn (the gate records them, and it runs
     # while the turn is still going), so they are attached here by time: every
@@ -790,10 +1036,34 @@ async def thread_turns(
         ]
         previous_at = turn["created_at"]
 
-    # Totals so a reopened conversation shows what it actually cost instead of
-    # starting from zero. Cost is per turn; tokens live in each turn's meta.
-    totals = {
-        "cost_usd": sum(t.get("cost_usd") or 0.0 for t in turns),
-        "tokens": sum(int((t.get("meta") or {}).get("tokens") or 0) for t in turns),
+    # Above a certain number of calls the arguments are the payload, and they
+    # are arguments to cards that render collapsed. Trimmed here rather than
+    # never recorded: the audit log and the per-turn route below still have
+    # them whole.
+    tool_records = _count_tool_records(turns)
+    light = tool_records > LIGHT_TOOLS_OVER
+    if light:
+        _lighten_turns(turns)
+
+    return {
+        "thread_id": thread_id,
+        "turns": turns,
+        "totals": {"cost_usd": totals["cost_usd"], "tokens": totals["tokens"]},
+        "turn_count": totals["turn_count"],
+        "oldest_id": oldest_id,
+        "has_more": has_more,
+        # Says plainly whether a tool call's arguments in this payload are the
+        # whole thing, so the transcript knows when to ask for one.
+        "tools_trimmed": light,
     }
-    return {"thread_id": thread_id, "turns": turns, "totals": totals}
+
+
+@app.get("/threads/{thread_id}/turns/{turn_id}")
+async def thread_turn_detail(request: Request, thread_id: str, turn_id: int) -> dict:
+    """One turn with nothing trimmed, for when someone opens a tool call the
+    history payload only carried a label for."""
+    pool = request.app.state.pool
+    turn = await thread_turn(pool, thread_id=thread_id, turn_id=turn_id)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="그런 턴이 없습니다")
+    return {"thread_id": thread_id, "turn": turn}

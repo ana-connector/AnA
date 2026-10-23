@@ -1,19 +1,28 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { CopyIcon, NetworkIcon } from "lucide-react";
 import {
   useChatSocket,
   type MessageBlock,
   type SubagentTask,
   type ToolEvent,
+  type ToolRun,
 } from "@/hooks/useChatSocket";
 import { AGENT_LABELS, type Agent } from "@/components/ui/agent-toggle";
 import { ApprovalCard } from "@/components/ui/approval-card";
 import { QuestionCard } from "@/components/ui/question-card";
 import { Markdown } from "@/components/markdown";
 import { ToolCalls } from "@/components/tool-calls";
-import { PlanGraph } from "@/components/plan-graph";
+import { fetchTurnDetail, type HistoryBlock, type HistoryTurn } from "@/lib/api";
+// Loaded when a turn actually has a fan-out to draw: the graph brings its own
+// layout library (@xyflow) and its stylesheet, which is a large part of a
+// first load that most conversations never render.
+const PlanGraph = dynamic(
+  () => import("@/components/plan-graph").then((module) => module.PlanGraph),
+  { ssr: false }
+);
 import { Reasoning } from "@/components/reasoning";
 import { PageShell } from "@/components/page-shell";
 import { TurnStatusLine } from "@/components/turn-status";
@@ -59,6 +68,55 @@ const STARTERS = [
   "최근 커밋 5개를 읽고 지금 작업 중인 흐름을 설명해줘",
 ];
 
+/** The arguments of one call inside a stored turn, wherever they sit: the
+ *  turn's own blocks, its audit-derived list, or one of its sub-agents' runs.
+ *  Searched rather than indexed because the same id appears in exactly one of
+ *  those places and which one depends on when the turn was recorded. */
+function findToolInput(
+  turn: HistoryTurn,
+  toolUseId: string
+): Record<string, unknown> | null {
+  const match = (record: { tool_use_id: string | null } | undefined) =>
+    record?.tool_use_id === toolUseId;
+  for (const record of turn.tools ?? []) {
+    if (match(record)) return record.input ?? {};
+  }
+  for (const block of turn.meta?.blocks ?? []) {
+    if (block.kind === "tool" && match(block.tool)) return block.tool.input ?? {};
+  }
+  for (const task of turn.meta?.subagents ?? []) {
+    for (const record of task.tools ?? []) {
+      if (match(record)) return record.input ?? {};
+    }
+    for (const block of task.blocks ?? []) {
+      if (block.kind === "tool" && match(block.tool)) return block.tool.input ?? {};
+    }
+  }
+  return null;
+}
+
+/** The runs of calls in a stored turn, numbered the way the server numbers
+ *  them: the turn's own blocks first, then each sub-agent's in order. A
+ *  summarized run carries that number, so this is how its rows are found. */
+function toolRuns(turn: HistoryTurn): ToolEvent[][] {
+  const runs: ToolEvent[][] = [];
+  const collect = (blocks: HistoryBlock[] | undefined) => {
+    let current: ToolEvent[] = [];
+    for (const block of blocks ?? []) {
+      if (block.kind === "tool") {
+        current.push(block.tool as ToolEvent);
+        continue;
+      }
+      if (current.length) runs.push(current);
+      current = [];
+    }
+    if (current.length) runs.push(current);
+  };
+  collect(turn.meta?.blocks);
+  for (const task of turn.meta?.subagents ?? []) collect(task.blocks);
+  return runs;
+}
+
 /** A reply's blocks with runs of consecutive tool calls merged into one group.
  *
  *  The socket records one block per call, in the order things happened, which is
@@ -70,12 +128,15 @@ const STARTERS = [
 type Grouped =
   | { kind: "text"; text: string }
   | { kind: "notice"; text: string }
-  | { kind: "tools"; tools: ToolEvent[] };
+  | { kind: "tools"; tools: ToolEvent[] }
+  /** A run history summarized: already one card, with its rows still on the
+   *  server. */
+  | { kind: "tool_run"; run: ToolRun };
 
 function groupBlocks(blocks: MessageBlock[]): Grouped[] {
   const grouped: Grouped[] = [];
   for (const block of blocks) {
-    if (block.kind === "text" || block.kind === "notice") {
+    if (block.kind === "text" || block.kind === "notice" || block.kind === "tool_run") {
       grouped.push(block);
       continue;
     }
@@ -93,15 +154,35 @@ function groupBlocks(blocks: MessageBlock[]): Grouped[] {
 function BlockList({
   blocks,
   defaultToolsOpen,
+  loadFullInput,
+  loadRun,
 }: {
   blocks: MessageBlock[];
   defaultToolsOpen?: boolean;
+  /** Passed down to the tool card: a restored call carries only the
+   *  label-sized part of its arguments until someone opens it. */
+  loadFullInput?: (toolUseId: string) => Promise<Record<string, unknown> | null>;
+  /** Fetches the calls of a run that history only summarized. */
+  loadRun?: (run: ToolRun) => Promise<ToolEvent[]>;
 }) {
   return (
     <>
       {groupBlocks(blocks).map((block, index) =>
-        block.kind === "tools" ? (
-          <ToolCalls key={index} tools={block.tools} defaultOpen={defaultToolsOpen} />
+        block.kind === "tool_run" ? (
+          <ToolCalls
+            key={index}
+            tools={[]}
+            run={block.run}
+            loadRun={loadRun}
+            loadFullInput={loadFullInput}
+          />
+        ) : block.kind === "tools" ? (
+          <ToolCalls
+            key={index}
+            tools={block.tools}
+            defaultOpen={defaultToolsOpen}
+            loadFullInput={loadFullInput}
+          />
         ) : block.kind === "notice" ? (
           // ANA talking about the turn, not an agent talking in it.
           <Marker key={index} variant="separator">
@@ -127,6 +208,9 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     failingAgents,
     turnsFinished,
     loadingHistory,
+    hasOlderTurns,
+    loadingOlder,
+    loadOlder,
     workspaceName,
     approvals,
     questions,
@@ -140,6 +224,32 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     answerApproval,
     answerQuestion,
   } = useChatSocket(sessionId);
+  // A restored tool call's arguments, fetched when its dialog opens. Bound to
+  // the turn the message came from, because that is where the untrimmed record
+  // is — one turn, not the whole transcript again.
+  // The rows of a run history only summarized. One request per turn, and the
+  // same request backs the arguments dialog below it.
+  const runLoader = useCallback(
+    (turnId: number | undefined) =>
+      turnId === undefined
+        ? undefined
+        : async (run: ToolRun) => {
+            const turn = await fetchTurnDetail(sessionId, turnId);
+            if (!turn) return [];
+            return toolRuns(turn)[run.index] ?? [];
+          },
+    [sessionId]
+  );
+  const fullInputLoader = useCallback(
+    (turnId: number | undefined) =>
+      turnId === undefined
+        ? undefined
+        : async (toolUseId: string) => {
+            const turn = await fetchTurnDetail(sessionId, turnId);
+            return turn ? findToolInput(turn, toolUseId) : null;
+          },
+    [sessionId]
+  );
   // The draft itself lives in the composer, so typing does not re-render the
   // transcript; this only lets the starter buttons fill it.
   const composerRef = useRef<ComposerHandle>(null);
@@ -148,6 +258,10 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   // context that makes a worker's output mean anything, so leaving the
   // transcript on screen is the point.
   const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
+  // Which turn the open sub-agent came from, when it came from history: its
+  // run of calls is summarized like the lead's, and the rows live on that
+  // turn. Undefined for the turn in flight, whose calls are already here.
+  const [openTaskTurnId, setOpenTaskTurnId] = useState<number | undefined>(undefined);
 
   // Finished turns are what create and rename sessions, so the sidebar list is
   // refetched when the count of completed turns changes rather than on a timer.
@@ -352,6 +466,24 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
 
                 {/* No "handoff" divider: which CLI answered is already on the
                     reply's header, and the extra line said nothing more. */}
+                {/* The page above the one on screen. A conversation opens on
+                    its last dozen turns — the rest is a click, not a wait. */}
+                {hasOlderTurns && (
+                  <MessageScrollerItem messageId="older">
+                    <div className="flex justify-center">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={loadingOlder}
+                        onClick={() => void loadOlder()}
+                      >
+                        {loadingOlder ? "불러오는 중…" : "이전 대화 더 보기"}
+                      </Button>
+                    </div>
+                  </MessageScrollerItem>
+                )}
+
                 {messages.map((message, index) => (
                   <MessageScrollerItem
                     key={index}
@@ -442,6 +574,8 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                           </Button>
                         </div>
                         <BlockList
+                          loadFullInput={fullInputLoader(message.turnId)}
+                          loadRun={runLoader(message.turnId)}
                           blocks={
                             message.blocks ?? [{ kind: "text" as const, text: message.text }]
                           }
@@ -454,7 +588,10 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                         {message.plan && (
                           <PlanGraph
                             plan={message.plan}
-                            onSelectTask={setOpenTask}
+                            onSelectTask={(task) => {
+                              setOpenTaskTurnId(message.turnId);
+                              setOpenTask(task);
+                            }}
                             defaultOpen={false}
                           />
                         )}
@@ -481,7 +618,10 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                   <MessageScrollerItem messageId="plan">
                     <PlanGraph
                       plan={plan}
-                      onSelectTask={setOpenTask}
+                      onSelectTask={(task) => {
+                        setOpenTaskTurnId(undefined);
+                        setOpenTask(task);
+                      }}
                       autoCollapse={leadAnswering && !plan.tasks.some((task) => task.status === "running")}
                     />
                   </MessageScrollerItem>
@@ -608,6 +748,8 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                 {shownTask.blocks?.length ? (
                   <BlockList
                     blocks={shownTask.blocks}
+                    loadFullInput={fullInputLoader(openTaskTurnId)}
+                    loadRun={runLoader(openTaskTurnId)}
                     defaultToolsOpen={shownTask.status === "running" ? true : undefined}
                   />
                 ) : shownTask.tools?.length ? (

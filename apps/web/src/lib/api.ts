@@ -79,9 +79,14 @@ export type HistoryTool = {
   decided_by: string;
   rule_id: string | null;
   category: string | null;
+  /** The server sent only the label-sized part of `input`; the whole record
+   *  comes from `fetchTurnDetail`. */
+  input_truncated?: boolean;
 };
 
 export type HistoryTurn = {
+  /** Row id, and the cursor history pages with. */
+  id?: number;
   prompt: string;
   response: string;
   agent: string;
@@ -117,20 +122,79 @@ export type HistoryTurn = {
 export type HistoryBlock =
   | { kind: "text"; text: string }
   | { kind: "tool"; tool: HistoryTool }
-  | { kind: "notice"; text: string };
+  | { kind: "notice"; text: string }
+  /** A run of calls, summarized: what a paginated page carries instead of the
+   *  calls themselves. The rows come from `fetchTurnDetail`. */
+  | {
+      kind: "tool_run";
+      run: {
+        index: number;
+        count: number;
+        denied: number;
+        pending: number;
+        last_tool_name?: string | null;
+        last_label: string;
+      };
+    };
 
 export type ThreadHistory = {
   turns: HistoryTurn[];
+  /** The whole thread's, not this page's. */
   totals: { cost_usd: number; tokens: number };
+  /** Whether there are older turns above this page. */
+  hasMore: boolean;
+  /** The id of the oldest turn in this page — the cursor for the next one. */
+  oldestId: number | null;
+  /** Whether the tool calls in this page carry only the label-sized part of
+   *  their arguments (see `fetchTurnDetail`). */
+  toolsTrimmed: boolean;
 };
 
-export async function fetchThreadHistory(threadId: string): Promise<ThreadHistory> {
+/** One page of a thread's transcript, newest-last.
+ *
+ *  Paginated because a long conversation's history is mostly tool calls: a
+ *  50-turn thread shipped 2.4 MB, 1.9 MB of it arguments to cards that render
+ *  collapsed. `before` asks for the page above the one on screen. */
+export async function fetchThreadHistory(
+  threadId: string,
+  options: { limit?: number; before?: number } = {}
+): Promise<ThreadHistory> {
+  const query = new URLSearchParams();
+  if (options.limit) query.set("limit", String(options.limit));
+  if (options.before) query.set("before", String(options.before));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
   const response = await fetch(
-    `${apiBase()}/threads/${encodeURIComponent(threadId)}/turns`
+    `${apiBase()}/threads/${encodeURIComponent(threadId)}/turns${suffix}`
   );
   if (!response.ok) throw new Error(`history fetch failed: ${response.status}`);
-  const payload = (await response.json()) as ThreadHistory;
-  return { turns: payload.turns, totals: payload.totals ?? { cost_usd: 0, tokens: 0 } };
+  const payload = (await response.json()) as {
+    turns: HistoryTurn[];
+    totals?: { cost_usd: number; tokens: number };
+    has_more?: boolean;
+    oldest_id?: number | null;
+    tools_trimmed?: boolean;
+  };
+  return {
+    turns: payload.turns,
+    totals: payload.totals ?? { cost_usd: 0, tokens: 0 },
+    hasMore: Boolean(payload.has_more),
+    oldestId: payload.oldest_id ?? null,
+    toolsTrimmed: Boolean(payload.tools_trimmed),
+  };
+}
+
+/** One turn with nothing trimmed. Asked for when someone opens a tool call
+ *  whose arguments the history page only carried a label for. */
+export async function fetchTurnDetail(
+  threadId: string,
+  turnId: number
+): Promise<HistoryTurn | null> {
+  const response = await fetch(
+    `${apiBase()}/threads/${encodeURIComponent(threadId)}/turns/${turnId}`
+  );
+  if (!response.ok) return null;
+  const payload = (await response.json()) as { turn?: HistoryTurn };
+  return payload.turn ?? null;
 }
 
 export type ThreadSummary = {

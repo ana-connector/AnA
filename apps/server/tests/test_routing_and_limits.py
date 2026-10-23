@@ -189,6 +189,9 @@ def test_usage_endpoint_lists_every_agent_before_any_turn(client, tmp_path, monk
         "read_codex_rate_limits",
     ):
         monkeypatch.setattr(f"apps.server.app.main.{name}", lambda: {})
+    # /usage reuses a provider's figure for a minute, so a reading another
+    # test left behind would otherwise answer this one.
+    monkeypatch.setattr("apps.server.app.main._usage_reads", {})
     client.app.state.usage_tracker._samples.clear()
     client.app.state.usage_tracker._reported.clear()
 

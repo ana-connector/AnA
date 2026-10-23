@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AGENTS, type Agent } from "@/components/ui/agent-toggle";
-import { fetchThreadHistory, wsBase } from "@/lib/api";
+import { fetchThreadHistory, type HistoryTurn, wsBase } from "@/lib/api";
 import { newId } from "@/lib/ids";
 import { withQuery } from "@/lib/urls";
 
@@ -83,6 +83,18 @@ export type ChatEvent =
  *  it happened: text, then a tool call, then more text is exactly how an agent
  *  works, and flattening that into "answer plus a list of tools" loses which
  *  command belonged to which step. */
+export type ToolRun = {
+  /** Which run of the turn this is, counting the lead's blocks first and then
+   *  each sub-agent's. The transcript numbers the untrimmed turn the same way
+   *  to find the rows. */
+  index: number;
+  count: number;
+  denied: number;
+  pending: number;
+  last_tool_name?: string | null;
+  last_label: string;
+};
+
 export type MessageBlock =
   | { kind: "text"; text: string }
   | { kind: "tool"; tool: ToolEvent }
@@ -91,7 +103,12 @@ export type MessageBlock =
    *  reply's blocks, so it is saved with the turn and comes back with it — it
    *  used to live only in this tab, and vanished when you opened another
    *  conversation. */
-  | { kind: "notice"; text: string };
+  | { kind: "notice"; text: string }
+  /** A run of calls as history hands it back: the count and the last command,
+   *  with the ids to fetch the rows if somebody opens the card. A reopened
+   *  conversation used to carry every argument of every call it had ever
+   *  made — 1.9 MB of a 2.4 MB transcript, for cards that render closed. */
+  | { kind: "tool_run"; run: ToolRun };
 
 export type ChatMessage = {
   role: "user" | "agent";
@@ -111,6 +128,10 @@ export type ChatMessage = {
   /** When this was sent (user) or finished (agent), in epoch milliseconds.
    *  Absent on messages restored from before this was recorded. */
   at?: number;
+  /** The turn this message was restored from, so a trimmed tool call can be
+   *  asked for in full. Absent on messages from the live socket, whose tool
+   *  records arrived whole. */
+  turnId?: number;
 };
 
 /** A tool call the governance gate is holding until the user answers. */
@@ -192,6 +213,9 @@ export type ToolEvent = {
   rule_id: string | null;
   category: string | null;
   agent_id?: string | null;
+  /** Restored from history with only the label-sized part of `input`: the
+   *  dialog asks the server for the rest when it is opened. */
+  input_truncated?: boolean;
 };
 
 export type PlanState = {
@@ -243,6 +267,84 @@ const THREAD_STORAGE_KEY = "ana_thread_id";
  *  not among them: it reports a cost per step, and a free model's zero is a
  *  real zero. */
 const UNPRICED_AGENTS = new Set<string>(["codex", "kimi", "cursor"]);
+
+/** How many turns a conversation opens with.
+ *
+ *  Reopening a long thread used to rebuild every turn it ever had — 50 turns
+ *  of transcript, most of it tool calls, before anything appeared on screen.
+ *  A screenful is what someone is actually looking at; the rest is one click
+ *  away. */
+const HISTORY_PAGE_TURNS = 12;
+
+/** One page of stored turns as chat messages, oldest-first.
+ *
+ *  Shared by the first page and by "이전 대화 더 보기", which is the whole
+ *  reason it is a function: the two used to be the same inline loop, and only
+ *  one of them existed. */
+function messagesFromTurns(turns: HistoryTurn[]): ChatMessage[] {
+  const restored: ChatMessage[] = [];
+  for (const turn of turns) {
+    const agent: Agent = isAgentName(turn.agent) ? turn.agent : "claude";
+    const finishedAt = Date.parse(turn.created_at);
+    restored.push({
+      role: "user",
+      text: turn.prompt,
+      agent,
+      at: Number.isNaN(finishedAt) ? undefined : finishedAt,
+    });
+
+    // Older turns have no ordered blocks. Fall back to their audit tools and
+    // final answer; new turns restore the recorded sequence.
+    const oldBlocks: MessageBlock[] = (turn.tools ?? []).map((tool) => ({
+      kind: "tool" as const,
+      tool: {
+        tool_use_id: tool.tool_use_id,
+        tool_name: tool.tool_name,
+        input: tool.input,
+        verdict: tool.verdict,
+        decided_by: tool.decided_by,
+        rule_id: tool.rule_id,
+        category: tool.category,
+        input_truncated: tool.input_truncated,
+      },
+    }));
+    if (turn.response) oldBlocks.push({ kind: "text", text: turn.response });
+    const blocks: MessageBlock[] = turn.meta?.blocks?.length
+      ? (turn.meta.blocks as MessageBlock[])
+      : oldBlocks;
+
+    const subagents = turn.meta?.subagents ?? [];
+    restored.push({
+      role: "agent",
+      text: turn.response,
+      agent,
+      model: turn.meta?.model ?? undefined,
+      blocks,
+      turnId: turn.id,
+      plan: subagents.length
+        ? {
+            mode: "delegate",
+            note: "",
+            tasks: subagents.map((task) => ({
+              id: task.id,
+              title: task.title,
+              prompt: task.prompt,
+              agent: task.agent,
+              model: task.model ?? undefined,
+              status: (task.status as SubagentTask["status"]) ?? "done",
+              error: task.error,
+              output: task.output,
+              tokens: task.tokens,
+              cost_usd: task.cost_usd,
+              tools: task.tools,
+              blocks: task.blocks,
+            })),
+          }
+        : undefined,
+    });
+  }
+  return restored;
+}
 
 function appendText(blocks: MessageBlock[], text: string): MessageBlock[] {
   const last = blocks[blocks.length - 1];
@@ -297,6 +399,11 @@ export function useChatSocket(initialThreadId: string) {
   // fraction of a second between clearing one transcript and loading the next,
   // which reads as "this workspace is empty" for every switch.
   const [loadingHistory, setLoadingHistory] = useState(true);
+  // The page above the one on screen: the cursor to ask for it, whether there
+  // is one, and whether it is being fetched right now.
+  const [olderCursor, setOlderCursor] = useState<number | null>(null);
+  const [hasOlderTurns, setHasOlderTurns] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   // Questions the agent is waiting on. Plural because one call can ask several,
   // and a second call can arrive while the first is unanswered.
@@ -381,7 +488,10 @@ export function useChatSocket(initialThreadId: string) {
       if (openingThreadId) {
         setLoadingHistory(true);
         try {
-          const { turns, totals } = await fetchThreadHistory(openingThreadId);
+          const { turns, totals, hasMore, oldestId } = await fetchThreadHistory(
+            openingThreadId,
+            { limit: HISTORY_PAGE_TURNS }
+          );
           if (disposed) return;
           // The thread's running totals, so reopening a conversation does not
           // read "$0.0000 · 0 tok" for work that already happened.
@@ -390,65 +500,9 @@ export function useChatSocket(initialThreadId: string) {
             UNPRICED_AGENTS.has(turn.agent ?? "")
             || (turn.meta?.subagents ?? []).some((task) => UNPRICED_AGENTS.has(task.agent ?? ""))
           ));
-          const restored: ChatMessage[] = [];
-          for (const turn of turns) {
-            const agent: Agent = isAgentName(turn.agent) ? turn.agent : "claude";
-            const finishedAt = Date.parse(turn.created_at);
-            restored.push({
-              role: "user",
-              text: turn.prompt,
-              agent,
-              at: Number.isNaN(finishedAt) ? undefined : finishedAt,
-            });
-
-            // Older turns have no ordered blocks. Fall back to their audit
-            // tools and final answer; new turns restore the recorded sequence.
-            const oldBlocks: MessageBlock[] = (turn.tools ?? []).map((tool) => ({
-              kind: "tool" as const,
-              tool: {
-                tool_use_id: tool.tool_use_id,
-                tool_name: tool.tool_name,
-                input: tool.input,
-                verdict: tool.verdict,
-                decided_by: tool.decided_by,
-                rule_id: tool.rule_id,
-                category: tool.category,
-              },
-            }));
-            if (turn.response) oldBlocks.push({ kind: "text", text: turn.response });
-            const blocks: MessageBlock[] = turn.meta?.blocks?.length
-              ? turn.meta.blocks as MessageBlock[]
-              : oldBlocks;
-
-            const subagents = turn.meta?.subagents ?? [];
-            restored.push({
-              role: "agent",
-              text: turn.response,
-              agent,
-              model: turn.meta?.model ?? undefined,
-              blocks,
-              plan: subagents.length
-                ? {
-                    mode: "delegate",
-                    note: "",
-                    tasks: subagents.map((task) => ({
-                      id: task.id,
-                      title: task.title,
-                      prompt: task.prompt,
-                      agent: task.agent,
-                      model: task.model ?? undefined,
-                      status: (task.status as SubagentTask["status"]) ?? "done",
-                      error: task.error,
-                      output: task.output,
-                      tokens: task.tokens,
-                      cost_usd: task.cost_usd,
-                      tools: task.tools,
-                      blocks: task.blocks,
-                    })),
-                  }
-                : undefined,
-            });
-          }
+          const restored = messagesFromTurns(turns);
+          setOlderCursor(oldestId);
+          setHasOlderTurns(hasMore);
           messageCountRef.current = restored.length;
           agentMessageIndexRef.current = null;
           turnStartRef.current = null;
@@ -1087,6 +1141,41 @@ export function useChatSocket(initialThreadId: string) {
     return true;
   }, []);
 
+  /** Prepends the page of turns above the ones on screen.
+   *
+   *  The streamed-message bookkeeping is by index, so everything that points
+   *  into the list moves by however many messages arrive at the top — without
+   *  that shift, a reply still streaming while someone reads back through the
+   *  conversation would append itself to a message further down. */
+  const loadOlder = useCallback(async () => {
+    const threadId = activeThreadRef.current;
+    if (!threadId || olderCursor === null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await fetchThreadHistory(threadId, {
+        limit: HISTORY_PAGE_TURNS,
+        before: olderCursor,
+      });
+      const older = messagesFromTurns(page.turns);
+      if (older.length === 0) {
+        setHasOlderTurns(false);
+        setOlderCursor(null);
+        return;
+      }
+      setMessages((current) => [...older, ...current]);
+      messageCountRef.current += older.length;
+      if (agentMessageIndexRef.current !== null) {
+        agentMessageIndexRef.current += older.length;
+      }
+      setOlderCursor(page.oldestId);
+      setHasOlderTurns(page.hasMore);
+    } catch {
+      // Nothing is lost: the page on screen is still the page on screen.
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [olderCursor, loadingOlder]);
+
   return {
     messages,
     connected,
@@ -1097,6 +1186,9 @@ export function useChatSocket(initialThreadId: string) {
     failingAgents,
     turnsFinished,
     loadingHistory,
+    hasOlderTurns,
+    loadingOlder,
+    loadOlder,
     workspace,
     workspaceName,
     threadId,
