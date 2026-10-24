@@ -149,6 +149,52 @@ async def test_two_projects_can_each_have_a_branch_of_the_same_name(
     assert ids == ["one--auth", "two--auth"]
 
 
+async def test_a_branch_carries_a_label_and_a_git_name_separately(workspace_pool, repo):
+    """"add some Feature" is for people; "feat/abc" is for git. Deriving the
+    second from the first gave Korean names a digest nobody can read."""
+    project = await create_workspace(workspace_pool, name="proj", path=str(repo))
+
+    branch = await create_branch(
+        workspace_pool, project_id=project.id, name="add some Feature", branch="feat/abc"
+    )
+
+    assert branch.name == "add some Feature"
+    assert branch.branch == "feat/abc"
+    assert Path(branch.path).is_dir()
+
+
+async def test_an_omitted_git_name_is_still_derived(workspace_pool, repo):
+    project = await create_workspace(workspace_pool, name="proj", path=str(repo))
+
+    branch = await create_branch(workspace_pool, project_id=project.id, name="auth")
+
+    assert branch.branch == "ana/branch/auth"
+
+
+async def test_a_git_name_git_refuses_is_reported_in_korean(workspace_pool, repo):
+    project = await create_workspace(workspace_pool, name="proj", path=str(repo))
+
+    with pytest.raises(BranchError) as refused:
+        await create_branch(
+            workspace_pool, project_id=project.id, name="bad", branch="feat/a..b"
+        )
+
+    assert "feat/a..b" in str(refused.value)
+    assert not (repo / ".ana" / "branches").exists()
+
+
+async def test_a_git_name_already_in_the_repo_is_refused(workspace_pool, repo):
+    project = await create_workspace(workspace_pool, name="proj", path=str(repo))
+    await create_branch(
+        workspace_pool, project_id=project.id, name="first", branch="feat/abc"
+    )
+
+    with pytest.raises(BranchError):
+        await create_branch(
+            workspace_pool, project_id=project.id, name="second", branch="feat/abc"
+        )
+
+
 async def test_korean_named_branches_do_not_collide(workspace_pool, repo):
     """slugify keeps nothing from Hangul, so every Korean name used to slug to
     the same fallback — one branch per project, in a Korean UI."""

@@ -379,6 +379,10 @@ async def patch_workspace(request: Request, workspace_id: str, body: WorkspaceRe
 
 class BranchCreate(BaseModel):
     name: str
+    # The git branch ("feat/abc"). Left out, it is derived from the name —
+    # which for a name with no ASCII in it is a digest nobody can read, so the
+    # UI offers this field.
+    branch: str | None = None
     # An emoji or a small image as a data URL, as for a workspace.
     icon: str | None = None
 
@@ -399,6 +403,7 @@ async def add_branch(request: Request, project_id: str, body: BranchCreate) -> d
             request.app.state.pool,
             project_id=project_id,
             name=body.name,
+            branch=body.branch,
             icon=body.icon or "",
         )
     except BranchError as exc:

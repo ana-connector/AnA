@@ -341,14 +341,17 @@ export async function createWorkspace(name: string, path?: string) {
  *  conversation. The server decides the folder, so there is no path to pass. */
 export async function createBranch(
   projectId: string,
-  name: string
+  name: string,
+  /** The git branch ("feat/abc"). Omitted, the server derives one from the
+   *  name — which for a name with no ASCII in it is a digest nobody reads. */
+  branch?: string
 ): Promise<WorkspaceSummary> {
   const response = await fetch(
     `${apiBase()}/workspaces/${encodeURIComponent(projectId)}/branches`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, branch: branch?.trim() || null }),
     }
   );
   if (!response.ok) {

@@ -38,10 +38,19 @@ def checkout_for(project: Workspace, branch_row: Workspace) -> BranchCheckout:
 
 
 async def create_branch(
-    pool: AsyncConnectionPool, *, project_id: str, name: str, icon: str = ""
+    pool: AsyncConnectionPool,
+    *,
+    project_id: str,
+    name: str,
+    branch: Optional[str] = None,
+    icon: str = "",
 ) -> Workspace:
     """A feature branch of `project_id`: a checkout, and the row that gives it
-    a lead agent and a conversation."""
+    a lead agent and a conversation.
+
+    `name` is the label people read ("add some Feature"); `branch` is the git
+    branch ("feat/abc"), derived from the label when the caller leaves it
+    out."""
     if not name.strip():
         raise BranchError("브랜치 이름이 필요하다.")
     project = await get_workspace(pool, project_id)
@@ -50,7 +59,9 @@ async def create_branch(
     if project.parent_id is not None:
         raise BranchError("브랜치 아래에는 브랜치를 만들 수 없다. 한 단계까지다.")
 
-    slug, checkout = await _create_checkout(project.path, branches.slug_for(name))
+    slug, checkout = await _create_checkout(
+        project.path, branches.slug_for(name), branch_name=(branch or "").strip() or None
+    )
     try:
         branch = await create_workspace(
             pool,
@@ -80,14 +91,22 @@ async def create_branch(
 
 
 async def _create_checkout(
-    project_path: str, slug: str
+    project_path: str, slug: str, *, branch_name: Optional[str] = None
 ) -> tuple[str, BranchCheckout]:
     """The checkout, and the slug it ended up with.
 
-    The id is de-duplicated by `_unique_id`, but the checkout path and the git
-    branch name are the slug itself, so the slug has to be de-duplicated too —
-    otherwise a second branch is refused for a name its user never used. The
-    first failure that is not a collision is raised as it is."""
+    The id is de-duplicated by `_unique_id`, but the checkout path is the slug
+    itself, so the slug has to be de-duplicated too — otherwise a second
+    branch is refused for a name its user never used. The first failure that
+    is not a collision is raised as it is.
+
+    A git branch name the caller *chose* is never de-duplicated: silently
+    creating `feat/abc-2` for someone who asked for `feat/abc` is worse than
+    telling them the name is taken."""
+    if branch_name:
+        return slug, await branches.create(
+            project_path, slug, branch_name=branch_name
+        )
     for suffix in range(1, 100):
         candidate = slug if suffix == 1 else f"{slug}-{suffix}"
         try:

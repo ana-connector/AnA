@@ -80,7 +80,10 @@ export function WorkspaceEditor({
   const [forceDelete, setForceDelete] = useState(false);
   // Adding a branch lives here rather than in the sidebar, so the sidebar
   // stays a list of things to open.
+  // Two names, because they serve different readers: the label is what people
+  // see in the sidebar and the tab, the git name is what the repository gets.
   const [branchName, setBranchName] = useState("");
+  const [branchRef, setBranchRef] = useState("");
   const [adding, setAdding] = useState(false);
   const [branchError, setBranchError] = useState<string | null>(null);
   // "" means this project can host branches; anything else is the reason it
@@ -99,12 +102,17 @@ export function WorkspaceEditor({
     };
   }, [workspace.id, isBranch]);
 
+  // null means the answer has not arrived yet; "" means this project can host
+  // branches. Anything else is the reason it cannot, worded by the server.
+  const blocked = cannotBranch !== null && cannotBranch !== "";
+
   const addBranch = async () => {
     if (!branchName.trim()) return;
     setAdding(true);
     try {
-      await createBranch(workspace.id, branchName);
+      await createBranch(workspace.id, branchName, branchRef);
       setBranchName("");
+      setBranchRef("");
       setBranchError(null);
       await onSaved();
     } catch (e) {
@@ -334,13 +342,26 @@ export function WorkspaceEditor({
                   }
                 }}
                 placeholder="결제 연동"
-                disabled={cannotBranch !== null && cannotBranch !== ""}
+                aria-label="브랜치 이름"
+                disabled={blocked}
+              />
+              <Input
+                value={branchRef}
+                onChange={(event) => setBranchRef(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void addBranch();
+                  }
+                }}
+                placeholder="feat/abc"
+                aria-label="브랜치명 (git)"
+                className="font-mono"
+                disabled={blocked}
               />
               <Button
                 size="sm"
-                disabled={
-                  adding || !branchName.trim() || (cannotBranch !== null && cannotBranch !== "")
-                }
+                disabled={adding || !branchName.trim() || blocked}
                 onClick={() => void addBranch()}
               >
                 <GitBranchPlusIcon data-icon="inline-start" />
@@ -350,7 +371,7 @@ export function WorkspaceEditor({
             <FieldDescription>
               {cannotBranch
                 ? cannotBranch
-                : "프로젝트 안에 별도 체크아웃을 만들고, 그 브랜치만 맡는 대장 에이전트와 대화를 새로 엽니다. 사이드바의 이 프로젝트 아래에 나타납니다."}
+                : "왼쪽은 사람이 읽는 이름, 오른쪽은 git 브랜치명입니다. 브랜치명을 비우면 이름에서 만들어내는데, 한글 이름이면 사람이 읽을 수 없는 값이 되므로 적어주는 게 좋습니다. 프로젝트 안에 별도 체크아웃과 전용 대장 에이전트가 생깁니다."}
             </FieldDescription>
             {branchError && (
               <FieldDescription className="text-destructive">{branchError}</FieldDescription>
