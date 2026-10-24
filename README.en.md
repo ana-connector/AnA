@@ -271,9 +271,19 @@ the archive and the gate's confinement the same way a workspace does.
   about where work happens, and two workers of one fan-out creating branches
   is how a project grows checkouts nobody asked for. Every adapter can be the
   lead, so it reaches claude, codex, cursor, kimi and opencode alike.
+- **A branch has two names**: the label people read ("add some Feature") and
+  the git branch ("feat/abc"). Leave the second out and it is derived from the
+  first, which for a label with no ASCII in it is a digest nobody can read, so
+  it is worth giving. A name git refuses comes back with the reason
+  (`git check-ref-format`), and a git name you chose yourself is refused when
+  it is taken rather than quietly turned into `-2`.
 - **The sidebar** folds each project into one compact header line (icon, name,
   branch count) and lists the base branch beneath it with a `primary` badge,
-  then the feature branches. Adding a branch lives in the project's settings.
+  then the feature branches. A branch row shows its two names and neither its
+  path nor its token count — every branch of a project lives in the same
+  folder, so the path distinguishes nothing. Adding a branch lives in the
+  project's settings.
+- **A tab is titled by its project and subtitled by its branch.**
 
 ### The recursive workspace (AnA on AnA)
 

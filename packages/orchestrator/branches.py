@@ -129,14 +129,41 @@ async def can_branch(project_path: str) -> str:
     return ""
 
 
-async def create(project_path: str, slug: str) -> BranchCheckout:
-    """A new checkout for one feature branch, under the project."""
+async def valid_branch_name(project_path: str, name: str) -> str:
+    """"" when git would accept `name` as a branch, otherwise why not.
+
+    Asked of git rather than reimplemented: the rules (no `..`, no trailing
+    `.lock`, no control characters, and a dozen more) live in
+    `git check-ref-format`, and a second copy of them would drift."""
+    code, _ = await worktrees.git(
+        "check-ref-format", "--branch", name, cwd=project_path
+    )
+    if code != 0:
+        return (
+            f"「{name}」은 git 브랜치 이름으로 쓸 수 없다. 공백과 `..`, `~`, `^`, "
+            "`:`, `?`, `*`, `[`, 끝의 `.lock` 같은 것은 git이 거부한다."
+        )
+    return ""
+
+
+async def create(
+    project_path: str, slug: str, *, branch_name: Optional[str] = None
+) -> BranchCheckout:
+    """A new checkout for one feature branch, under the project.
+
+    `slug` names the checkout's directory; `branch_name` is the git branch,
+    which the user may choose (`feat/abc`) rather than have derived from a
+    label. Two names on purpose: a label is for people and reads in their own
+    language, a branch name is for git and has to survive its rules."""
     reason = await can_branch(project_path)
     if reason:
         raise BranchError(reason)
 
     base = await worktrees.current_branch(project_path)
-    branch = f"{BRANCH_PREFIX}/{slug}"
+    branch = (branch_name or "").strip() or f"{BRANCH_PREFIX}/{slug}"
+    invalid = await valid_branch_name(project_path, branch)
+    if invalid:
+        raise BranchError(invalid)
     path = Path(project_path) / BRANCHES_DIRNAME / slug
 
     if path.exists():

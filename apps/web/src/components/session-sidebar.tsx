@@ -8,7 +8,6 @@ import {
   ChevronDownIcon,
   ClockIcon,
   GitBranchIcon,
-  GitBranchPlusIcon,
   LockIcon,
   MoonIcon,
   PlusIcon,
@@ -19,9 +18,7 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import {
-  createBranch,
   createWorkspace,
-  fetchBranchCapability,
   fetchWorkspaceCapabilities,
   fetchWorkspaces,
   type WorkspaceSummary,
@@ -38,7 +35,6 @@ import { Logo } from "@/components/logo";
 import { useTabs } from "@/components/tabs";
 import { WorkspaceIcon } from "@/components/workspace-icon";
 import { WorkspaceEditor } from "@/components/workspace-editor";
-import { shortPath } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
   Sidebar,
@@ -54,14 +50,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-
-/** "1.1M", "19.7K", "840" — a sidebar row has space for a magnitude, not for
- *  a nine-digit number, and the magnitude is what the figure is read for. */
-function compactTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
-  return String(tokens);
-}
 
 /** Filtering only appears once the list is long enough to need it: a search box
  *  above three rows is furniture. */
@@ -97,14 +85,24 @@ export function SessionSidebar({
       return match[1];
     }
   })();
-  const onOpenWorkspace = (workspace: WorkspaceSummary | null) =>
-    workspace
-      ? openTab(href(workspace.id), {
-          title: workspace.name,
-          icon: workspace.icon,
-          detail: shortPath(workspace.path),
-        })
-      : openTab("/", { title: "시작" });
+  /** A tab is titled by its project and detailed by its branch — never by its
+   *  path, which is the same folder for every branch of a project. */
+  const onOpenWorkspace = (workspace: WorkspaceSummary | null) => {
+    if (!workspace) return openTab("/", { title: "시작" });
+    const project = workspace.parent_id
+      ? (workspaces ?? []).find((item) => item.id === workspace.parent_id)
+      : workspace;
+    const branchLabel = workspace.parent_id
+      ? workspace.branch
+      : (workspaces ?? []).find(
+          (item) => item.parent_id === workspace.id && item.base_branch
+        )?.base_branch ?? "main";
+    return openTab(href(workspace.id), {
+      title: project?.name ?? workspace.name,
+      icon: project?.icon ?? workspace.icon,
+      detail: branchLabel,
+    });
+  };
   const { resolvedTheme, setTheme } = useTheme();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
   // The id of the workspace whose folder is ANA's own source tree, when the
@@ -136,12 +134,30 @@ export function SessionSidebar({
           // reliably knows what each workspace is called and what it looks
           // like. The tabs take their name and icon from here rather than
           // waiting for the conversation to connect.
+          // A tab says which project and which branch, and nothing else. The
+          // path was what it used to carry, and a row of truncated
+          // `~/projects/…` tells you nothing about which conversation a tab
+          // is. A branch's title is its *project's* name, because that is the
+          // thing you are working on; the branch is the second line.
+          const projectName = new Map(
+            items.filter((item) => !item.parent_id).map((item) => [item.id, item.name])
+          );
+          const baseBranch = new Map<string, string>();
+          for (const item of items) {
+            if (item.parent_id && item.base_branch && !baseBranch.has(item.parent_id)) {
+              baseBranch.set(item.parent_id, item.base_branch);
+            }
+          }
           describeWorkspaces(
             items.map((item) => ({
               id: item.id,
-              name: item.name,
+              name: item.parent_id
+                ? projectName.get(item.parent_id) ?? item.name
+                : item.name,
               icon: item.icon,
-              detail: shortPath(item.path),
+              detail: item.parent_id
+                ? item.branch
+                : baseBranch.get(item.id) ?? "main",
             }))
           );
         }
@@ -270,42 +286,33 @@ export function SessionSidebar({
    *  `selectable` is false in the archive. A highlight there would say you are
    *  working in a workspace you put away; the open tab says where you are, and
    *  the archive is a place you look things up, not a place you are. */
-  const row = (item: WorkspaceSummary, selectable = true) => {
-    const isBranch = item.parent_id !== null;
-    // A branch's path is its project's folder plus a generated slug, which
-    // says nothing. Its branch name is the useful second line.
-    const detail = isBranch ? item.branch : shortPath(item.path);
-    return (
-      <SidebarMenuItem key={item.id}>
-        <SidebarMenuButton
-          isActive={selectable && href(item.id) === activeHref}
-          onClick={() => onOpenWorkspace(item)}
-          className={cn("h-auto py-1.5", isBranch && "pl-6")}
-          title={`${item.id}\n${item.path}`}
-        >
-          {isBranch && !item.icon ? (
-            <GitBranchIcon strokeWidth={1.5} />
-          ) : (
-            <WorkspaceIcon icon={item.icon} />
-          )}
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="truncate text-xs">{item.name}</span>
-            <span className="truncate text-[11px] text-muted-foreground">
-              {detail}
-              {item.total_tokens > 0 ? ` · ${compactTokens(item.total_tokens)}` : " · 새 대화"}
-            </span>
-          </div>
-        </SidebarMenuButton>
-        <SidebarMenuAction
-          showOnHover
-          title={isBranch ? "브랜치 설정" : "워크스페이스 설정"}
-          onClick={() => setEditing(item)}
-        >
-          <SettingsIcon strokeWidth={1.5} />
-        </SidebarMenuAction>
-      </SidebarMenuItem>
-    );
-  };
+  /** One branch row: the label people read, and the git branch under it.
+   *
+   *  No workspace icon, no token count and no path. A branch lives inside its
+   *  project's folder, so its path says nothing the project header has not
+   *  already said, and the two names are the whole of what distinguishes one
+   *  branch from another. */
+  const row = (item: WorkspaceSummary, selectable = true) => (
+    <SidebarMenuItem key={item.id}>
+      <SidebarMenuButton
+        isActive={selectable && href(item.id) === activeHref}
+        onClick={() => onOpenWorkspace(item)}
+        className="h-auto py-1.5 pl-6"
+        title={`${item.id}\n${item.path}`}
+      >
+        <GitBranchIcon strokeWidth={1.5} className="size-3! shrink-0 opacity-70" />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate text-xs">{item.name}</span>
+          <span className="truncate font-mono text-[11px] text-muted-foreground">
+            {item.branch}
+          </span>
+        </div>
+      </SidebarMenuButton>
+      <SidebarMenuAction showOnHover title="브랜치 설정" onClick={() => setEditing(item)}>
+        <SettingsIcon strokeWidth={1.5} />
+      </SidebarMenuAction>
+    </SidebarMenuItem>
+  );
 
   /** A project and the branches under it.
    *
@@ -375,22 +382,19 @@ export function SessionSidebar({
               <SidebarMenuButton
                 isActive={primaryActive}
                 onClick={() => onOpenWorkspace(project)}
-                className="h-auto py-1.5 pl-6"
+                className="py-1.5 pl-6"
                 title={`${project.id}\n${project.path}`}
               >
-                <GitBranchIcon strokeWidth={1.5} />
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 truncate text-xs">
-                    <span className="truncate">{primaryLabel}</span>
-                    <Badge className="h-4 shrink-0 px-1.5 text-[10px]">primary</Badge>
-                  </span>
-                  <span className="truncate text-[11px] text-muted-foreground">
-                    {shortPath(project.path)}
-                    {project.total_tokens > 0
-                      ? ` · ${compactTokens(project.total_tokens)}`
-                      : " · 새 대화"}
-                  </span>
-                </div>
+                <GitBranchIcon strokeWidth={1.5} className="size-3! shrink-0 opacity-70" />
+                <span className="truncate font-mono text-xs">{primaryLabel}</span>
+                {/* Colour on the text and the border only: a filled badge
+                    next to a filled "active" row reads as two selections. */}
+                <Badge
+                  variant="outline"
+                  className="ml-auto h-4 shrink-0 border-primary px-1.5 text-[10px] text-primary"
+                >
+                  primary
+                </Badge>
               </SidebarMenuButton>
               <SidebarMenuAction
                 showOnHover

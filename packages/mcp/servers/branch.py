@@ -72,7 +72,19 @@ TOOLS = [
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "What the branch is for, as a short name",
+                    "description": (
+                        "What the branch is for, in the user's language — the "
+                        "label people read, e.g. \"add some Feature\""
+                    ),
+                },
+                "branch": {
+                    "type": "string",
+                    "description": (
+                        "The git branch name, e.g. \"feat/abc\". Follow the "
+                        "repository's existing convention. Left out, it is "
+                        "derived from the label, which for a label with no "
+                        "ASCII in it is a digest nobody can read — so give it."
+                    ),
                 },
             },
             "required": ["name"],
@@ -244,7 +256,11 @@ def _call_tool(name: str, arguments: dict) -> dict:
             label = str(arguments.get("name") or "").strip()
             if not label:
                 return _error("name is required.")
-            created = _request("POST", "/gate/branches", {"name": label})
+            git_name = str(arguments.get("branch") or "").strip()
+            created = _request(
+                "POST", "/gate/branches",
+                {"name": label, "branch": git_name or None},
+            )
             return _text(
                 f"Created branch \"{created['name']}\" (id {created['id']}, git "
                 f"{created['branch']} off {created['base_branch']}). It has its own "

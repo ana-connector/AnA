@@ -400,6 +400,8 @@ async def gate_delete_schedule(
 
 class BranchCreateRequest(BaseModel):
     name: str
+    # The git branch. Derived from the name when the agent leaves it out.
+    branch: str | None = None
 
 
 class BranchRenameRequest(BaseModel):
@@ -483,7 +485,10 @@ async def gate_create_branch(
     project = await _project_for_token(request, x_ana_gate_token)
     try:
         branch = await create_branch(
-            request.app.state.pool, project_id=project.id, name=body.name
+            request.app.state.pool,
+            project_id=project.id,
+            name=body.name,
+            branch=body.branch,
         )
     except BranchError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
