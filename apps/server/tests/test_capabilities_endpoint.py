@@ -27,7 +27,16 @@ def test_mcp_servers_reports_active_and_why_not(client):
     names = {entry["name"] for entry in body["active"]} | {
         entry["name"] for entry in body["inactive"]
     }
-    assert names == {"git", "postgres", "github", "ask", "schedule", "delegate"}
+    assert names == {
+        "git", "postgres", "github", "ask", "schedule", "delegate", "branch", "figma",
+    }
+    # Branch management belongs to the lead: a worker runs inside one task of
+    # one turn, and two workers of a fan-out creating branches is how a
+    # project grows checkouts nobody asked for.
+    assert "branch" in {entry["name"] for entry in body["inactive"]}
+    # Figma needs a token registered first, so it is listed with that reason
+    # rather than failing at the agent's first call.
+    assert "figma" in {entry["name"] for entry in body["inactive"]}
     # Routed delegation belongs to the lead; workers cannot recursively
     # launch another routed worker through this MCP server.
     assert "delegate" in {entry["name"] for entry in body["inactive"]}
@@ -40,9 +49,12 @@ def test_the_lead_has_routed_delegation_but_github_stays_worker_only(client):
     body = client.get("/mcp/servers?role=lead").json()
 
     assert set(entry["name"] for entry in body["active"]) == {
-        "git", "postgres", "ask", "schedule", "delegate",
+        "git", "postgres", "ask", "schedule", "delegate", "branch",
     }
     assert "github" in {entry["name"] for entry in body["inactive"]}
+    # Figma is a lead server too, but no token is registered in the test
+    # environment, so it is inactive with that as its reason.
+    assert "figma" in {entry["name"] for entry in body["inactive"]}
 
 
 def test_skills_lists_the_library_with_schemas(client):

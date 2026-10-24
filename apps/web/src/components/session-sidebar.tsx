@@ -26,6 +26,7 @@ import {
   fetchWorkspaces,
   type WorkspaceSummary,
 } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
@@ -112,12 +113,8 @@ export function SessionSidebar({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<WorkspaceSummary | null>(null);
   const [filter, setFilter] = useState("");
-  // The project a new branch is being named for, and what each project said
-  // when asked whether it can host branches at all.
-  const [branching, setBranching] = useState<WorkspaceSummary | null>(null);
-  const [branchName, setBranchName] = useState("");
-  const [branchError, setBranchError] = useState<string | null>(null);
-  const [canBranch, setCanBranch] = useState<Record<string, string>>({});
+  // Branches are the work you have in flight, so a project shows them unless
+  // you fold it away. Not persisted: it is a glance, not a setting.
   // Branches are the work you have in flight, so a project shows them unless
   // you fold it away. Not persisted: it is a glance, not a setting.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -222,41 +219,10 @@ export function SessionSidebar({
     [projects, branchesOf]
   );
 
-  // Asked once per project: the answer is about the folder on disk, and each
-  // call shells out to git on the server. `asked` is a ref rather than state
-  // so that resolving one project does not re-run the effect and re-fire the
-  // requests for every project still in flight.
-  const asked = useRef(new Set<string>());
-  const projectIds = useMemo(() => projects.map((item) => item.id).join("\u0000"), [projects]);
-  useEffect(() => {
-    let live = true;
-    for (const id of projectIds ? projectIds.split("\u0000") : []) {
-      if (asked.current.has(id)) continue;
-      asked.current.add(id);
-      void fetchBranchCapability(id).then((capability) => {
-        if (!live) return;
-        setCanBranch((previous) => ({
-          ...previous,
-          [id]: capability.can_branch ? "" : capability.reason,
-        }));
-      });
-    }
-    return () => {
-      live = false;
-    };
-  }, [projectIds]);
-
-  // A "cannot branch" answer can stop being true — the user may `git init`
-  // the folder — so those few are asked again when the list reloads. A "yes"
-  // is not re-asked: almost every project is a repository (ANA git-inits the
-  // ones it creates), and each question shells out to git on the server.
-  useEffect(() => {
-    for (const [id, reason] of Object.entries(canBranch)) {
-      if (reason !== "") asked.current.delete(id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reloadKey is the
-    // signal; re-running on canBranch itself would loop.
-  }, [reloadKey]);
+  // Whether a project can host branches is no longer asked here. Adding one
+  // happens in the project's settings now, so the question is asked once, by
+  // the dialog that needs the answer — instead of once per project on every
+  // sidebar render, each call shelling out to git on the server.
 
   // Archiving the workspace you are in must not hide the conversation you are
   // reading: while the open one sits in the archive the group stays open, no
@@ -277,21 +243,6 @@ export function SessionSidebar({
       onOpenWorkspace(items.find((item) => item.id === created.id) ?? null);
     } catch (e) {
       setError(String(e));
-    }
-  };
-
-  const submitBranch = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!branching || !branchName.trim()) return;
-    try {
-      const created = await createBranch(branching.id, branchName);
-      setBranching(null);
-      setBranchName("");
-      setBranchError(null);
-      const items = await refresh();
-      onOpenWorkspace(items.find((item) => item.id === created.id) ?? null);
-    } catch (e) {
-      setBranchError(String(e instanceof Error ? e.message : e));
     }
   };
 
@@ -362,58 +313,95 @@ export function SessionSidebar({
    *  is what clicking a workspace has always done. There is no separate
    *  "main" child row — it would cost a row on every project and make the
    *  project row click-dead. */
+  /** A project and the branches under it.
+   *
+   *  The project is a *header*, not a row you open: one compact line with its
+   *  icon, its name and how many branches it has. What you open is beneath
+   *  it — `main` first, marked `primary`, then each feature branch. Before
+   *  this the project row doubled as main, which left nothing on screen
+   *  saying that a project's own conversation *is* a branch like the others.
+   *
+   *  Adding a branch is not here any more: it lives in the project's
+   *  settings, so the sidebar stays a list of things to open. */
   const projectRows = (
     project: WorkspaceSummary,
     kin: WorkspaceSummary[],
     selectable = true
   ) => {
     const folded = collapsed.has(project.id);
-    const reason = canBranch[project.id];
+    // The branch every branch here was cut from. A project row carries no
+    // branch of its own (that would cost a git call per project on every
+    // sidebar render), so its branches are what name it; "main" is the
+    // fallback for a project that has none yet, which is what ANA creates.
+    const primaryLabel = kin.find((b) => b.base_branch)?.base_branch || "main";
+    const primaryActive = selectable && href(project.id) === activeHref;
     return (
-      <div key={project.id}>
-        <SidebarMenu className="gap-1">
-          {row(project, selectable)}
-        </SidebarMenu>
-        {kin.length > 0 && (
-          <button
-            type="button"
-            onClick={() =>
-              setCollapsed((previous) => {
-                const next = new Set(previous);
-                if (!next.delete(project.id)) next.add(project.id);
-                return next;
-              })
-            }
-            aria-expanded={!folded}
-            className="flex w-full items-center gap-1.5 rounded-md py-1 pl-4 pr-2 text-[11px] text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-          >
-            <ChevronDownIcon
-              className={cn("size-3 shrink-0 transition-transform", folded && "-rotate-90")}
-            />
-            <span>브랜치</span>
-            <span className="ml-auto tabular-nums opacity-70">{kin.length}</span>
-          </button>
-        )}
-        {!folded && kin.length > 0 && (
-          <SidebarMenu className="gap-1">
+      <div key={project.id} className="flex flex-col">
+        <button
+          type="button"
+          onClick={() =>
+            setCollapsed((previous) => {
+              const next = new Set(previous);
+              if (!next.delete(project.id)) next.add(project.id);
+              return next;
+            })
+          }
+          aria-expanded={!folded}
+          title={`${project.id}\n${project.path}`}
+          className="group/header flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-xs font-medium text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+        >
+          <ChevronDownIcon
+            className={cn(
+              "size-3 shrink-0 opacity-60 transition-transform",
+              folded && "-rotate-90"
+            )}
+          />
+          <WorkspaceIcon icon={project.icon} className="size-3.5 shrink-0 text-sm" />
+          <span className="truncate">{project.name}</span>
+          {kin.length > 0 && (
+            <Badge variant="secondary" className="ml-auto h-4 px-1.5 text-[10px] tabular-nums">
+              {kin.length}
+            </Badge>
+          )}
+        </button>
+
+        {!folded && (
+          <SidebarMenu className="gap-1 pt-1">
+            <SidebarMenuItem>
+              {/* main is a row like any branch — it just happens to be the one
+                  the others merge into, which is what `primary` says. Opening
+                  it opens the project's own conversation, the same id the
+                  project row used to open. */}
+              <SidebarMenuButton
+                isActive={primaryActive}
+                onClick={() => onOpenWorkspace(project)}
+                className="h-auto py-1.5 pl-6"
+                title={`${project.id}\n${project.path}`}
+              >
+                <GitBranchIcon strokeWidth={1.5} />
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex items-center gap-1.5 truncate text-xs">
+                    <span className="truncate">{primaryLabel}</span>
+                    <Badge className="h-4 shrink-0 px-1.5 text-[10px]">primary</Badge>
+                  </span>
+                  <span className="truncate text-[11px] text-muted-foreground">
+                    {shortPath(project.path)}
+                    {project.total_tokens > 0
+                      ? ` · ${compactTokens(project.total_tokens)}`
+                      : " · 새 대화"}
+                  </span>
+                </div>
+              </SidebarMenuButton>
+              <SidebarMenuAction
+                showOnHover
+                title="프로젝트 설정 (브랜치 추가)"
+                onClick={() => setEditing(project)}
+              >
+                <SettingsIcon strokeWidth={1.5} />
+              </SidebarMenuAction>
+            </SidebarMenuItem>
             {kin.map((branch) => row(branch, selectable))}
           </SidebarMenu>
-        )}
-        {selectable && (
-          <button
-            type="button"
-            disabled={reason !== ""}
-            title={reason || "이 프로젝트에 기능 브랜치를 추가한다"}
-            onClick={() => {
-              setBranching(project);
-              setBranchName("");
-              setBranchError(null);
-            }}
-            className="flex w-full items-center gap-1.5 rounded-md py-1 pl-6 pr-2 text-[11px] text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-40"
-          >
-            <GitBranchPlusIcon strokeWidth={1.5} className="size-3 shrink-0" />
-            <span>브랜치 추가</span>
-          </button>
         )}
       </div>
     );
@@ -636,41 +624,6 @@ export function SessionSidebar({
                 만들기
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={() => setAdding(false)}>
-                취소
-              </Button>
-            </Field>
-          </FieldGroup>
-        </form>
-      </DialogContent>
-    </Dialog>
-
-    <Dialog open={branching !== null} onOpenChange={(open) => { if (!open) setBranching(null); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>브랜치 추가{branching ? ` — ${branching.name}` : ""}</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={submitBranch}>
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="branch-name">이름</FieldLabel>
-              <Input
-                id="branch-name"
-                value={branchName}
-                onChange={(e) => setBranchName(e.target.value)}
-                placeholder="결제 연동"
-                autoFocus
-              />
-              <FieldDescription>
-                프로젝트 안에 별도 체크아웃을 만들고, 그 브랜치만 맡는 대장
-                에이전트와 대화를 새로 엽니다. 끝나면 설정에서 main으로 머지합니다.
-              </FieldDescription>
-            </Field>
-            {branchError && (
-              <FieldDescription className="text-destructive">{branchError}</FieldDescription>
-            )}
-            <Field orientation="horizontal">
-              <Button type="submit" size="sm">만들기</Button>
-              <Button type="button" size="sm" variant="ghost" onClick={() => setBranching(null)}>
                 취소
               </Button>
             </Field>

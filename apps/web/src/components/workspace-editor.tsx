@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArchiveIcon,
+  GitBranchPlusIcon,
   ArchiveRestoreIcon,
   ImageIcon,
   RepeatIcon,
@@ -11,6 +12,8 @@ import {
 } from "lucide-react";
 import {
   RequestError,
+  createBranch,
+  fetchBranchCapability,
   forgetWorkspace,
   mergeBranch,
   updateWorkspace,
@@ -75,6 +78,41 @@ export function WorkspaceEditor({
   // Set when the branch holds commits main does not: the delete came back
   // refused, and the next press is the user saying to drop them anyway.
   const [forceDelete, setForceDelete] = useState(false);
+  // Adding a branch lives here rather than in the sidebar, so the sidebar
+  // stays a list of things to open.
+  const [branchName, setBranchName] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  // "" means this project can host branches; anything else is the reason it
+  // cannot, which the server words for the user. Asked once, when the dialog
+  // that needs the answer opens — the question shells out to git.
+  const [cannotBranch, setCannotBranch] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isBranch) return;
+    let live = true;
+    void fetchBranchCapability(workspace.id).then((capability) => {
+      if (live) setCannotBranch(capability.can_branch ? "" : capability.reason);
+    });
+    return () => {
+      live = false;
+    };
+  }, [workspace.id, isBranch]);
+
+  const addBranch = async () => {
+    if (!branchName.trim()) return;
+    setAdding(true);
+    try {
+      await createBranch(workspace.id, branchName);
+      setBranchName("");
+      setBranchError(null);
+      await onSaved();
+    } catch (e) {
+      setBranchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
 
   const rename = async () => {
     try {
@@ -279,6 +317,47 @@ export function WorkspaceEditor({
         </Field>
         {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
       </FieldGroup>
+
+      {!isBranch && (
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor={`ws-branch-${workspace.id}`}>브랜치 추가</FieldLabel>
+            <div className="flex items-center gap-2">
+              <Input
+                id={`ws-branch-${workspace.id}`}
+                value={branchName}
+                onChange={(event) => setBranchName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void addBranch();
+                  }
+                }}
+                placeholder="결제 연동"
+                disabled={cannotBranch !== null && cannotBranch !== ""}
+              />
+              <Button
+                size="sm"
+                disabled={
+                  adding || !branchName.trim() || (cannotBranch !== null && cannotBranch !== "")
+                }
+                onClick={() => void addBranch()}
+              >
+                <GitBranchPlusIcon data-icon="inline-start" />
+                {adding ? "만드는 중…" : "만들기"}
+              </Button>
+            </div>
+            <FieldDescription>
+              {cannotBranch
+                ? cannotBranch
+                : "프로젝트 안에 별도 체크아웃을 만들고, 그 브랜치만 맡는 대장 에이전트와 대화를 새로 엽니다. 사이드바의 이 프로젝트 아래에 나타납니다."}
+            </FieldDescription>
+            {branchError && (
+              <FieldDescription className="text-destructive">{branchError}</FieldDescription>
+            )}
+          </Field>
+        </FieldGroup>
+      )}
 
       <FieldGroup>
         <Field>

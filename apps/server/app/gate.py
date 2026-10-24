@@ -24,6 +24,18 @@ from packages.governance.subagent_scope import (
 from packages.governance.workspace import agent_state_prefixes, escaping_paths
 from packages.mcp.registry import load_registry
 from packages.orchestrator import timeline as timeline_blocks
+from packages.orchestrator.branches import BranchError
+from packages.orchestrator.branch_store import (
+    branch_capability,
+    create_branch,
+    delete_branch,
+    merge_branch,
+)
+from packages.orchestrator.workspaces import (
+    get_workspace,
+    list_branches,
+    rename_workspace,
+)
 from packages.orchestrator.settings import yolo as yolo_mode
 from packages.orchestrator.schedules import (
     CronError,
@@ -384,6 +396,161 @@ async def gate_delete_schedule(
         raise HTTPException(status_code=404, detail="no such schedule")
     await delete_schedule(request.app.state.pool, schedule_id)
     return {"status": "deleted", "id": schedule_id}
+
+
+class BranchCreateRequest(BaseModel):
+    name: str
+
+
+class BranchRenameRequest(BaseModel):
+    name: str
+
+
+class BranchMergeRequest(BaseModel):
+    # Main's lead agent edits the project folder directly and ANA never commits
+    # for it, so a dirty project is the normal case. The merge refuses it; this
+    # is the agent having decided to commit that work first.
+    commit_project: bool = False
+
+
+async def _project_for_token(request: Request, token: str):
+    """The project an agent may manage branches in, and nothing else.
+
+    Scoped exactly as schedules are. The token says which conversation is
+    calling; a *project's* agent manages that project, and a *branch's* agent
+    manages its parent project — otherwise a branch agent could not see even
+    itself, and could not finish the merge it was handed a conflict for.
+
+    Nothing here lets an agent reach a project it is not working in: that is
+    the whole reason this goes through the gate rather than /workspaces."""
+    session = request.app.state.gate_registry.get(token)
+    if session is None:
+        raise HTTPException(status_code=403, detail="unknown gate token")
+    caller = await get_workspace(request.app.state.pool, session.thread_id)
+    if caller is None:
+        raise HTTPException(status_code=404, detail="no such workspace")
+    if caller.parent_id is None:
+        return caller
+    project = await get_workspace(request.app.state.pool, caller.parent_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="no such project")
+    return project
+
+
+async def _branch_in_project(request: Request, project, branch_id: str):
+    """One branch of that project.
+
+    404 for a branch of someone else's project, not 403: an agent has no
+    business learning that an id it cannot touch exists."""
+    branch = await get_workspace(request.app.state.pool, branch_id)
+    if branch is None or branch.parent_id != project.id:
+        raise HTTPException(status_code=404, detail="no such branch")
+    return branch
+
+
+@router.get("/gate/branches")
+async def gate_list_branches(
+    request: Request, x_ana_gate_token: str = Header(default="")
+) -> dict:
+    """This project and its feature branches."""
+    project = await _project_for_token(request, x_ana_gate_token)
+    rows = await list_branches(request.app.state.pool, project.id)
+    can, reason = await branch_capability(request.app.state.pool, project.id)
+    return {
+        "project": {"id": project.id, "name": project.name, "path": project.path},
+        "can_branch": can,
+        "reason": reason,
+        "branches": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "branch": row.branch,
+                "base_branch": row.base_branch,
+                "path": row.path,
+                "archived": row.archived,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.post("/gate/branches")
+async def gate_create_branch(
+    request: Request,
+    body: BranchCreateRequest,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    project = await _project_for_token(request, x_ana_gate_token)
+    try:
+        branch = await create_branch(
+            request.app.state.pool, project_id=project.id, name=body.name
+        )
+    except BranchError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return branch.as_dict()
+
+
+@router.patch("/gate/branches/{branch_id}")
+async def gate_rename_branch(
+    request: Request,
+    branch_id: str,
+    body: BranchRenameRequest,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    """Renames the branch's *workspace*, not the git branch.
+
+    The git branch name is the checkout's directory and the merge target, and
+    moving those under a running agent is how a branch loses its work. The
+    display name is what anyone actually reads."""
+    project = await _project_for_token(request, x_ana_gate_token)
+    branch = await _branch_in_project(request, project, branch_id)
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="branch name is required")
+    await rename_workspace(request.app.state.pool, branch.id, body.name)
+    updated = await get_workspace(request.app.state.pool, branch.id)
+    return (updated or branch).as_dict()
+
+
+@router.post("/gate/branches/{branch_id}/merge")
+async def gate_merge_branch(
+    request: Request,
+    branch_id: str,
+    body: BranchMergeRequest | None = None,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    project = await _project_for_token(request, x_ana_gate_token)
+    branch = await _branch_in_project(request, project, branch_id)
+    outcome = await merge_branch(
+        request.app.state.pool,
+        branch.id,
+        commit_project=(body or BranchMergeRequest()).commit_project,
+    )
+    return {
+        "status": outcome.status,
+        "detail": outcome.detail,
+        "paths": list(outcome.paths),
+    }
+
+
+@router.delete("/gate/branches/{branch_id}")
+async def gate_delete_branch(
+    request: Request,
+    branch_id: str,
+    force: bool = False,
+    x_ana_gate_token: str = Header(default=""),
+) -> dict:
+    """Removes the branch, its checkout and its conversation.
+
+    Refused while it holds commits the project does not have. `force` exists,
+    but an agent reaching for it is deciding to destroy the only copy of that
+    work, so the refusal is what it gets first."""
+    project = await _project_for_token(request, x_ana_gate_token)
+    branch = await _branch_in_project(request, project, branch_id)
+    try:
+        await delete_branch(request.app.state.pool, branch.id, force=force)
+    except BranchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "deleted", "id": branch.id}
 
 
 class GateDecision(BaseModel):
