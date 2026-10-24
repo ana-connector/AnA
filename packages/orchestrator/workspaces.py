@@ -74,6 +74,12 @@ MAX_ICON_TEXT = 8
 
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
+# What joins a project id to a branch slug in a branch's workspace id
+# (`<project>--<slug>`). Kept here rather than in branch_store.py because
+# `ensure_workspace` has to recognise the shape without importing it — that
+# module imports this one.
+BRANCH_ID_SEPARATOR = "--"
+
 # Ids the server mints for a conversation nobody named yet (uuid4).
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
@@ -437,6 +443,24 @@ async def ensure_workspace(pool: AsyncConnectionPool, workspace_id: str) -> Work
     if existing is not None:
         await touch_workspace(pool, workspace_id)
         return existing
+
+    # One id is never adopted: a branch's. A branch id is `<project>--<slug>`,
+    # and a browser tab left open on a branch that has since been deleted
+    # reconnects to that id — which used to bring the branch back as a
+    # *top-level project*, with no parent, no git branch and a brand-new
+    # folder under the root that had nothing to do with its checkout. The
+    # user was left with a junk project row they never made.
+    #
+    # The check keys on the prefix being a real project, so an unregistered
+    # conversation that merely contains a double dash is still adopted — that
+    # adoption is what keeps pre-workspace conversations working.
+    if BRANCH_ID_SEPARATOR in workspace_id:
+        parent_id = workspace_id.rsplit(BRANCH_ID_SEPARATOR, 1)[0]
+        if parent_id and await get_workspace(pool, parent_id) is not None:
+            raise WorkspacePathError(
+                f"「{workspace_id}」는 삭제된 브랜치다. 브랜치는 프로젝트 설정에서 "
+                "다시 만들 수 있고, 이 대화는 돌아오지 않는다."
+            )
 
     path = str(session_workspace(workspace_root(), workspace_id, create=True))
     name = _adopted_name(workspace_id)

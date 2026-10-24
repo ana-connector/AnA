@@ -641,6 +641,49 @@ async def test_a_minted_conversation_gets_a_readable_name(
 
 
 @pytest.mark.asyncio
+async def test_a_deleted_branch_is_not_resurrected_as_a_project(
+    workspace_pool, tmp_path, monkeypatch
+):
+    """A browser tab still open on a deleted branch reconnects to its id, and
+    `ensure_workspace` adopts any unknown id — which brought the branch back
+    as a *top-level project*, with no parent, no git branch and a fresh folder
+    under the workspace root that has nothing to do with its checkout."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    project = await create_workspace(workspace_pool, name="proj", path=str(tmp_path / "proj"))
+    branch_id = f"{project.id}--auth"
+    await create_workspace(
+        workspace_pool,
+        name="auth",
+        path=str(tmp_path / "proj" / ".ana" / "branches" / "auth"),
+        parent_id=project.id,
+        branch="ana/branch/auth",
+        base_branch="main",
+        workspace_id=branch_id,
+    )
+    await forget_workspace(workspace_pool, branch_id)
+
+    with pytest.raises(WorkspacePathError):
+        await ensure_workspace(workspace_pool, branch_id)
+
+    assert await get_workspace(workspace_pool, branch_id) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_id_that_only_looks_like_a_branch_is_still_adopted(
+    workspace_pool, tmp_path, monkeypatch
+):
+    """The guard keys on the prefix being a real project. A conversation named
+    with a double dash that belongs to nobody is an ordinary unregistered
+    workspace, and refusing it would break the ids that predate workspaces."""
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+
+    adopted = await ensure_workspace(workspace_pool, "nobody--auth")
+
+    assert adopted.parent_id is None
+    assert adopted.id == "nobody--auth"
+
+
+@pytest.mark.asyncio
 async def test_a_plain_workspace_has_no_parent_and_no_branch(workspace_pool, tmp_path, monkeypatch):
     monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
 
