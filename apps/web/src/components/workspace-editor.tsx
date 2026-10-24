@@ -9,7 +9,13 @@ import {
   SaveIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { forgetWorkspace, updateWorkspace, type WorkspaceSummary } from "@/lib/api";
+import {
+  forgetWorkspace,
+  mergeBranch,
+  updateWorkspace,
+  type MergeResult,
+  type WorkspaceSummary,
+} from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -62,6 +68,12 @@ export function WorkspaceEditor({
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const isBranch = workspace.parent_id !== null;
+  const [merging, setMerging] = useState(false);
+  const [merge, setMerge] = useState<MergeResult | null>(null);
+  // Set when the branch holds commits main does not: the delete came back
+  // refused, and the next press is the user saying to drop them anyway.
+  const [forceDelete, setForceDelete] = useState(false);
 
   const rename = async () => {
     try {
@@ -101,14 +113,56 @@ export function WorkspaceEditor({
   const remove = async () => {
     setDeleting(true);
     try {
-      await forgetWorkspace(workspace.id);
+      await forgetWorkspace(workspace.id, forceDelete);
       setConfirming(false);
+      setForceDelete(false);
       await onDeleted();
     } catch (e) {
-      setError(String(e));
+      // A branch that still holds unmerged commits is refused rather than
+      // deleted: that branch is the only copy of that work. Offer the force
+      // instead of hiding the refusal behind a generic error.
+      setError(e instanceof Error ? e.message : String(e));
+      if (isBranch) setForceDelete(true);
       setConfirming(false);
     } finally {
       setDeleting(false);
+    }
+  };
+
+  /** Brings the branch's work into its project.
+   *
+   *  Every outcome but a server fault comes back as a status, so this sets
+   *  the result rather than throwing: a dirty project and a conflict are
+   *  ordinary answers the user acts on, not errors. */
+  const mergeIntoMain = async (commitProject = false) => {
+    setMerging(true);
+    try {
+      setMerge(await mergeBranch(workspace.id, commitProject));
+      setError(null);
+      await onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  const mergeMessage = (result: MergeResult): string => {
+    switch (result.status) {
+      case "merged":
+        return `「${workspace.base_branch}」에 머지했다.`;
+      case "empty":
+        return "머지할 게 없다. 이 브랜치에는 새 작업이 없다.";
+      case "dirty":
+        return `「${workspace.base_branch}」 체크아웃에 커밋 안 된 변경이 있다. 먼저 커밋해야 머지된다.`;
+      case "moved":
+        return result.detail;
+      case "missing":
+        return `이 브랜치의 체크아웃이 디스크에 없다: ${result.detail}`;
+      case "conflict":
+        return `충돌: ${result.paths.join(", ")} — ${result.detail}`;
+      default:
+        return result.detail || result.status;
     }
   };
 
@@ -145,6 +199,48 @@ export function WorkspaceEditor({
             빌드한 뒤부터 적용된다. 게이트 규칙 파일을 건드리는 도구 호출은 승인을 받는다.
           </span>
         </div>
+      )}
+
+      {isBranch && (
+        <FieldGroup>
+          <Field>
+            <FieldLabel>브랜치</FieldLabel>
+            <FieldDescription className="font-mono break-all">
+              {workspace.branch} → {workspace.base_branch}
+            </FieldDescription>
+          </Field>
+          <Field orientation="horizontal">
+            <Button size="sm" disabled={merging} onClick={() => void mergeIntoMain()}>
+              {merging ? "머지 중…" : `${workspace.base_branch}으로 머지`}
+            </Button>
+            {/* The project tree is dirty most of the time — main's lead agent
+                edits it directly and ANA never commits for it — so this is
+                the ordinary second press, not a hidden escape hatch. */}
+            {merge?.status === "dirty" && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={merging}
+                onClick={() => void mergeIntoMain(true)}
+              >
+                커밋하고 머지
+              </Button>
+            )}
+          </Field>
+          {merge && (
+            <FieldDescription
+              className={
+                merge.status === "merged" || merge.status === "empty"
+                  ? undefined
+                  : "text-destructive"
+              }
+            >
+              {mergeMessage(merge)}
+              {merge.status === "conflict" &&
+                " 이 브랜치의 대화에 충돌 해결을 맡겼다. 끝나면 다시 머지해라."}
+            </FieldDescription>
+          )}
+        </FieldGroup>
       )}
 
       <FieldGroup>
@@ -286,11 +382,26 @@ export function WorkspaceEditor({
             <AlertDialogMedia>
               <TriangleAlertIcon className="text-destructive" />
             </AlertDialogMedia>
-            <AlertDialogTitle>「{workspace.name}」 삭제</AlertDialogTitle>
+            <AlertDialogTitle>
+              {isBranch ? `브랜치 「${workspace.name}」 삭제` : `「${workspace.name}」 삭제`}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               대화가 사라진다: 턴 {workspace.turn_count}개와 체크포인트를 지우므로 되돌릴 수 없다.
-              폴더({shortPath(workspace.path)})와 감사 로그는 그대로 남고, 전용 컨테이너는
-              정리된다.
+              {isBranch ? (
+                <>
+                  {" "}
+                  이 브랜치의 체크아웃({shortPath(workspace.path)})과 git 브랜치(
+                  {workspace.branch})도 함께 지운다.
+                  {forceDelete &&
+                    ` ${workspace.base_branch}에 아직 없는 커밋이 있다 — 삭제하면 그 작업은 되찾을 수 없다.`}
+                </>
+              ) : (
+                <>
+                  {" "}
+                  폴더({shortPath(workspace.path)})와 감사 로그는 그대로 남고, 전용 컨테이너는
+                  정리된다. 이 프로젝트의 브랜치는 체크아웃까지 함께 지워진다.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -301,7 +412,7 @@ export function WorkspaceEditor({
               disabled={deleting}
               onClick={() => void remove()}
             >
-              {deleting ? "삭제 중…" : "삭제"}
+              {deleting ? "삭제 중…" : forceDelete ? "그래도 삭제" : "삭제"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

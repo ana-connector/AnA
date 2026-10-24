@@ -7,6 +7,8 @@ import {
   ArchiveIcon,
   ChevronDownIcon,
   ClockIcon,
+  GitBranchIcon,
+  GitBranchPlusIcon,
   LockIcon,
   MoonIcon,
   PlusIcon,
@@ -17,7 +19,9 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import {
+  createBranch,
   createWorkspace,
+  fetchBranchCapability,
   fetchWorkspaceCapabilities,
   fetchWorkspaces,
   type WorkspaceSummary,
@@ -65,7 +69,12 @@ const FILTER_THRESHOLD = 7;
 /** Workspaces are what the user manages: one folder, one lead agent, one
  *  ongoing conversation. Selecting one opens its conversation — the workspace
  *  id *is* the thread id, so its CLI sessions, history and directory all line
- *  up behind the same name. */
+ *  up behind the same name.
+ *
+ *  A project can hold feature branches, which are workspaces with a parent:
+ *  their own checkout, their own lead agent, their own conversation. They are
+ *  listed under their project, and the project row is main — clicking it
+ *  opens main's conversation, as clicking a workspace always has. */
 export function SessionSidebar({
   reloadKey,
 }: {
@@ -103,6 +112,15 @@ export function SessionSidebar({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<WorkspaceSummary | null>(null);
   const [filter, setFilter] = useState("");
+  // The project a new branch is being named for, and what each project said
+  // when asked whether it can host branches at all.
+  const [branching, setBranching] = useState<WorkspaceSummary | null>(null);
+  const [branchName, setBranchName] = useState("");
+  const [branchError, setBranchError] = useState<string | null>(null);
+  const [canBranch, setCanBranch] = useState<Record<string, string>>({});
+  // Branches are the work you have in flight, so a project shows them unless
+  // you fold it away. Not persisted: it is a glance, not a setting.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // Archived workspaces are collapsed by default: the point of archiving one
   // is that you are not working on it now.
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -161,18 +179,60 @@ export function SessionSidebar({
     const items = workspaces ?? [];
     const needle = filter.trim().toLowerCase();
     if (!needle) return items;
-    return items.filter(
-      (item) =>
-        item.name.toLowerCase().includes(needle) ||
-        item.id.toLowerCase().includes(needle) ||
-        item.path.toLowerCase().includes(needle)
-    );
+    const hit = (item: WorkspaceSummary) =>
+      item.name.toLowerCase().includes(needle) ||
+      item.id.toLowerCase().includes(needle) ||
+      item.path.toLowerCase().includes(needle) ||
+      item.branch.toLowerCase().includes(needle);
+    const matched = items.filter(hit);
+    // A branch is only findable under its project, so a project whose branch
+    // matched comes along even when its own name did not.
+    const parents = new Set(matched.map((item) => item.parent_id).filter(Boolean));
+    return items.filter((item) => hit(item) || parents.has(item.id));
   }, [workspaces, filter]);
 
+  const projects = useMemo(
+    () => visible.filter((item) => item.parent_id === null),
+    [visible]
+  );
+  /** A project's branches, in the order the server listed them. */
+  const branchesOf = useMemo(() => {
+    const byParent = new Map<string, WorkspaceSummary[]>();
+    for (const item of visible) {
+      if (!item.parent_id) continue;
+      const kin = byParent.get(item.parent_id);
+      if (kin) kin.push(item);
+      else byParent.set(item.parent_id, [item]);
+    }
+    return byParent;
+  }, [visible]);
+
   // The filter applies to both lists, so searching still finds something you
-  // archived — it just stays under the archive heading.
-  const active = useMemo(() => visible.filter((item) => !item.archived), [visible]);
-  const archived = useMemo(() => visible.filter((item) => item.archived), [visible]);
+  // archived — it just stays under the archive heading. Only projects are
+  // sorted into the two groups: a branch is listed under its own project,
+  // wherever that project sits.
+  const active = useMemo(() => projects.filter((item) => !item.archived), [projects]);
+  const archived = useMemo(() => projects.filter((item) => item.archived), [projects]);
+
+  // Asked once per project, not per render: the answer is about the folder on
+  // disk, and the sidebar refetches its list after every turn.
+  useEffect(() => {
+    let live = true;
+    for (const project of projects) {
+      if (project.id in canBranch) continue;
+      void fetchBranchCapability(project.id).then((capability) => {
+        if (!live) return;
+        setCanBranch((previous) =>
+          project.id in previous
+            ? previous
+            : { ...previous, [project.id]: capability.can_branch ? "" : capability.reason }
+        );
+      });
+    }
+    return () => {
+      live = false;
+    };
+  }, [projects, canBranch]);
 
   // Archiving the workspace you are in must not hide the conversation you are
   // reading: while the open one sits in the archive the group stays open, no
@@ -193,6 +253,21 @@ export function SessionSidebar({
       onOpenWorkspace(items.find((item) => item.id === created.id) ?? null);
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const submitBranch = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!branching || !branchName.trim()) return;
+    try {
+      const created = await createBranch(branching.id, branchName);
+      setBranching(null);
+      setBranchName("");
+      setBranchError(null);
+      const items = await refresh();
+      onOpenWorkspace(items.find((item) => item.id === created.id) ?? null);
+    } catch (e) {
+      setBranchError(String(e instanceof Error ? e.message : e));
     }
   };
 
@@ -220,32 +295,102 @@ export function SessionSidebar({
    *  `selectable` is false in the archive. A highlight there would say you are
    *  working in a workspace you put away; the open tab says where you are, and
    *  the archive is a place you look things up, not a place you are. */
-  const row = (item: WorkspaceSummary, selectable = true) => (
-    <SidebarMenuItem key={item.id}>
-      <SidebarMenuButton
-        isActive={selectable && href(item.id) === activeHref}
-        onClick={() => onOpenWorkspace(item)}
-        className="h-auto py-1.5"
-        title={`${item.id}\n${item.path}`}
-      >
-        <WorkspaceIcon icon={item.icon} />
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-xs">{item.name}</span>
-          <span className="truncate text-[11px] text-muted-foreground">
-            {shortPath(item.path)}
-            {item.total_tokens > 0 ? ` · ${compactTokens(item.total_tokens)}` : " · 새 대화"}
-          </span>
-        </div>
-      </SidebarMenuButton>
-      <SidebarMenuAction
-        showOnHover
-        title="워크스페이스 설정"
-        onClick={() => setEditing(item)}
-      >
-        <SettingsIcon strokeWidth={1.5} />
-      </SidebarMenuAction>
-    </SidebarMenuItem>
-  );
+  const row = (item: WorkspaceSummary, selectable = true) => {
+    const isBranch = item.parent_id !== null;
+    // A branch's path is its project's folder plus a generated slug, which
+    // says nothing. Its branch name is the useful second line.
+    const detail = isBranch ? item.branch : shortPath(item.path);
+    return (
+      <SidebarMenuItem key={item.id}>
+        <SidebarMenuButton
+          isActive={selectable && href(item.id) === activeHref}
+          onClick={() => onOpenWorkspace(item)}
+          className={cn("h-auto py-1.5", isBranch && "pl-6")}
+          title={`${item.id}\n${item.path}`}
+        >
+          {isBranch && !item.icon ? (
+            <GitBranchIcon strokeWidth={1.5} />
+          ) : (
+            <WorkspaceIcon icon={item.icon} />
+          )}
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="truncate text-xs">{item.name}</span>
+            <span className="truncate text-[11px] text-muted-foreground">
+              {detail}
+              {item.total_tokens > 0 ? ` · ${compactTokens(item.total_tokens)}` : " · 새 대화"}
+            </span>
+          </div>
+        </SidebarMenuButton>
+        <SidebarMenuAction
+          showOnHover
+          title={isBranch ? "브랜치 설정" : "워크스페이스 설정"}
+          onClick={() => setEditing(item)}
+        >
+          <SettingsIcon strokeWidth={1.5} />
+        </SidebarMenuAction>
+      </SidebarMenuItem>
+    );
+  };
+
+  /** A project and the branches under it.
+   *
+   *  The project row *is* main: clicking it opens main's conversation, which
+   *  is what clicking a workspace has always done. There is no separate
+   *  "main" child row — it would cost a row on every project and make the
+   *  project row click-dead. */
+  const projectRows = (project: WorkspaceSummary, selectable = true) => {
+    const kin = branchesOf.get(project.id) ?? [];
+    const folded = collapsed.has(project.id);
+    const reason = canBranch[project.id];
+    return (
+      <div key={project.id}>
+        <SidebarMenu className="gap-1">
+          {row(project, selectable)}
+        </SidebarMenu>
+        {kin.length > 0 && (
+          <button
+            type="button"
+            onClick={() =>
+              setCollapsed((previous) => {
+                const next = new Set(previous);
+                if (!next.delete(project.id)) next.add(project.id);
+                return next;
+              })
+            }
+            aria-expanded={!folded}
+            className="flex w-full items-center gap-1.5 rounded-md py-1 pl-4 pr-2 text-[11px] text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <ChevronDownIcon
+              className={cn("size-3 shrink-0 transition-transform", folded && "-rotate-90")}
+            />
+            <span>브랜치</span>
+            <span className="ml-auto tabular-nums opacity-70">{kin.length}</span>
+          </button>
+        )}
+        {!folded && kin.length > 0 && (
+          <SidebarMenu className="gap-1">
+            {kin.map((branch) => row(branch, selectable))}
+          </SidebarMenu>
+        )}
+        {selectable && (
+          <button
+            type="button"
+            disabled={reason !== ""}
+            title={reason || "이 프로젝트에 기능 브랜치를 추가한다"}
+            onClick={() => {
+              setBranching(project);
+              setBranchName("");
+              setBranchError(null);
+            }}
+            className="flex w-full items-center gap-1.5 rounded-md py-1 pl-6 pr-2 text-[11px] text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+          >
+            <GitBranchPlusIcon strokeWidth={1.5} className="size-3 shrink-0" />
+            <span>브랜치 추가</span>
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -343,7 +488,9 @@ export function SessionSidebar({
                 모두 보관함에 있음
               </p>
             ) : (
-              <SidebarMenu className="gap-1">{active.map((item) => row(item))}</SidebarMenu>
+              <div className="flex flex-col gap-1">
+                {active.map((item) => projectRows(item))}
+              </div>
             )}
 
           </SidebarGroupContent>
@@ -374,7 +521,9 @@ export function SessionSidebar({
               </button>
 
               {archiveExpanded && (
-                <SidebarMenu className="gap-1 pt-1">{archived.map((item) => row(item, false))}</SidebarMenu>
+                <div className="flex flex-col gap-1 pt-1">
+                  {archived.map((item) => projectRows(item, false))}
+                </div>
               )}
             </SidebarGroupContent>
           </SidebarGroup>
@@ -450,6 +599,41 @@ export function SessionSidebar({
                 만들기
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={() => setAdding(false)}>
+                취소
+              </Button>
+            </Field>
+          </FieldGroup>
+        </form>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={branching !== null} onOpenChange={(open) => { if (!open) setBranching(null); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>브랜치 추가{branching ? ` — ${branching.name}` : ""}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={submitBranch}>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="branch-name">이름</FieldLabel>
+              <Input
+                id="branch-name"
+                value={branchName}
+                onChange={(e) => setBranchName(e.target.value)}
+                placeholder="결제 연동"
+                autoFocus
+              />
+              <FieldDescription>
+                프로젝트 안에 별도 체크아웃을 만들고, 그 브랜치만 맡는 대장
+                에이전트와 대화를 새로 엽니다. 끝나면 설정에서 main으로 머지합니다.
+              </FieldDescription>
+            </Field>
+            {branchError && (
+              <FieldDescription className="text-destructive">{branchError}</FieldDescription>
+            )}
+            <Field orientation="horizontal">
+              <Button type="submit" size="sm">만들기</Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setBranching(null)}>
                 취소
               </Button>
             </Field>
