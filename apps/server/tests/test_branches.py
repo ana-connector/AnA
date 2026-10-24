@@ -155,6 +155,92 @@ async def test_a_resolved_conflict_merges_on_the_second_attempt(repo):
     assert (repo / "a.txt").read_text(encoding="utf-8") == "resolved\n"
 
 
+async def test_a_second_press_never_commits_conflict_markers_into_main(repo):
+    """`git add -A` in a mid-merge checkout marks conflicted files resolved
+    with the markers still in them, so an unguarded second merge wrote
+    `<<<<<<<` into the project — the spec's own anti-goal."""
+    checkout = await branches.create(str(repo), "auth")
+    (Path(checkout.path) / "a.txt").write_text("from branch\n", encoding="utf-8")
+    (repo / "a.txt").write_text("from main\n", encoding="utf-8")
+    _git("commit", "-am", "main moves", cwd=repo)
+    assert (await branches.merge_into_project(checkout, "auth 작업")).status == "conflict"
+
+    outcome = await branches.merge_into_project(checkout, "auth 작업")
+
+    assert outcome.status == "unresolved"
+    assert outcome.paths == ("a.txt",)
+    assert "<<<<<<<" not in (repo / "a.txt").read_text(encoding="utf-8")
+
+
+async def test_a_merge_that_fails_for_another_reason_is_not_called_a_conflict(repo):
+    """A git failure that is not a conflict used to be reported as one, and
+    the branch was given a merge commit nobody asked for."""
+    checkout = await branches.create(str(repo), "auth")
+    (Path(checkout.path) / "b.txt").write_text("new\n", encoding="utf-8")
+    (repo / ".git" / "index.lock").write_text("", encoding="utf-8")
+    try:
+        outcome = await branches.merge_into_project(checkout, "auth 작업")
+    finally:
+        (repo / ".git" / "index.lock").unlink(missing_ok=True)
+
+    assert outcome.status == "failed"
+    assert outcome.detail
+    # No conflict was invented in the branch: no markers, and its HEAD is the
+    # ordinary one-parent commit of its own work, not a merge of the base.
+    assert await branches.conflicted_paths(checkout.path) == ()
+    parents = _git("rev-list", "--parents", "-1", "HEAD", cwd=Path(checkout.path))
+    assert len(parents.split()) == 2
+
+
+async def test_a_project_commit_that_does_not_land_is_reported_as_dirty(repo):
+    """A pre-commit hook that refuses leaves the tree dirty. Merging anyway
+    fails in a way that reads like a conflict, so the refusal is reported."""
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    checkout = await branches.create(str(repo), "auth")
+    (Path(checkout.path) / "b.txt").write_text("new\n", encoding="utf-8")
+    (repo / "a.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    outcome = await branches.merge_into_project(checkout, "auth 작업", commit_project=True)
+
+    assert outcome.status == "dirty"
+    assert not (repo / "b.txt").exists()
+
+
+async def test_commit_project_does_not_commit_when_there_is_nothing_to_merge(repo):
+    """"커밋하고 머지" that cannot merge must not commit either: a write to
+    someone's repository that serves no purpose."""
+    checkout = await branches.create(str(repo), "auth")
+    (repo / "a.txt").write_text("mid-edit\n", encoding="utf-8")
+    before = _git("rev-parse", "HEAD", cwd=repo)
+
+    outcome = await branches.merge_into_project(checkout, "auth 작업", commit_project=True)
+
+    assert outcome.status == "empty"
+    assert _git("rev-parse", "HEAD", cwd=repo) == before
+    assert _git("status", "--porcelain", cwd=repo) != ""
+
+
+async def test_unmerged_commits_says_it_cannot_tell_rather_than_zero(repo):
+    """`rev-list base..branch` fails when the base branch no longer resolves.
+    Reporting that as 0 let an unforced delete drop the only copy."""
+    checkout = await branches.create(str(repo), "auth")
+    (Path(checkout.path) / "b.txt").write_text("new\n", encoding="utf-8")
+    _git("add", "-A", cwd=Path(checkout.path))
+    _git("commit", "-m", "work", cwd=Path(checkout.path))
+    assert await branches.unmerged_commits(checkout) == 1
+
+    _git("branch", "-m", "main", "trunk", cwd=repo)
+
+    assert await branches.unmerged_commits(checkout) is None
+    with pytest.raises(branches.BranchError):
+        await branches.remove(checkout)
+    assert Path(checkout.path).exists()
+
+
 async def test_merge_reports_a_checkout_that_is_gone(repo):
     checkout = await branches.create(str(repo), "auth")
     _git("worktree", "remove", "--force", checkout.path, cwd=repo)

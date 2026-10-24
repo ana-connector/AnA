@@ -31,6 +31,7 @@ Two decisions worth stating, because neither is obvious:
   wrong answer. So: refused, with `commit_project` for the caller who has
   asked the user.
 """
+import hashlib
 import os
 import shutil
 from dataclasses import dataclass
@@ -64,12 +65,14 @@ class BranchCheckout:
 class MergeOutcome:
     """`status` is one of:
 
-    merged  — the branch is in the project now
-    empty   — the branch has nothing the project does not already have
-    dirty   — the project has uncommitted changes; retry with commit_project
-    moved   — the project checkout is no longer on the branch's base branch
-    missing — the branch's checkout is gone from disk
-    conflict— aborted in the project, markers left in the branch for its agent
+    merged     — the branch is in the project now
+    empty      — the branch has nothing the project does not already have
+    dirty      — the project has uncommitted changes; retry with commit_project
+    moved      — the project checkout is no longer on the branch's base branch
+    missing    — the branch's checkout is gone from disk
+    conflict   — aborted in the project, markers left in the branch for its agent
+    unresolved — the branch is still mid-conflict; nothing was merged
+    failed     — git refused for some other reason; nothing was touched
     """
 
     status: str
@@ -78,7 +81,17 @@ class MergeOutcome:
 
 
 def slug_for(name: str) -> str:
-    return slugify(name, fallback="branch")
+    """A folder- and branch-safe slug for a branch name.
+
+    `slugify` keeps only `[a-z0-9._-]`, so a Korean name — which is what this
+    UI is written in — survives as nothing at all and every branch of a
+    project would be called "branch". A short digest of the name keeps them
+    apart, and keeps the same name mapping to the same slug."""
+    slug = slugify(name, fallback="")
+    if slug:
+        return slug
+    digest = hashlib.sha256(name.strip().encode("utf-8")).hexdigest()[:8]
+    return f"branch-{digest}"
 
 
 async def can_branch(project_path: str) -> str:
@@ -150,22 +163,37 @@ async def merge_into_project(
                     f"이 브랜치는 「{checkout.base_branch}」로만 머지된다.",
                 )
 
+            # Before anything is committed anywhere. A branch left mid-conflict
+            # by an earlier attempt must not be committed as it stands:
+            # `git add -A` marks a conflicted file resolved with its markers
+            # still in it, and the merge that follows would put `<<<<<<<` in
+            # the project.
+            unresolved = await conflicted_paths(checkout.path)
+            if unresolved:
+                return MergeOutcome(
+                    status="unresolved",
+                    detail="이 브랜치에 아직 해결되지 않은 충돌이 있다.",
+                    paths=unresolved,
+                )
+
+            # Checked before the project is committed: "커밋하고 머지" that
+            # cannot merge must not commit either.
+            if not await _has_anything_to_merge(checkout):
+                return MergeOutcome(status="empty")
+
             code, dirty = await worktrees.git(
                 "status", "--porcelain", cwd=checkout.project
             )
             if code == 0 and dirty.strip():
                 if not commit_project:
                     return MergeOutcome(status="dirty", detail=dirty[-2000:])
-                await worktrees.git("add", "-A", cwd=checkout.project)
-                await worktrees.git(
-                    *worktrees.IDENTITY, "commit", "-m",
-                    f"ANA: {checkout.base_branch} 작업 저장 (머지 전)",
-                    cwd=checkout.project,
-                )
+                landed, output = await _commit_project(checkout)
+                if not landed:
+                    # A refusing pre-commit hook leaves the tree dirty, and
+                    # merging anyway fails in a way that reads like a conflict.
+                    return MergeOutcome(status="dirty", detail=output[-2000:])
 
-            committed = await worktrees.commit(_as_worktree(checkout), message)
-            if not committed and await unmerged_commits(checkout) == 0:
-                return MergeOutcome(status="empty")
+            await worktrees.commit(_as_worktree(checkout), message)
 
             code, output = await worktrees.git(
                 *worktrees.IDENTITY, "merge", "--no-edit", "--no-ff", checkout.branch,
@@ -174,9 +202,59 @@ async def merge_into_project(
             if code == 0:
                 return MergeOutcome(status="merged")
 
+            # Read before the abort erases it: a non-zero exit is not
+            # necessarily a conflict. A timeout, a hook, a stale index.lock
+            # all land here, and calling those a conflict sent the branch's
+            # agent looking for markers that do not exist.
+            project_conflicts = await conflicted_paths(checkout.project)
             await worktrees.git("merge", "--abort", cwd=checkout.project)
+            if not project_conflicts:
+                return MergeOutcome(status="failed", detail=output[-2000:])
             paths = await _reproduce_conflict_in_branch(checkout)
-            return MergeOutcome(status="conflict", detail=output[-2000:], paths=paths)
+            return MergeOutcome(
+                status="conflict", detail=output[-2000:], paths=paths or project_conflicts
+            )
+
+
+async def _has_anything_to_merge(checkout: BranchCheckout) -> bool:
+    """Whether the branch holds work the project does not.
+
+    Commits it is ahead by, or an uncommitted working tree that is about to
+    become one. A base branch that cannot be compared counts as "something" —
+    proceeding to a merge that fails honestly beats claiming there is nothing
+    there."""
+    code, dirty = await worktrees.git("status", "--porcelain", cwd=checkout.path)
+    if code == 0 and dirty.strip():
+        return True
+    ahead = await unmerged_commits(checkout)
+    return ahead is None or ahead > 0
+
+
+async def _commit_project(checkout: BranchCheckout) -> tuple[bool, str]:
+    """Commits the project's own uncommitted work. False with git's output
+    when it did not land."""
+    code, output = await worktrees.git("add", "-A", cwd=checkout.project)
+    if code != 0:
+        return False, output
+    code, output = await worktrees.git(
+        *worktrees.IDENTITY, "commit", "-m",
+        f"ANA: {checkout.base_branch} 작업 저장 (머지 전)",
+        cwd=checkout.project,
+    )
+    if code != 0:
+        return False, output
+    code, remaining = await worktrees.git("status", "--porcelain", cwd=checkout.project)
+    return (code != 0 or not remaining.strip()), output
+
+
+async def conflicted_paths(path: str) -> tuple[str, ...]:
+    """The paths a checkout has left in conflict, as git reports them."""
+    code, names = await worktrees.git(
+        "diff", "--name-only", "--diff-filter=U", cwd=path
+    )
+    if code != 0:
+        return ()
+    return tuple(line for line in names.splitlines() if line.strip())
 
 
 async def _reproduce_conflict_in_branch(checkout: BranchCheckout) -> tuple[str, ...]:
@@ -193,26 +271,26 @@ async def _reproduce_conflict_in_branch(checkout: BranchCheckout) -> tuple[str, 
             *worktrees.IDENTITY, "merge", "--no-edit", checkout.base_branch,
             cwd=checkout.path,
         )
-    code, names = await worktrees.git(
-        "diff", "--name-only", "--diff-filter=U", cwd=checkout.path
-    )
-    if code != 0:
-        return ()
-    return tuple(line for line in names.splitlines() if line.strip())
+    return await conflicted_paths(checkout.path)
 
 
-async def unmerged_commits(checkout: BranchCheckout) -> int:
-    """How many commits the branch has that its base does not."""
+async def unmerged_commits(checkout: BranchCheckout) -> Optional[int]:
+    """How many commits the branch has that its base does not, or None when
+    git cannot say.
+
+    None is not zero. `rev-list base..branch` fails whenever the base branch
+    no longer resolves — renamed, deleted, the project moved — and answering
+    "nothing unmerged" there let a delete drop the only copy of the work."""
     code, output = await worktrees.git(
         "rev-list", "--count", f"{checkout.base_branch}..{checkout.branch}",
         cwd=checkout.project,
     )
     if code != 0:
-        return 0
+        return None
     try:
         return int(output.strip())
     except ValueError:
-        return 0
+        return None
 
 
 async def remove(checkout: BranchCheckout, *, force: bool = False) -> None:
@@ -222,10 +300,18 @@ async def remove(checkout: BranchCheckout, *, force: bool = False) -> None:
     is the only copy of that work, and deleting it is not recoverable."""
     if not force:
         ahead = await unmerged_commits(checkout)
+        if ahead is None:
+            # Cannot tell is not permission. The guard protects the only copy
+            # of the work, so it refuses rather than guessing.
+            raise BranchError(
+                f"이 브랜치를 「{checkout.base_branch}」와 비교할 수 없다 — 그 "
+                "브랜치가 이름이 바뀌었거나 없어진 것 같다. 무엇을 잃는지 알 수 "
+                "없으니 지우지 않았다. 확인하고 정말 버릴 거면 강제 삭제를 선택해라."
+            )
         if ahead:
             raise BranchError(
-                f"아직 main에 없는 커밋이 {ahead}개 있다. 머지하거나, 보관함에 "
-                "넣거나, 정말 버릴 거면 강제 삭제를 선택해라."
+                f"아직 「{checkout.base_branch}」에 없는 커밋이 {ahead}개 있다. "
+                "머지하거나, 보관함에 넣거나, 정말 버릴 거면 강제 삭제를 선택해라."
             )
     await worktrees.git(
         "worktree", "remove", "--force", checkout.path, cwd=checkout.project

@@ -152,6 +152,14 @@ A branch row's id is derived from the project id and the branch name
 branch is addressable at `/[session]` like any workspace and the id reads as
 what it is. It is subject to the same reserved-id and slug rules.
 
+The **slug is de-duplicated too**, not only the id: it is the checkout's
+folder name and the git branch's name, so a taken slug has to become
+`<slug>-2` or the second branch is refused for a name its user never used.
+And because `slugify` keeps only `[a-z0-9._-]`, a Korean name — which is what
+this UI is written in — survives as nothing at all, so a name with no ASCII
+in it slugs to `branch-<8 hex of the name>`. Without that, every branch of a
+project contends for one slug and a project can hold exactly one.
+
 ### Creating a branch
 
 From the project row in the sidebar. Inputs: a name (and optionally an icon).
@@ -188,6 +196,12 @@ so the fixed order cannot deadlock). Then:
 1. Refuse when the project checkout is no longer on the branch's recorded
    `base_branch` — the user moved it, and merging into wherever it now sits is
    a guess (`status: "moved"`).
+1. Refuse when the *branch* checkout still has unresolved conflicts from an
+   earlier attempt (`status: "unresolved"`). This one is load-bearing:
+   committing a mid-merge tree runs `git add -A`, which marks a conflicted
+   file resolved **with its markers still in it**, and the merge that follows
+   would put `<<<<<<<` into main. The one thing that moves this forward is the
+   branch's agent finishing in its own conversation.
 2. Refuse when the project checkout has uncommitted changes
    (`status: "dirty"`), **unless** the caller passes `commit_project`, in
    which case those changes are committed first with an ANA message. This is
@@ -203,7 +217,11 @@ so the fixed order cannot deadlock). Then:
 5. On success: report it. The branch row, its checkout, and its conversation
    all stay — merging is not deleting. The user removes the branch when done
    with it.
-6. On conflict: `git merge --abort` in the project, so main is never left in a
+6. On a failure that is **not** a conflict — a git timeout, a hook, a stale
+   `index.lock` — abort and report it as `status: "failed"`, touching nothing
+   in the branch. Calling every non-zero exit a conflict sent the branch's
+   agent looking for markers that were never there.
+7. On conflict: `git merge --abort` in the project, so main is never left in a
    conflicted state, and then **reproduce the conflict inside the branch
    checkout** by running `git merge <base_branch>` there and leaving it
    conflicted. The conflict is then handed to the branch's own lead agent as a
@@ -211,7 +229,7 @@ so the fixed order cannot deadlock). Then:
    branch's conversation and clicks merge again; the branch now contains main,
    so the second merge goes through.
 
-Step 6 is the one place the merge touches the branch checkout, and it is
+Step 7 is the one place the merge touches the branch checkout, and it is
 deliberate. The branch's lead agent is confined by the gate to its own
 checkout — it cannot read the project folder, which is correct — so a conflict
 described to it in prose, with `--abort` having erased every marker, is a task
@@ -229,6 +247,10 @@ Two outcomes the UI must distinguish:
   Refuse by default and say so; the user can archive it instead (the row and
   conversation stay, out of the main list), or confirm an explicit
   force-delete.
+- The comparison **cannot be made** — `rev-list <base>..<branch>` fails
+  because the base branch was renamed or deleted → also a refusal. "Cannot
+  tell" is not permission: answering zero there let an unforced delete drop
+  commits that existed nowhere else.
 
 Deleting the **project** takes its branches with it, force-deleted: leaving
 the rows behind would orphan conversations that are unreachable from a sidebar

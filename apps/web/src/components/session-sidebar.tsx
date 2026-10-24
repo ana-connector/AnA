@@ -195,44 +195,68 @@ export function SessionSidebar({
     () => visible.filter((item) => item.parent_id === null),
     [visible]
   );
-  /** A project's branches, in the order the server listed them. */
+  /** A project's branches, in the order the server listed them, split by the
+   *  archive exactly as projects are: archiving a branch has to move it, or
+   *  the control does nothing and the user has no way to tell. */
   const branchesOf = useMemo(() => {
-    const byParent = new Map<string, WorkspaceSummary[]>();
+    const byParent = new Map<string, { live: WorkspaceSummary[]; filed: WorkspaceSummary[] }>();
     for (const item of visible) {
       if (!item.parent_id) continue;
-      const kin = byParent.get(item.parent_id);
-      if (kin) kin.push(item);
-      else byParent.set(item.parent_id, [item]);
+      let kin = byParent.get(item.parent_id);
+      if (!kin) byParent.set(item.parent_id, (kin = { live: [], filed: [] }));
+      (item.archived ? kin.filed : kin.live).push(item);
     }
     return byParent;
   }, [visible]);
 
   // The filter applies to both lists, so searching still finds something you
-  // archived — it just stays under the archive heading. Only projects are
-  // sorted into the two groups: a branch is listed under its own project,
-  // wherever that project sits.
+  // archived — it just stays under the archive heading. A project appears in
+  // the archive when it is archived itself, and also when an archived branch
+  // of a live project needs somewhere to be listed.
   const active = useMemo(() => projects.filter((item) => !item.archived), [projects]);
-  const archived = useMemo(() => projects.filter((item) => item.archived), [projects]);
+  const archived = useMemo(
+    () =>
+      projects.filter(
+        (item) => item.archived || (branchesOf.get(item.id)?.filed.length ?? 0) > 0
+      ),
+    [projects, branchesOf]
+  );
 
-  // Asked once per project, not per render: the answer is about the folder on
-  // disk, and the sidebar refetches its list after every turn.
+  // Asked once per project: the answer is about the folder on disk, and each
+  // call shells out to git on the server. `asked` is a ref rather than state
+  // so that resolving one project does not re-run the effect and re-fire the
+  // requests for every project still in flight.
+  const asked = useRef(new Set<string>());
+  const projectIds = useMemo(() => projects.map((item) => item.id).join("\u0000"), [projects]);
   useEffect(() => {
     let live = true;
-    for (const project of projects) {
-      if (project.id in canBranch) continue;
-      void fetchBranchCapability(project.id).then((capability) => {
+    for (const id of projectIds ? projectIds.split("\u0000") : []) {
+      if (asked.current.has(id)) continue;
+      asked.current.add(id);
+      void fetchBranchCapability(id).then((capability) => {
         if (!live) return;
-        setCanBranch((previous) =>
-          project.id in previous
-            ? previous
-            : { ...previous, [project.id]: capability.can_branch ? "" : capability.reason }
-        );
+        setCanBranch((previous) => ({
+          ...previous,
+          [id]: capability.can_branch ? "" : capability.reason,
+        }));
       });
     }
     return () => {
       live = false;
     };
-  }, [projects, canBranch]);
+  }, [projectIds]);
+
+  // A "cannot branch" answer can stop being true — the user may `git init`
+  // the folder — so those few are asked again when the list reloads. A "yes"
+  // is not re-asked: almost every project is a repository (ANA git-inits the
+  // ones it creates), and each question shells out to git on the server.
+  useEffect(() => {
+    for (const [id, reason] of Object.entries(canBranch)) {
+      if (reason !== "") asked.current.delete(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reloadKey is the
+    // signal; re-running on canBranch itself would loop.
+  }, [reloadKey]);
 
   // Archiving the workspace you are in must not hide the conversation you are
   // reading: while the open one sits in the archive the group stays open, no
@@ -338,8 +362,11 @@ export function SessionSidebar({
    *  is what clicking a workspace has always done. There is no separate
    *  "main" child row — it would cost a row on every project and make the
    *  project row click-dead. */
-  const projectRows = (project: WorkspaceSummary, selectable = true) => {
-    const kin = branchesOf.get(project.id) ?? [];
+  const projectRows = (
+    project: WorkspaceSummary,
+    kin: WorkspaceSummary[],
+    selectable = true
+  ) => {
     const folded = collapsed.has(project.id);
     const reason = canBranch[project.id];
     return (
@@ -489,7 +516,9 @@ export function SessionSidebar({
               </p>
             ) : (
               <div className="flex flex-col gap-1">
-                {active.map((item) => projectRows(item))}
+                {active.map((item) =>
+                  projectRows(item, branchesOf.get(item.id)?.live ?? [])
+                )}
               </div>
             )}
 
@@ -522,7 +551,15 @@ export function SessionSidebar({
 
               {archiveExpanded && (
                 <div className="flex flex-col gap-1 pt-1">
-                  {archived.map((item) => projectRows(item, false))}
+                  {archived.map((item) => {
+                    const group = branchesOf.get(item.id);
+                    // An archived project takes all of its branches with it;
+                    // a live one leaves only its archived branches here.
+                    const kin = item.archived
+                      ? [...(group?.live ?? []), ...(group?.filed ?? [])]
+                      : group?.filed ?? [];
+                    return projectRows(item, kin, false);
+                  })}
                 </div>
               )}
             </SidebarGroupContent>

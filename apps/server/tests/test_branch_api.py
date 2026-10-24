@@ -212,6 +212,91 @@ def test_deleting_a_branch_with_unmerged_work_needs_force(client, project_in_rep
     assert not Path(branch["path"]).exists()
 
 
+def test_merging_a_project_is_a_422_not_a_404(client, project_in_repo):
+    """A project is a real workspace, so "that is not a branch" is something
+    the caller can fix — 404 reads as "no such thing"."""
+    project_id, _ = project_in_repo
+
+    response = client.post(f"/workspaces/{project_id}/merge")
+
+    assert response.status_code == 422 and response.json()["detail"]
+
+
+def test_a_second_merge_press_reports_the_unresolved_conflict(client, project_in_repo, submitted):
+    project_id, folder = project_in_repo
+    branch = client.post(
+        f"/workspaces/{project_id}/branches", json={"name": "auth"}
+    ).json()
+    (Path(branch["path"]) / "a.txt").write_text("from branch\n", encoding="utf-8")
+    (folder / "a.txt").write_text("from main\n", encoding="utf-8")
+    _git("commit", "-am", "main moves", cwd=folder)
+    assert client.post(f"/workspaces/{branch['id']}/merge").json()["status"] == "conflict"
+
+    body = client.post(f"/workspaces/{branch['id']}/merge").json()
+
+    assert body["status"] == "unresolved"
+    assert body["paths"] == ["a.txt"]
+    assert "<<<<<<<" not in (folder / "a.txt").read_text(encoding="utf-8")
+    # Only the first press handed the agent a turn; pressing again does not
+    # queue the same job twice.
+    assert len(submitted) == 1
+
+
+def test_deleting_a_branch_with_purge_false_keeps_its_turns(
+    client, project_in_repo, workspace_pool
+):
+    """`purge=false` is how a caller says to keep the conversation. The branch
+    path used to ignore it and purge anyway."""
+    import asyncio
+
+    from packages.memory.db import EMBEDDING_DIMENSIONS
+
+    project_id, _ = project_in_repo
+    branch = client.post(
+        f"/workspaces/{project_id}/branches", json={"name": "auth"}
+    ).json()
+
+    async def add_turn():
+        async with workspace_pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO turns (thread_id, agent, prompt, response, embedding) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (branch["id"], "claude", "q", "a", str([0.0] * EMBEDDING_DIMENSIONS)),
+            )
+
+    async def count_turns() -> int:
+        async with workspace_pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT count(*) FROM turns WHERE thread_id = %s", (branch["id"],)
+            )
+            return (await cur.fetchone())[0]
+
+    asyncio.run(add_turn())
+
+    assert client.delete(f"/workspaces/{branch['id']}?purge=false").status_code == 200
+
+    assert asyncio.run(count_turns()) == 1
+
+
+def test_deleting_a_branch_stops_its_container(client, project_in_repo, monkeypatch):
+    """The container is named after the workspace id, so one left running
+    outlives the thing that asked for it and holds its published ports."""
+    stopped: list[str] = []
+
+    async def stop_workspace(workspace_id):
+        stopped.append(workspace_id)
+
+    monkeypatch.setattr("apps.server.app.main.stop_workspace", stop_workspace)
+    project_id, _ = project_in_repo
+    branch = client.post(
+        f"/workspaces/{project_id}/branches", json={"name": "auth"}
+    ).json()
+
+    assert client.delete(f"/workspaces/{branch['id']}").status_code == 200
+
+    assert stopped == [branch["id"]]
+
+
 def test_deleting_a_project_removes_its_branches(client, project_in_repo):
     project_id, _ = project_in_repo
     branch = client.post(

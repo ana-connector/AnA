@@ -10,6 +10,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import {
+  RequestError,
   forgetWorkspace,
   mergeBranch,
   updateWorkspace,
@@ -120,9 +121,11 @@ export function WorkspaceEditor({
     } catch (e) {
       // A branch that still holds unmerged commits is refused rather than
       // deleted: that branch is the only copy of that work. Offer the force
-      // instead of hiding the refusal behind a generic error.
+      // instead of hiding the refusal behind a generic error — but only for
+      // that refusal. Arming it after a 500 or a dropped connection would
+      // force past a guard the user never actually hit.
       setError(e instanceof Error ? e.message : String(e));
-      if (isBranch) setForceDelete(true);
+      if (isBranch && e instanceof RequestError && e.status === 409) setForceDelete(true);
       setConfirming(false);
     } finally {
       setDeleting(false);
@@ -160,7 +163,11 @@ export function WorkspaceEditor({
       case "missing":
         return `이 브랜치의 체크아웃이 디스크에 없다: ${result.detail}`;
       case "conflict":
-        return `충돌: ${result.paths.join(", ")} — ${result.detail}`;
+        return `충돌: ${result.paths.join(", ")}`;
+      case "unresolved":
+        return `아직 해결되지 않은 충돌이 있다: ${result.paths.join(", ")} — 이 브랜치의 대화에서 끝내야 머지된다.`;
+      case "failed":
+        return `git이 머지를 거부했다. 아무것도 바뀌지 않았다:\n${result.detail}`;
       default:
         return result.detail || result.status;
     }
@@ -210,7 +217,14 @@ export function WorkspaceEditor({
             </FieldDescription>
           </Field>
           <Field orientation="horizontal">
-            <Button size="sm" disabled={merging} onClick={() => void mergeIntoMain()}>
+            {/* Disabled while a conflict is still open: pressing again
+                cannot merge, and the only thing that moves it forward is the
+                branch's agent finishing in its own conversation. */}
+            <Button
+              size="sm"
+              disabled={merging || merge?.status === "unresolved"}
+              onClick={() => void mergeIntoMain()}
+            >
               {merging ? "머지 중…" : `${workspace.base_branch}으로 머지`}
             </Button>
             {/* The project tree is dirty most of the time — main's lead agent

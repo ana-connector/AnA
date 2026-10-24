@@ -23,6 +23,10 @@ from packages.orchestrator.workspaces import (
 )
 
 
+class NoSuchBranch(BranchError):
+    """The id names nothing at all — a 404 rather than something to fix."""
+
+
 def checkout_for(project: Workspace, branch_row: Workspace) -> BranchCheckout:
     return BranchCheckout(
         path=branch_row.path,
@@ -45,8 +49,7 @@ async def create_branch(
     if project.parent_id is not None:
         raise BranchError("브랜치 아래에는 브랜치를 만들 수 없다. 한 단계까지다.")
 
-    slug = branches.slug_for(name)
-    checkout = await branches.create(project.path, slug)
+    slug, checkout = await _create_checkout(project.path, branches.slug_for(name))
     try:
         branch = await create_workspace(
             pool,
@@ -75,14 +78,38 @@ async def create_branch(
     return await get_workspace(pool, branch.id) or branch
 
 
+async def _create_checkout(
+    project_path: str, slug: str
+) -> tuple[str, BranchCheckout]:
+    """The checkout, and the slug it ended up with.
+
+    The id is de-duplicated by `_unique_id`, but the checkout path and the git
+    branch name are the slug itself, so the slug has to be de-duplicated too —
+    otherwise a second branch is refused for a name its user never used. The
+    first failure that is not a collision is raised as it is."""
+    for suffix in range(1, 100):
+        candidate = slug if suffix == 1 else f"{slug}-{suffix}"
+        try:
+            return candidate, await branches.create(project_path, candidate)
+        except BranchError:
+            # A collision is the only reason to try the next name. Anything
+            # else — not a repository, no commits — fails the same way for
+            # every candidate, so ask once whether this is a collision at all.
+            if await branches.can_branch(project_path) != "":
+                raise
+    raise BranchError(f"「{slug}」로 쓸 수 있는 이름을 찾지 못했다.")
+
+
 async def _branch_and_project(
     pool: AsyncConnectionPool, branch_id: str
 ) -> tuple[Workspace, Workspace]:
     branch = await get_workspace(pool, branch_id)
     if branch is None:
-        raise BranchError("그런 브랜치가 없다.")
+        raise NoSuchBranch("그런 브랜치가 없다.")
     if branch.parent_id is None:
-        raise BranchError("브랜치가 아니라 프로젝트다.")
+        # A real workspace, just not a branch — something the caller can fix,
+        # which is not what "no such thing" says.
+        raise BranchError("브랜치가 아니라 프로젝트다. 머지할 브랜치를 골라라.")
     project = await get_workspace(pool, branch.parent_id)
     if project is None:
         raise BranchError("이 브랜치의 프로젝트가 없다.")
@@ -101,14 +128,19 @@ async def merge_branch(
 
 
 async def delete_branch(
-    pool: AsyncConnectionPool, branch_id: str, *, force: bool = False
+    pool: AsyncConnectionPool,
+    branch_id: str,
+    *,
+    force: bool = False,
+    purge: bool = True,
 ) -> None:
-    """Removes the checkout, the git branch, and the row with its
-    conversation. Refuses while the branch holds unmerged commits, unless
-    forced — that branch is the only copy of that work."""
+    """Removes the checkout, the git branch, and the row — with its
+    conversation unless `purge` is false. Refuses while the branch holds
+    unmerged commits, unless forced: that branch is the only copy of that
+    work."""
     branch, project = await _branch_and_project(pool, branch_id)
     await branches.remove(checkout_for(project, branch), force=force)
-    await forget_workspace(pool, branch_id)
+    await forget_workspace(pool, branch_id, purge=purge)
 
 
 async def delete_project_branches(pool: AsyncConnectionPool, project_id: str) -> None:

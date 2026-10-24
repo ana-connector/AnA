@@ -149,6 +149,33 @@ async def test_two_projects_can_each_have_a_branch_of_the_same_name(
     assert ids == ["one--auth", "two--auth"]
 
 
+async def test_korean_named_branches_do_not_collide(workspace_pool, repo):
+    """slugify keeps nothing from Hangul, so every Korean name used to slug to
+    the same fallback — one branch per project, in a Korean UI."""
+    project = await create_workspace(workspace_pool, name="proj", path=str(repo))
+
+    first = await create_branch(workspace_pool, project_id=project.id, name="인증")
+    second = await create_branch(workspace_pool, project_id=project.id, name="결제 연동")
+
+    assert first.branch != second.branch
+    assert first.path != second.path
+    assert {w.name for w in await list_branches(workspace_pool, project.id)} == {
+        "인증", "결제 연동",
+    }
+
+
+async def test_two_branches_with_the_same_name_get_distinct_checkouts(
+    workspace_pool, repo
+):
+    project = await create_workspace(workspace_pool, name="proj", path=str(repo))
+
+    first = await create_branch(workspace_pool, project_id=project.id, name="auth")
+    second = await create_branch(workspace_pool, project_id=project.id, name="auth")
+
+    assert first.branch != second.branch
+    assert Path(first.path).is_dir() and Path(second.path).is_dir()
+
+
 async def test_a_failed_registration_leaves_no_orphan_checkout(
     workspace_pool, repo, monkeypatch
 ):

@@ -411,7 +411,22 @@ export async function forgetWorkspace(id: string, force = false): Promise<void> 
   // the workspace still in it.
   if (!response.ok) {
     const detail = await response.json().then((body) => body?.detail).catch(() => null);
-    throw new Error(detail ?? `workspace delete failed: ${response.status}`);
+    throw new RequestError(
+      detail ?? `workspace delete failed: ${response.status}`,
+      response.status
+    );
+  }
+}
+
+/** An error that still knows the status that caused it.
+ *
+ *  The caller has to tell a refusal apart from a fault: a 409 on a branch
+ *  delete means "it holds unmerged commits, press force", and offering that
+ *  after a 500 or a dropped connection would skip a guard the user never hit. */
+export class RequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "RequestError";
   }
 }
 

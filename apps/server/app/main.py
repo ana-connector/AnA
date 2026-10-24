@@ -81,6 +81,7 @@ from packages.orchestrator.settings import (
 )
 from packages.orchestrator.branches import BranchError
 from packages.orchestrator.branch_store import (
+    NoSuchBranch,
     branch_capability,
     create_branch,
     delete_branch,
@@ -430,10 +431,17 @@ async def merge_branch_endpoint(
         outcome = await merge_branch(
             pool, branch_id, commit_project=(body or BranchMerge()).commit_project
         )
-    except BranchError as exc:
+    except NoSuchBranch as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BranchError as exc:
+        # The workspace exists, it is just not a branch — something the caller
+        # can fix, which is not what a 404 says.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     detail = outcome.detail
+    # Only an actual conflict is handed over. `unresolved` means the agent is
+    # already on it, and `failed` has no markers for anyone to resolve — a
+    # turn for either would send it looking for work that is not there.
     if outcome.status == "conflict":
         detail = await _hand_conflict_to_branch(request.app, branch_id, outcome)
     return {"status": outcome.status, "detail": detail, "paths": list(outcome.paths)}
@@ -501,18 +509,16 @@ async def delete_workspace(
     existing = await get_workspace(pool, workspace_id)
     if existing is not None and existing.parent_id is not None:
         try:
-            await delete_branch(pool, workspace_id, force=force)
+            await delete_branch(pool, workspace_id, force=force, purge=purge)
         except BranchError as exc:
             # 409, not 422: the request is fine, the branch's state is what
             # says no, and the user can retry it with force.
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"status": "ok", "id": workspace_id}
-
-    if existing is not None:
-        await delete_project_branches(pool, workspace_id)
-
-    if not await forget_workspace(pool, workspace_id, purge=purge):
-        raise HTTPException(status_code=404, detail="no such workspace")
+    else:
+        if existing is not None:
+            await delete_project_branches(pool, workspace_id)
+        if not await forget_workspace(pool, workspace_id, purge=purge):
+            raise HTTPException(status_code=404, detail="no such workspace")
     # The container is named after the workspace, so one left running would
     # outlive the thing that asked for it — holding its published ports, and
     # waiting to be inherited by whatever next takes this id.

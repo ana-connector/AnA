@@ -249,6 +249,11 @@ the archive and the gate's confinement the same way a workspace does.
   The gate keeps that agent inside its own checkout, so markers in files it
   owns are the only form of the problem it can act on — and `main` is never
   the tree left broken.
+- A branch that still has an unresolved conflict is refused rather than
+  merged. Committing a mid-merge tree runs `git add -A`, which marks a
+  conflicted file resolved with its markers still in it, and the merge that
+  follows would put `<<<<<<<` into main. A git failure that is *not* a
+  conflict — a timeout, a hook — is reported as such and touches nothing.
 - Deleting a branch is refused while it holds commits main does not: that
   branch is the only copy of that work. Deleting a project takes its branches,
   checkouts and all.
