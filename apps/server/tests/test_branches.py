@@ -55,6 +55,27 @@ async def test_two_branches_with_the_same_name_do_not_collide(repo):
     assert (Path(first.path) / "a.txt").read_text(encoding="utf-8") == "first\n"
 
 
+async def test_branches_can_be_switched_off(repo, monkeypatch):
+    """ANA_BRANCHES=off puts a deployment back to one lead agent per folder.
+    Read per call, as the worker-worktree switch is, so it can be flipped
+    without a restart."""
+    monkeypatch.setenv("ANA_BRANCHES", "off")
+
+    assert not branches.enabled()
+    reason = await branches.can_branch(str(repo))
+    assert reason != ""
+    with pytest.raises(branches.BranchError):
+        await branches.create(str(repo), "auth")
+    assert not (repo / ".ana" / "branches").exists()
+
+
+async def test_branches_are_on_by_default(repo, monkeypatch):
+    monkeypatch.delenv("ANA_BRANCHES", raising=False)
+
+    assert branches.enabled()
+    assert await branches.can_branch(str(repo)) == ""
+
+
 async def test_branch_refused_without_git(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()

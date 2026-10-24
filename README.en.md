@@ -187,6 +187,7 @@ what actually bounds it.
 | `CODEX_SANDBOX` | Codex's own sandbox mode. Leave unset under Docker: codex sandboxes through bubblewrap, which cannot start in a container ("bwrap: No permissions to create a new namespace"). The hook still runs and still denies, so the gate plus the container stays the enforcement boundary |
 | `ANA_WORKSPACE_ROOT` | Root new workspaces are created under (default `$ANA_WORKSPACE_DIR/sessions`) |
 | `ANA_SELF_WORKSPACE` | Absolute host path of AnA's own checkout, registered as the `ana-self` workspace. Unset (or not a directory) and the recursive workspace does not appear |
+| `ANA_BRANCHES` | Feature branches (default `on`). `off` disables "add branch" with the reason and puts this deployment back to one lead agent per folder; branches that already exist keep working, since they are ordinary workspace rows. Read per call, so it can be flipped without a restart |
 | `ANA_ROUTING_RULES` | Path to the routing rules (default `config/routing.yaml`) |
 | `ANA_FIVE_HOUR_TOKEN_BUDGET` / `ANA_WEEKLY_TOKEN_BUDGET` / `ANA_MONTHLY_TOKEN_BUDGET` | Budgets the status bar estimates against when the CLI reports no window of its own. Per agent: `ANA_<AGENT>_FIVE_HOUR_TOKEN_BUDGET`, `_WEEKLY_`, `_MONTHLY_` |
 | `ANA_TAPIE_FIVE_HOUR_USD_BUDGET` / `ANA_TAPIE_MONTHLY_USD_BUDGET` | TAPIE is capped in dollars, not tokens: $50 rolling over five hours and $1500 a month by default |
