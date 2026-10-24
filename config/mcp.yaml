@@ -117,3 +117,50 @@ servers:
       PYTHONUNBUFFERED: "1"
     roles: [lead]
     enabled: true
+
+  # ⑦ Branch — the agent managing its project's feature branches.
+  #
+  # Scoped to the project the conversation belongs to, the way `schedule` is
+  # scoped to the conversation: the gate resolves the token to one project and
+  # refuses everything outside it, so an agent cannot reach another project's
+  # branches (apps/server/app/gate.py, /gate/branches).
+  #
+  # `lead` only, and deliberately. A branch is a structural decision about
+  # where work happens; a worker runs inside one task of one turn, and two
+  # workers of the same fan-out creating branches is how a project grows
+  # checkouts nobody asked for. Every adapter can be the lead, so this still
+  # reaches claude, codex, cursor, kimi and opencode alike.
+  - name: branch
+    description: "이 프로젝트의 기능 브랜치 생성/이름변경/머지/삭제 (ANA 자체 서버)"
+    command: python
+    args: ["-m", "packages.mcp.servers.branch"]
+    env:
+      PYTHONPATH: "/app"
+      PYTHONUNBUFFERED: "1"
+    roles: [lead]
+    enabled: true
+
+  # ⑧ Figma — design layout and styling for the agent implementing a mockup.
+  #
+  # Not Figma's own MCP server, and the reason is worth recording. Figma ships
+  # two, and neither can work here:
+  #   - the Dev Mode server runs inside the Figma *desktop app* on
+  #     127.0.0.1:3845, and there is no Figma desktop app for Linux;
+  #   - the remote server at mcp.figma.com takes interactive OAuth only — it
+  #     rejects personal access tokens — and allowlists its clients.
+  # ANA spawns stdio servers and hands them secrets through the environment,
+  # which is a shape neither of those fits. This third-party server reads
+  # Figma's REST API with a personal access token, so it works headless.
+  #
+  # Secret-gated like `github`: without FIGMA_API_KEY registered under
+  # Settings → Secrets the entry disables itself quietly rather than failing
+  # at the agent's first call.
+  - name: figma
+    description: "Figma 디자인 레이아웃/스타일 조회 (figma-developer-mcp, 토큰 등록 시에만 활성)"
+    command: npx
+    args: ["-y", "figma-developer-mcp", "--stdio"]
+    env:
+      FIGMA_API_KEY: "{secret:FIGMA_API_KEY}"
+    requires_env: [FIGMA_API_KEY]
+    roles: [lead, worker]
+    enabled: true

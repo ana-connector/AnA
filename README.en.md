@@ -260,6 +260,20 @@ the archive and the gate's confinement the same way a workspace does.
   checkouts and all.
 - `POST /workspaces/{id}/branches`, `POST /workspaces/{id}/merge` and
   `GET /workspaces/{id}/branch-capability` back the UI.
+- **Agents manage branches too.** The `branch` MCP server (`list_branches`,
+  `create_branch`, `rename_branch`, `merge_branch`, `delete_branch`) makes
+  "this should be its own branch" something an agent does rather than asks a
+  person for. Scoped the way `schedule` is: the gate token says which
+  conversation is calling, the server resolves that to exactly one project,
+  and refuses everything outside it (`/gate/branches`). A branch's own agent
+  gets its parent project, so it can see its siblings and finish the merge it
+  was handed a conflict for. Lead-only — a branch is a structural decision
+  about where work happens, and two workers of one fan-out creating branches
+  is how a project grows checkouts nobody asked for. Every adapter can be the
+  lead, so it reaches claude, codex, cursor, kimi and opencode alike.
+- **The sidebar** folds each project into one compact header line (icon, name,
+  branch count) and lists the base branch beneath it with a `primary` badge,
+  then the feature branches. Adding a branch lives in the project's settings.
 
 ### The recursive workspace (AnA on AnA)
 

@@ -257,6 +257,19 @@ API의 `GET /metrics`는 Prometheus 형식을 직접 제공하므로 다른 곳�
   유일한 사본입니다. 프로젝트를 지우면 브랜치도 체크아웃까지 함께 사라집니다.
 - `POST /workspaces/{id}/branches`, `POST /workspaces/{id}/merge`,
   `GET /workspaces/{id}/branch-capability`가 UI를 뒷받침합니다.
+- **에이전트도 브랜치를 다룹니다.** `branch` MCP 서버(`list_branches`,
+  `create_branch`, `rename_branch`, `merge_branch`, `delete_branch`)가 있으므로
+  "이건 따로 브랜치에서 하자"가 사람에게 부탁하는 말이 아니라 실제 작업이 됩니다.
+  `schedule`과 같은 방식으로 범위가 묶입니다. 게이트 토큰이 어느 대화인지 알려주고,
+  서버는 그 대화가 속한 **프로젝트 하나**로 해석해 그 밖은 거부합니다
+  (`/gate/branches`). 브랜치의 에이전트에게는 부모 프로젝트가 잡히므로 형제 브랜치를
+  보고, 자기가 받은 충돌을 끝내고 다시 머지할 수 있습니다. 리드 전용입니다 — 브랜치는
+  작업이 어디서 일어날지에 대한 구조적 결정이고, 한 팬아웃의 워커 둘이 브랜치를 만들면
+  아무도 요청하지 않은 체크아웃이 쌓입니다. 어댑터는 claude·codex·cursor·kimi·opencode
+  모두 리드가 될 수 있으므로 전부에 연결됩니다.
+- **사이드바**는 프로젝트를 헤더 한 줄(아이콘, 이름, 브랜치 개수)로 접었다 펴고, 그
+  아래에 `primary` 뱃지가 붙은 베이스 브랜치와 기능 브랜치들을 둡니다. 브랜치 추가는
+  프로젝트 설정에 있습니다.
 
 ### 재귀 워크스페이스 (AnA 위의 AnA)
 

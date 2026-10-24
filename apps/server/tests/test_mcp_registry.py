@@ -120,8 +120,15 @@ def test_broken_registry_file_yields_an_empty_registry_not_an_exception(tmp_path
 def test_shipped_registry_exposes_read_tools_to_lead():
     """The gate grants lead tool calls only while execute mode is active."""
     registry = load_registry()
-    assert set(registry.names_for("lead")) == {"git", "postgres", "ask", "schedule", "delegate"}
-    assert set(registry.names_for("worker")) == {"git", "postgres", "github", "ask"}
+    # `branch` is lead-only on purpose: a branch is a structural decision
+    # about where work happens, and two workers of one fan-out creating them
+    # is how a project grows checkouts nobody asked for.
+    assert set(registry.names_for("lead")) == {
+        "git", "postgres", "ask", "schedule", "delegate", "branch", "figma",
+    }
+    assert set(registry.names_for("worker")) == {
+        "git", "postgres", "github", "ask", "figma",
+    }
 
 
 def test_lead_is_told_to_delegate_worker_only_github_requests():
