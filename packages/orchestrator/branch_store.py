@@ -13,6 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 from packages.orchestrator import branches
 from packages.orchestrator.branches import BranchCheckout, BranchError, MergeOutcome
 from packages.orchestrator.workspaces import (
+    BRANCH_ID_SEPARATOR,
     Workspace,
     create_workspace,
     forget_workspace,
@@ -59,7 +60,7 @@ async def create_branch(
             branch=checkout.branch,
             base_branch=checkout.base_branch,
             # Scoped to the project, so "auth" under two projects is two rows.
-            workspace_id=f"{project.id}--{slug}",
+            workspace_id=f"{project.id}{BRANCH_ID_SEPARATOR}{slug}",
         )
     except Exception:
         # A row that never landed must not leave a checkout nobody can reach.
