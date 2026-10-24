@@ -44,6 +44,20 @@ ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAUL
 -- workspace is listed: the sidebar, the start page and its tab. Empty means
 -- no icon, which is what every workspace registered before this had.
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS icon TEXT NOT NULL DEFAULT '';
+-- Feature branches (see docs/superpowers/specs/2026-10-24-branch-workspaces-design.md).
+-- A branch is a workspace with a parent: its own lead agent, its own
+-- conversation, its own checkout — a git worktree under the project — and
+-- nothing else new. NULL parent means a project, which is what every
+-- workspace registered before this is.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS parent_id TEXT;
+-- The git branch this row's checkout is on. Empty for a project, whose
+-- branch is just whatever its checkout happens to be on.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS branch TEXT NOT NULL DEFAULT '';
+-- The project branch a branch was cut from, and the only one it merges back
+-- into. Recorded rather than re-read when merging: `git merge` in the project
+-- targets whatever HEAD is on, and a user who moved the project checkout to
+-- another branch should get a refusal, not a merge into the wrong place.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS base_branch TEXT NOT NULL DEFAULT '';
 """
 
 # A 64px PNG is a few kB; an SVG with a font in it is not. The limit is on the
@@ -126,6 +140,12 @@ class Workspace:
     system_prompt: str = ""
     archived: bool = False
     icon: str = ""
+    # A branch carries the project it belongs to, the git branch it works on,
+    # and the project branch it merges back into. A project carries none of
+    # the three.
+    parent_id: Optional[str] = None
+    branch: str = ""
+    base_branch: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -138,6 +158,9 @@ class Workspace:
             "system_prompt": self.system_prompt,
             "archived": self.archived,
             "icon": self.icon,
+            "parent_id": self.parent_id,
+            "branch": self.branch,
+            "base_branch": self.base_branch,
         }
 
 
@@ -185,12 +208,27 @@ async def _unique_id(pool: AsyncConnectionPool, base: str) -> str:
 
 
 async def create_workspace(
-    pool: AsyncConnectionPool, *, name: str, path: Optional[str] = None
+    pool: AsyncConnectionPool,
+    *,
+    name: str,
+    path: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    branch: str = "",
+    base_branch: str = "",
+    workspace_id: Optional[str] = None,
 ) -> Workspace:
     """Registers a workspace. `path` defaults to a folder named after it under
     ANA_WORKSPACE_ROOT; an explicit path is used as given, so an existing
-    project directory can be adopted."""
-    workspace_id = await _unique_id(pool, slugify(name))
+    project directory can be adopted.
+
+    With `parent_id` the row is a feature branch of that project rather than a
+    project of its own, and `branch` / `base_branch` say which git branch it
+    works on and which one it merges back into.
+
+    `workspace_id` overrides the id base, which is otherwise the slug of the
+    name. A branch needs it: slugifying a Korean name keeps nothing, so every
+    branch of every project would be contending for the id "workspace"."""
+    workspace_id = await _unique_id(pool, slugify(workspace_id or name))
     resolved = (
         str(Path(path).expanduser())
         if path
@@ -211,14 +249,27 @@ async def create_workspace(
             "그 밖의 경로를 쓰려면 docker-compose.yml에 해당 디렉토리를 마운트해야 한다."
         ) from exc
 
-    await _ensure_git(resolved)
+    # A branch checkout is already a worktree of its project's repository;
+    # running git twice to discover that is work for nothing.
+    if parent_id is None:
+        await _ensure_git(resolved)
 
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO workspaces (id, name, path) VALUES (%s, %s, %s)",
-            (workspace_id, name.strip() or workspace_id, resolved),
+            """
+            INSERT INTO workspaces (id, name, path, parent_id, branch, base_branch)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (workspace_id, name.strip() or workspace_id, resolved, parent_id, branch, base_branch),
         )
-    return Workspace(id=workspace_id, name=name.strip() or workspace_id, path=resolved)
+    return Workspace(
+        id=workspace_id,
+        name=name.strip() or workspace_id,
+        path=resolved,
+        parent_id=parent_id,
+        branch=branch,
+        base_branch=base_branch,
+    )
 
 
 async def _ensure_git(path: str) -> bool:
@@ -277,6 +328,9 @@ def _row_to_workspace(row) -> Workspace:
         system_prompt=row[6] or "",
         archived=bool(row[7]),
         icon=row[8] or "",
+        parent_id=row[9],
+        branch=row[10] or "",
+        base_branch=row[11] or "",
     )
 
 
@@ -285,13 +339,31 @@ async def get_workspace(pool: AsyncConnectionPool, workspace_id: str) -> Optiona
         cur = await conn.execute(
             """
             SELECT id, name, path, container_enabled, container_image, container_ports,
-                   system_prompt, archived, icon
+                   system_prompt, archived, icon, parent_id, branch, base_branch
             FROM workspaces WHERE id = %s
             """,
             (workspace_id,),
         )
         row = await cur.fetchone()
     return _row_to_workspace(row) if row else None
+
+
+async def list_branches(pool: AsyncConnectionPool, parent_id: str) -> list[Workspace]:
+    """The project's branches, by name.
+
+    Ordered like the sidebar lists them, so the caller that renders them and
+    the caller that deletes them walk the same order."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT id, name, path, container_enabled, container_image, container_ports,
+                   system_prompt, archived, icon, parent_id, branch, base_branch
+            FROM workspaces WHERE parent_id = %s ORDER BY lower(name), id
+            """,
+            (parent_id,),
+        )
+        rows = await cur.fetchall()
+    return [_row_to_workspace(row) for row in rows]
 
 
 async def set_container_settings(
@@ -495,6 +567,7 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             SELECT w.id, w.name, w.path, w.last_used_at,
                    w.container_enabled, w.container_image, w.container_ports,
                    w.system_prompt, w.archived, w.icon,
+                   w.parent_id, w.branch, w.base_branch,
                    COUNT(t.id) AS turn_count,
                    MAX(t.created_at) AS last_turn_at,
                    (ARRAY_AGG(t.agent ORDER BY t.created_at DESC, t.id DESC)
@@ -511,7 +584,8 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             LEFT JOIN turns t ON t.thread_id = w.id
             GROUP BY w.id, w.name, w.path, w.last_used_at,
                      w.container_enabled, w.container_image, w.container_ports,
-                     w.system_prompt, w.archived, w.icon
+                     w.system_prompt, w.archived, w.icon,
+                     w.parent_id, w.branch, w.base_branch
             ORDER BY lower(w.name), w.id
             LIMIT %s
             """,
@@ -530,10 +604,13 @@ async def list_workspaces(pool: AsyncConnectionPool, *, limit: int = 500) -> lis
             "system_prompt": r[7] or "",
             "archived": bool(r[8]),
             "icon": r[9] or "",
-            "turn_count": r[10],
-            "last_turn_at": r[11].isoformat() if r[11] else None,
-            "last_agent": r[12],
-            "total_tokens": int(r[13] or 0),
+            "parent_id": r[10],
+            "branch": r[11] or "",
+            "base_branch": r[12] or "",
+            "turn_count": r[13],
+            "last_turn_at": r[14].isoformat() if r[14] else None,
+            "last_agent": r[15],
+            "total_tokens": int(r[16] or 0),
         }
         for r in rows
     ]

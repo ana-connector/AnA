@@ -12,6 +12,12 @@ incoming CLI continues the work instead of starting cold.
 The unit you manage is a **workspace**: a folder, the one lead agent that works
 in it, and that agent's ongoing conversation.
 
+A project can hold **feature branches**. Each has its own checkout (a git
+worktree inside the project folder), its own lead agent and its own
+conversation, so several features move at once without contending for the same
+files. `main` has a lead agent too — it is the project itself. A branch's work
+reaches main when you press merge.
+
 - **Stack**: Python (FastAPI + LangGraph + Postgres/pgvector) · TypeScript
   (Next.js, ANA's own UI) · Docker Compose
 - **Design docs**: `docs/plans/`
@@ -216,6 +222,43 @@ behind one name.
   `WS /ws/chat?workspace=<id>` opens one (`thread_id=` is still accepted).
 - An id that was never registered is adopted rather than rejected, so
   conversations from before workspaces existed keep working.
+
+### Feature branches
+
+A branch is a workspace with a parent. There is no second table and no second
+id space, so it gets a lead agent, a conversation, a system prompt, an icon,
+the archive and the gate's confinement the same way a workspace does.
+
+- The checkout is a git worktree at `<project>/.ana/branches/<name>`, on the
+  branch `ana/branch/<name>`. Unlike `.ana/worktrees/`, where a turn's
+  sub-agents get a checkout that is created and removed inside that turn, a
+  branch checkout lives until you delete it.
+- The sidebar lists branches indented under their project. The project row
+  *is* `main`: clicking it opens main's conversation, as it always has.
+- A merge happens only when you press it, and only into the base branch
+  recorded when the branch was created. If the project checkout has moved to
+  another branch, the merge is refused rather than aimed somewhere else.
+- Main's lead agent edits the project folder directly and ANA never commits
+  for it, so the project tree is normally dirty. A merge therefore refuses
+  first and offers "commit and merge" beside the refusal: committing someone's
+  half-finished work in their own repository without asking is the other wrong
+  answer.
+- A conflict is never resolved automatically. The merge is aborted in the
+  project, the base branch is merged *into* the branch checkout to leave real
+  conflict markers there, and the branch's own lead agent is handed the job.
+  The gate keeps that agent inside its own checkout, so markers in files it
+  owns are the only form of the problem it can act on — and `main` is never
+  the tree left broken.
+- A branch that still has an unresolved conflict is refused rather than
+  merged. Committing a mid-merge tree runs `git add -A`, which marks a
+  conflicted file resolved with its markers still in it, and the merge that
+  follows would put `<<<<<<<` into main. A git failure that is *not* a
+  conflict — a timeout, a hook — is reported as such and touches nothing.
+- Deleting a branch is refused while it holds commits main does not: that
+  branch is the only copy of that work. Deleting a project takes its branches,
+  checkouts and all.
+- `POST /workspaces/{id}/branches`, `POST /workspaces/{id}/merge` and
+  `GET /workspaces/{id}/branch-capability` back the UI.
 
 ### The recursive workspace (AnA on AnA)
 

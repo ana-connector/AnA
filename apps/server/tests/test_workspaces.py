@@ -19,6 +19,7 @@ from packages.orchestrator.workspaces import (
     ensure_workspace,
     forget_workspace,
     get_workspace,
+    list_branches,
     list_workspaces,
     rename_workspace,
     run_workspace_migrations,
@@ -637,3 +638,90 @@ async def test_a_minted_conversation_gets_a_readable_name(
     assert minted.name == "새 대화 (9f1c2b)"
     # An id a human chose is still its own name.
     assert named.name == "legacy-thread"
+
+
+@pytest.mark.asyncio
+async def test_a_plain_workspace_has_no_parent_and_no_branch(workspace_pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANA_WORKSPACE_ROOT", str(tmp_path / "ws"))
+
+    workspace = await create_workspace(workspace_pool, name="proj")
+
+    assert workspace.parent_id is None
+    assert workspace.branch == ""
+    assert workspace.base_branch == ""
+    assert (await get_workspace(workspace_pool, workspace.id)).parent_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_branch_row_records_its_parent_and_git_branch(workspace_pool, tmp_path):
+    project = await create_workspace(workspace_pool, name="proj", path=str(tmp_path / "proj"))
+
+    child = await create_workspace(
+        workspace_pool,
+        name="auth",
+        path=str(tmp_path / "proj" / ".ana" / "branches" / "auth"),
+        parent_id=project.id,
+        branch="ana/branch/auth",
+        base_branch="main",
+    )
+
+    stored = await get_workspace(workspace_pool, child.id)
+    assert stored.parent_id == project.id
+    assert stored.branch == "ana/branch/auth"
+    assert stored.base_branch == "main"
+    assert stored.as_dict()["parent_id"] == project.id
+
+
+@pytest.mark.asyncio
+async def test_listing_carries_parent_and_branch(workspace_pool, tmp_path):
+    project = await create_workspace(workspace_pool, name="proj", path=str(tmp_path / "proj"))
+    await create_workspace(
+        workspace_pool,
+        name="auth",
+        path=str(tmp_path / "proj" / "x"),
+        parent_id=project.id,
+        branch="ana/branch/auth",
+        base_branch="main",
+    )
+
+    rows = {row["id"]: row for row in await list_workspaces(workspace_pool)}
+
+    assert rows[project.id]["parent_id"] is None
+    branch_rows = [r for r in rows.values() if r["parent_id"] == project.id]
+    assert branch_rows[0]["branch"] == "ana/branch/auth"
+    assert branch_rows[0]["base_branch"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_list_branches_returns_only_this_projects_branches(workspace_pool, tmp_path):
+    one = await create_workspace(workspace_pool, name="one", path=str(tmp_path / "one"))
+    two = await create_workspace(workspace_pool, name="two", path=str(tmp_path / "two"))
+    await create_workspace(
+        workspace_pool, name="a", path=str(tmp_path / "one" / "a"),
+        parent_id=one.id, branch="ana/branch/a", base_branch="main",
+    )
+    await create_workspace(
+        workspace_pool, name="b", path=str(tmp_path / "two" / "b"),
+        parent_id=two.id, branch="ana/branch/b", base_branch="main",
+    )
+
+    assert [w.name for w in await list_branches(workspace_pool, one.id)] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_can_supply_the_id_base(workspace_pool, tmp_path):
+    project = await create_workspace(workspace_pool, name="proj", path=str(tmp_path / "proj"))
+
+    child = await create_workspace(
+        workspace_pool,
+        name="인증",
+        path=str(tmp_path / "proj" / "x"),
+        parent_id=project.id,
+        branch="ana/branch/auth",
+        base_branch="main",
+        workspace_id=f"{project.id}--auth",
+    )
+
+    # Without this, slugify("인증") keeps nothing ASCII, so every branch of
+    # every project would be fighting for the id "workspace".
+    assert child.id == "proj--auth"

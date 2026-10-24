@@ -79,6 +79,15 @@ from packages.orchestrator.settings import (
     write_routing,
     write_system_prompt,
 )
+from packages.orchestrator.branches import BranchError
+from packages.orchestrator.branch_store import (
+    NoSuchBranch,
+    branch_capability,
+    create_branch,
+    delete_branch,
+    delete_project_branches,
+    merge_branch,
+)
 from packages.orchestrator.workspaces import (
     SELF_WORKSPACE_ID,
     WorkspacePathError,
@@ -368,6 +377,105 @@ async def patch_workspace(request: Request, workspace_id: str, body: WorkspaceRe
     return {"status": "ok", **(updated.as_dict() if updated else {"id": workspace_id})}
 
 
+class BranchCreate(BaseModel):
+    name: str
+    # An emoji or a small image as a data URL, as for a workspace.
+    icon: str | None = None
+
+
+class BranchMerge(BaseModel):
+    # Main's lead agent edits the project folder directly and ANA never
+    # commits for it, so a project with uncommitted changes is the normal
+    # case. The merge refuses it; this is the user saying "commit it first".
+    commit_project: bool = False
+
+
+@app.post("/workspaces/{project_id}/branches")
+async def add_branch(request: Request, project_id: str, body: BranchCreate) -> dict:
+    """A feature branch of this project: its own checkout, its own lead agent,
+    its own conversation."""
+    try:
+        branch = await create_branch(
+            request.app.state.pool,
+            project_id=project_id,
+            name=body.name,
+            icon=body.icon or "",
+        )
+    except BranchError as exc:
+        # Every one of these is something the user can act on — not a git
+        # repository, a name already taken, a project that is itself a branch.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return branch.as_dict()
+
+
+@app.get("/workspaces/{workspace_id}/branch-capability")
+async def branch_capability_endpoint(request: Request, workspace_id: str) -> dict:
+    """Whether this workspace can host branches, and the reason when it
+    cannot — so the UI disables the button *and* says why."""
+    can, reason = await branch_capability(request.app.state.pool, workspace_id)
+    return {"can_branch": can, "reason": reason}
+
+
+@app.post("/workspaces/{branch_id}/merge")
+async def merge_branch_endpoint(
+    request: Request, branch_id: str, body: BranchMerge | None = None
+) -> dict:
+    """Merges the branch into its project.
+
+    A conflict is never resolved here. It is aborted in the project, left as
+    markers in the branch's own checkout, and handed to that branch's lead
+    agent as a turn: it has the context of the work that conflicts, and its
+    checkout is the only place the gate lets it work."""
+    pool = request.app.state.pool
+    try:
+        outcome = await merge_branch(
+            pool, branch_id, commit_project=(body or BranchMerge()).commit_project
+        )
+    except NoSuchBranch as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BranchError as exc:
+        # The workspace exists, it is just not a branch — something the caller
+        # can fix, which is not what a 404 says.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    detail = outcome.detail
+    # Only an actual conflict is handed over. `unresolved` means the agent is
+    # already on it, and `failed` has no markers for anyone to resolve — a
+    # turn for either would send it looking for work that is not there.
+    if outcome.status == "conflict":
+        detail = await _hand_conflict_to_branch(request.app, branch_id, outcome)
+    return {"status": outcome.status, "detail": detail, "paths": list(outcome.paths)}
+
+
+async def _hand_conflict_to_branch(app_, branch_id: str, outcome) -> str:
+    """Submits the conflict to the branch's own conversation.
+
+    Imported here rather than at module import, as the scheduler does and for
+    the same reason: websocket.py pulls in the adapters and the MCP wiring."""
+    from apps.server.app.websocket import ensure_runner
+
+    listed = "\n".join(f"- {path}" for path in outcome.paths) or "- (git 출력 참고)"
+    prompt = (
+        "main으로 머지하려다 충돌이 났다. 프로젝트 쪽 머지는 되돌렸고, 네 "
+        "체크아웃에 main을 머지해 두었으니 충돌 표시(<<<<<<<)는 네 작업 폴더의 "
+        f"이 파일들에 있다:\n{listed}\n\n"
+        "충돌을 해결하고 커밋해라. 끝나면 사용자가 머지를 다시 누른다.\n\n"
+        f"git이 남긴 출력:\n{outcome.detail}"
+    )
+    try:
+        runner = await ensure_runner(app_, branch_id)
+        if runner.busy:
+            return (
+                "충돌 났다. 이 브랜치 대화가 지금 다른 작업 중이라 넘기지 못했다 — "
+                "그 턴이 끝나면 다시 눌러라."
+            )
+        await runner.submit(prompt, "auto", True)
+    except Exception as exc:  # noqa: BLE001 - the conflict still has to be reported
+        logger.warning("could not hand the conflict to %s", branch_id, exc_info=True)
+        return f"충돌 났다. 브랜치 에이전트에게 넘기지 못했다: {exc}"
+    return "충돌 났다. 이 브랜치의 에이전트에게 해결을 맡겼다."
+
+
 @app.get("/workspaces/capabilities")
 async def workspace_capabilities() -> dict:
     """What this deployment can do with workspaces.
@@ -385,14 +493,32 @@ async def workspace_capabilities() -> dict:
 
 @app.delete("/workspaces/{workspace_id}")
 async def delete_workspace(
-    request: Request, workspace_id: str, purge: bool = True
+    request: Request, workspace_id: str, purge: bool = True, force: bool = False
 ) -> dict:
     """Deletes the workspace and, unless `purge=false`, its conversation —
     turns and checkpoints — so reopening the same id starts empty. The folder
     and the audit log stay: the user owns the files, and the audit log outlives
-    the conversation that caused it."""
-    if not await forget_workspace(request.app.state.pool, workspace_id, purge=purge):
-        raise HTTPException(status_code=404, detail="no such workspace")
+    the conversation that caused it.
+
+    A branch is deleted as a branch: its checkout and its git branch go too,
+    and the delete is refused while it holds commits the project does not have
+    — that branch is the only copy of that work — unless `force`. Deleting a
+    *project* takes its branches with it; leaving them would orphan
+    conversations with no project to list them under."""
+    pool = request.app.state.pool
+    existing = await get_workspace(pool, workspace_id)
+    if existing is not None and existing.parent_id is not None:
+        try:
+            await delete_branch(pool, workspace_id, force=force, purge=purge)
+        except BranchError as exc:
+            # 409, not 422: the request is fine, the branch's state is what
+            # says no, and the user can retry it with force.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    else:
+        if existing is not None:
+            await delete_project_branches(pool, workspace_id)
+        if not await forget_workspace(pool, workspace_id, purge=purge):
+            raise HTTPException(status_code=404, detail="no such workspace")
     # The container is named after the workspace, so one left running would
     # outlive the thing that asked for it — holding its published ports, and
     # waiting to be inherited by whatever next takes this id.

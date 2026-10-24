@@ -71,7 +71,7 @@ def enabled() -> bool:
 IDENTITY = ("-c", "user.name=ANA", "-c", "user.email=ana@localhost")
 
 
-async def _git(*args: str, cwd: str) -> tuple[int, str]:
+async def git(*args: str, cwd: str) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
         "git",
         *args,
@@ -87,6 +87,12 @@ async def _git(*args: str, cwd: str) -> tuple[int, str]:
         await process.wait()
         return 124, "git timed out"
     return process.returncode or 0, output.decode("utf-8", errors="replace").strip()
+
+
+# The branch checkouts in branches.py run the same plumbing, so it is public
+# now. The old private name stays as an alias: this module's own call sites
+# read better with it, and one implementation is the point.
+_git = git
 
 
 async def is_git_workspace(workspace: str) -> bool:

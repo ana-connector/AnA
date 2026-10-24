@@ -305,6 +305,20 @@ export type WorkspaceSummary = {
   archived: boolean;
   /** An emoji, or a small image as a `data:` URL. "" when it has none. */
   icon: string;
+  /** The project this is a feature branch of, or null when it is a project. */
+  parent_id: string | null;
+  /** The git branch this checkout is on. "" for a project. */
+  branch: string;
+  /** The project branch a branch merges back into. "" for a project. */
+  base_branch: string;
+};
+
+export type MergeResult = {
+  /** merged | empty | dirty | moved | missing | conflict — see mergeBranch. */
+  status: string;
+  detail: string;
+  /** The conflicting paths, when `status` is "conflict". */
+  paths: string[];
 };
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -323,19 +337,96 @@ export async function createWorkspace(name: string, path?: string) {
   return (await response.json()) as { id: string; name: string; path: string };
 }
 
-export async function forgetWorkspace(id: string): Promise<void> {
+/** A feature branch of `projectId`: its own checkout, lead agent and
+ *  conversation. The server decides the folder, so there is no path to pass. */
+export async function createBranch(
+  projectId: string,
+  name: string
+): Promise<WorkspaceSummary> {
+  const response = await fetch(
+    `${apiBase()}/workspaces/${encodeURIComponent(projectId)}/branches`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    }
+  );
+  if (!response.ok) {
+    const detail = await response.json().then((body) => body?.detail).catch(() => null);
+    throw new Error(detail ?? `branch create failed: ${response.status}`);
+  }
+  return (await response.json()) as WorkspaceSummary;
+}
+
+/** Merges the branch into its project.
+ *
+ *  Never throws on a refusal — every outcome but a server fault comes back as
+ *  a `status` the caller has a message for:
+ *  `merged` · `empty` · `dirty` (pass `commitProject` to commit the project's
+ *  own changes first) · `moved` · `missing` · `conflict` (aborted in the
+ *  project, markers left in the branch for its own agent). */
+export async function mergeBranch(
+  branchId: string,
+  commitProject = false
+): Promise<MergeResult> {
+  const response = await fetch(
+    `${apiBase()}/workspaces/${encodeURIComponent(branchId)}/merge`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ commit_project: commitProject }),
+    }
+  );
+  if (!response.ok) {
+    const detail = await response.json().then((body) => body?.detail).catch(() => null);
+    throw new Error(detail ?? `merge failed: ${response.status}`);
+  }
+  return (await response.json()) as MergeResult;
+}
+
+/** Whether this workspace can host branches, and the reason when it cannot —
+ *  so the button is disabled *and* says why. */
+export async function fetchBranchCapability(
+  workspaceId: string
+): Promise<{ can_branch: boolean; reason: string }> {
+  const response = await fetch(
+    `${apiBase()}/workspaces/${encodeURIComponent(workspaceId)}/branch-capability`
+  );
+  if (!response.ok) return { can_branch: false, reason: "" };
+  return (await response.json()) as { can_branch: boolean; reason: string };
+}
+
+export async function forgetWorkspace(id: string, force = false): Promise<void> {
   // Deletes the workspace *and* its conversation (turns, checkpoints). The
-  // folder and the audit log stay.
-  const response = await fetch(`${apiBase()}/workspaces/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+  // folder and the audit log stay. For a branch this also removes its
+  // checkout and its git branch, and the server refuses with 409 while it
+  // holds unmerged commits — `force` is the user saying to drop them anyway.
+  const response = await fetch(
+    `${apiBase()}/workspaces/${encodeURIComponent(id)}${force ? "?force=true" : ""}`,
+    { method: "DELETE" }
+  );
   // The response used to be ignored, so a delete that failed (a 404 for a row
   // someone else already removed, a server that is down) closed the dialog and
   // looked exactly like a delete that worked — until the list came back with
   // the workspace still in it.
   if (!response.ok) {
     const detail = await response.json().then((body) => body?.detail).catch(() => null);
-    throw new Error(detail ?? `workspace delete failed: ${response.status}`);
+    throw new RequestError(
+      detail ?? `workspace delete failed: ${response.status}`,
+      response.status
+    );
+  }
+}
+
+/** An error that still knows the status that caused it.
+ *
+ *  The caller has to tell a refusal apart from a fault: a 409 on a branch
+ *  delete means "it holds unmerged commits, press force", and offering that
+ *  after a 500 or a dropped connection would skip a guard the user never hit. */
+export class RequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "RequestError";
   }
 }
 
