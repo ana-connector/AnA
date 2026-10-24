@@ -118,6 +118,14 @@ services:
       - ANA_ALLOWED_ORIGINS=${ANA_ALLOWED_ORIGINS:-http://localhost:3005,http://127.0.0.1:3005,http://192.168.0.33:3005}
       # Off by default: containers per workspace need the Docker socket above.
       - ANA_WORKSPACE_CONTAINERS=${ANA_WORKSPACE_CONTAINERS:-off}
+      # Feature branches under a project
+      # (docs/superpowers/specs/2026-10-24-branch-workspaces-design.md). Each
+      # one is a git worktree under the project's own folder — inside the
+      # mounts above, so nothing extra has to be mounted — with its own lead
+      # agent and its own conversation. `off` takes the control away and puts
+      # this deployment back to one lead agent per folder; branches that
+      # already exist keep working, because they are ordinary workspace rows.
+      - ANA_BRANCHES=${ANA_BRANCHES:-on}
       # Workspace containers join this network so their CLIs can still reach
       # the gate at http://server:8000.
       - ANA_WORKSPACE_NETWORK=${ANA_WORKSPACE_NETWORK:-ana_default}

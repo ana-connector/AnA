@@ -51,6 +51,22 @@ class BranchError(RuntimeError):
     """Something the user can fix, said in the words they will read."""
 
 
+def enabled() -> bool:
+    """ANA_BRANCHES=off puts a deployment back to one lead agent per folder.
+
+    Branches change what a workspace *is*, so a deployment that does not want
+    them needs a way to say so without the feature having to be removed. Read
+    per call rather than at import, as `worktrees.enabled()` is, so it can be
+    flipped without restarting the server.
+
+    Off hides the control rather than breaking it: `can_branch` answers with
+    the reason, so the API refuses with it and the sidebar's button carries it
+    as its tooltip. Branches that already exist keep working — they are
+    ordinary workspace rows, and taking their conversations away because a
+    flag changed would be the wrong kind of off."""
+    return os.environ.get("ANA_BRANCHES", "on").lower() != "off"
+
+
 @dataclass(frozen=True)
 class BranchCheckout:
     """One branch's checkout, and where it merges back to."""
@@ -99,6 +115,8 @@ async def can_branch(project_path: str) -> str:
 
     A sentence rather than a boolean: every caller — the API, the UI's
     disabled button — has to tell the user which of these it is."""
+    if not enabled():
+        return "이 배포에서는 브랜치 기능이 꺼져 있다 (ANA_BRANCHES=off)."
     if shutil.which("git") is None:
         return "이 서버에 git이 없다. 브랜치는 git 워크트리로 만든다."
     if not await worktrees.is_git_workspace(project_path):
