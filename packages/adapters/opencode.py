@@ -13,7 +13,8 @@ emits: `step_start`, `text`, `reasoning`, `tool_use`, `step_finish`, `error`):
      "time":{"start":...,"end":...}}}
     {"type":"reasoning","sessionID":"ses_...","part":{"id":"prt_...","text":"..."}}
     {"type":"tool_use","sessionID":"ses_...","part":{"type":"tool","tool":"read",
-     "callID":"call_...","state":{"status":"completed",...}}}
+     "callID":"call-...","state":{"status":"completed","input":{"filePath":"..."},
+     "output":"<whole file>","metadata":{...}}}}
     {"type":"step_finish","sessionID":"ses_...","part":{"type":"step-finish",
      "reason":"stop","tokens":{"input":N,"output":N,"reasoning":N,
      "cache":{"write":N,"read":N}},"cost":0}}
@@ -57,7 +58,7 @@ import os
 from functools import lru_cache
 from typing import AsyncIterator, Optional
 
-from packages.adapters.base import AdapterEvent, AgentAdapter
+from packages.adapters.base import AdapterEvent, AgentAdapter, cli_tool_record
 
 
 def default_executable() -> str:
@@ -284,9 +285,33 @@ class OpenCodeAdapter(AgentAdapter):
                 )
                 continue
 
-            # tool_use is left to the gate and the transcript: ANA shows tool
-            # calls from its own records, and OpenCode's payload carries whole
-            # file contents in `state.output`.
+            if event_type == "tool_use":
+                # Recorded here, because there is nowhere else: OpenCode has no
+                # PreToolUse hook, so the gate -- where every other tool record
+                # in ANA comes from -- never sees these calls, and until
+                # 2026-10-24 a turn's shell commands and file writes appeared
+                # in no transcript at all.
+                #
+                # Only the arguments are kept. `state.output` is the tool's
+                # whole result, a read's entire file among them, and a
+                # transcript that carries one copy of every file the turn
+                # looked at is the 1.9 MB problem the history endpoint was just
+                # rebuilt to avoid.
+                state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                tool_input = state.get("input")
+                yield AdapterEvent(
+                    type="tool",
+                    session_id=resolved_session_id,
+                    raw={
+                        "tool": cli_tool_record(
+                            "opencode",
+                            str(part.get("tool") or ""),
+                            tool_input if isinstance(tool_input, dict) else {},
+                            str(part.get("callID") or "") or None,
+                        )
+                    },
+                )
+                continue
 
         stderr_bytes = await stderr_task if stderr_task is not None else b""
         return_code = await self._process.wait()

@@ -61,6 +61,73 @@ def _container_address(container_name: str, network: str) -> str:
     return address
 
 
+# Every container this fixture starts carries it, so the ones a killed run
+# left behind can be found without guessing from the name.
+TEST_CONTAINER_LABEL = "ana-test-pg=1"
+# How long a labelled container is left alone. It has to outlast the slowest
+# legitimate run (the full suite is ~160s) by enough that a concurrent pytest
+# is never swept, while still being short enough that yesterday's leak is gone.
+STALE_CONTAINER_SECONDS = 30 * 60
+
+
+def _sweep_stale_test_containers() -> list[str]:
+    """Removes test databases that an earlier run could not clean up.
+
+    The fixture's own `finally` handles every ordinary exit, but not a SIGKILL:
+    a run killed by a `timeout` that was set too low, or by the OOM killer,
+    leaves its container behind, and five of them accumulated that way. So the
+    leak is also collected from this side, by age, because a container younger
+    than the cut-off may belong to a pytest running right now in another
+    terminal -- the suite is run that way constantly.
+    """
+    listed = _docker(
+        "ps", "-aq", "--filter", f"label={TEST_CONTAINER_LABEL}",
+        "--format", "{{.ID}} {{.CreatedAt}}",
+    )
+    if listed.returncode != 0:
+        return []
+    removed: list[str] = []
+    for line in listed.stdout.splitlines():
+        container_id = line.split(" ", 1)[0].strip()
+        if not container_id:
+            continue
+        started = _docker("inspect", "-f", "{{.State.StartedAt}}", container_id).stdout.strip()
+        if _age_seconds(started) < STALE_CONTAINER_SECONDS:
+            continue
+        if _docker("rm", "-fv", container_id).returncode == 0:
+            removed.append(container_id)
+    return removed
+
+
+def _age_seconds(started_at: str) -> float:
+    """Seconds since a Docker timestamp, or 0.0 when it cannot be read.
+
+    0.0 means "too young to sweep": an unreadable timestamp must not be the
+    reason a running test's database is removed."""
+    from datetime import datetime, timezone
+
+    import re
+
+    text = started_at.strip()
+    if not text or text.startswith("0001-01-01"):
+        return 0.0
+    # Docker prints nanoseconds; fromisoformat takes at most microseconds. The
+    # zone has to survive the trim -- dropping a "+09:00" would make a
+    # container that started a minute ago look nine hours old, and sweeping a
+    # database out from under a running test is the one failure this must not
+    # have.
+    match = re.match(r"^(.*?)\.(\d+)(.*)$", text)
+    if match:
+        text = f"{match.group(1)}.{match.group(2)[:6]}{match.group(3)}"
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds())
+
+
 def _container_running(container_name: str) -> bool:
     return _docker("inspect", "-f", "{{.State.Running}}", container_name).stdout.strip() == "true"
 
@@ -102,6 +169,19 @@ def _wait_until_reachable(
     )
 
 
+def pytest_collection_modifyitems(config, items):
+    """Marks every test that needs Postgres `db`, by what it asks for.
+
+    Half the suite (411 of 801 tests) takes the database fixture, and that one
+    container is most of what makes a full run take minutes. Marking by
+    fixture rather than by hand means `-m "not db"` stays honest as tests are
+    added: a test that starts using `db_pool` becomes a database test without
+    anybody remembering to say so."""
+    for item in items:
+        if {"db_pool", "postgres_dsn"} & set(getattr(item, "fixturenames", ())):
+            item.add_marker(pytest.mark.db)
+
+
 @pytest.fixture(scope="session")
 def postgres_dsn():
     """Spins up a throwaway pgvector-enabled Postgres in Docker for the
@@ -116,6 +196,9 @@ def postgres_dsn():
         yield override
         return
 
+    leaked = _sweep_stale_test_containers()
+    if leaked:
+        print(f"removed {len(leaked)} leaked test database container(s)")
     container_name = f"ana-test-pg-{uuid.uuid4().hex[:8]}"
     network = _own_container_network()
     if network:
@@ -126,7 +209,8 @@ def postgres_dsn():
         port = _find_free_port()
         placement = ["-p", f"127.0.0.1:{port}:5432"]
     _docker(
-        "run", "-d", "--name", container_name,
+        "run", "-d", "--rm", "--name", container_name,
+        "--label", TEST_CONTAINER_LABEL,
         "-e", "POSTGRES_PASSWORD=test",
         "-e", f"POSTGRES_DB={TEST_DB_NAME}",
         *placement,
@@ -143,7 +227,7 @@ def postgres_dsn():
         _wait_until_reachable(dsn, container_name)
         yield dsn
     finally:
-        _docker("rm", "-f", container_name)
+        _docker("rm", "-fv", container_name)
 
 
 @pytest_asyncio.fixture

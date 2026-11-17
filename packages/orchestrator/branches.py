@@ -126,6 +126,16 @@ async def can_branch(project_path: str) -> str:
         return "커밋이 하나도 없다. 브랜치는 커밋에서 갈라져 나온다."
     if await worktrees.current_branch(project_path) is None:
         return "HEAD가 분리된 상태다. 돌아갈 브랜치가 없으면 머지할 곳도 없다."
+    code, dirty = await worktrees.git(
+        "status", "--porcelain", "--untracked-files=all", cwd=project_path
+    )
+    if code != 0:
+        return "프로젝트의 Git 상태를 읽지 못했다."
+    if dirty.strip():
+        return (
+            "프로젝트에 아직 커밋하지 않은 파일이 있다. Git 브랜치는 커밋에서 갈라지므로 "
+            "현재 파일을 브랜치에 포함하려면 프로젝트에서 먼저 커밋해야 한다."
+        )
     return ""
 
 

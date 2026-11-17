@@ -1,5 +1,6 @@
 """Rule evaluation for the governance gate, including the shipped rule set."""
 import textwrap
+import time
 
 import pytest
 
@@ -262,3 +263,29 @@ def test_docker_rm_flag_is_not_a_delete(ruleset, command):
 )
 def test_a_real_delete_outside_the_workspace_still_asks(ruleset, command):
     assert _action(ruleset, command) == ASK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Three-or-more bare-word args followed by anything the rule's
+        # trailing `$` rejects: with the inner repetition's quantifiers
+        # un-possessive, the regex engine retried every way of splitting the
+        # matched prefix across repetitions before failing, taking this
+        # outage down with it -- a single gate call pinned the whole event
+        # loop for minutes (2026-10-20 incident).
+        "rm -rf build_dir_0 build_dir_1 build_dir_2 !",
+        "rm -rf " + "a" * 60 + "!",
+        "rm -rf dir/*",
+        "rm -rf $VAR",
+        "rm -rf x && echo ok",
+    ],
+)
+def test_recursive_delete_near_miss_does_not_catastrophically_backtrack(ruleset, command):
+    """Not asserting the verdict (covered elsewhere) -- asserting that a
+    command this rule *rejects* fails fast instead of taking exponential time
+    in the length of the trailing argument list."""
+    started = time.monotonic()
+    ruleset.evaluate("Bash", {"command": command})
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0, f"evaluate() took {elapsed:.2f}s on {command!r} -- ReDoS regression"

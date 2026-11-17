@@ -60,6 +60,8 @@ from packages.orchestrator.containers import (
     ContainerSpec,
     containers_enabled,
     default_auth_mounts,
+    default_tool_env,
+    default_tool_mounts,
     ensure_running,
     exec_prefix,
     parse_ports,
@@ -606,7 +608,8 @@ async def prepare_conversation(app, requested_id: str) -> ConversationSetup:
                 gate_url=CONTAINER_GATE_URL,
                 state_volume=CONTAINER_STATE_VOLUME,
                 state_path=ANA_STATE_DIR,
-                auth_mounts=default_auth_mounts(),
+                auth_mounts=default_auth_mounts() + default_tool_mounts(),
+                extra_env=default_tool_env(),
             )
             try:
                 await ensure_running(spec)
@@ -835,7 +838,14 @@ async def chat_ws(websocket: WebSocket) -> None:
                 )
                 continue
             if frame.kind == "cancel":
-                if not runner.cancel_current():
+                active_turn = runner.cancel_current()
+                if active_turn:
+                    await runner.emit({
+                        "type": "status", "text": "cancelling", "session_id": None,
+                        "is_error": False, "agent": runner.current_turn_agent,
+                        "started_at": time.time(),
+                    })
+                else:
                     # No turn is in flight; queued prompts were discarded, so
                     # acknowledge the cancellation to reset the client.
                     with contextlib.suppress(Exception):
@@ -868,6 +878,42 @@ async def chat_ws(websocket: WebSocket) -> None:
             await registry.drop(thread_id)
 
 
+def _replacement_lead_adapters(
+    adapters: dict, gate_token: str, secret_env: dict, workspace_dir: str
+) -> dict:
+    """Recreate lead CLIs with their current model and fresh MCP configuration."""
+    replacements = {}
+    for name, previous in adapters.items():
+        if name.startswith("worker/"):
+            continue
+        options = {
+            "extra_env": secret_env,
+            "workspace_dir": workspace_dir,
+            "command_prefix": previous.command_prefix,
+            "model": previous.model,
+            "effort": previous.effort,
+        }
+        if name == "codex":
+            replacements[name] = build_codex_adapter(gate_token, **options)
+        elif name == "kimi":
+            replacements[name] = build_kimi_adapter(gate_token, **options)
+        elif name == "cursor":
+            replacements[name] = build_cursor_adapter(gate_token, **options)
+        elif name == "opencode":
+            replacements[name] = build_opencode_adapter(gate_token, **options)
+        elif name == "claude" or name == "tapie" or name.startswith("claude/"):
+            mode = "api" if name == "tapie" else name.split("/", 1)[1] if "/" in name else None
+            try:
+                replacements[name] = build_adapter(
+                    gate_token, auth_mode=mode, **options
+                )
+            except Exception:
+                if name != "tapie":
+                    raise
+                # Removing TAPIE's key should remove that optional adapter.
+    return replacements
+
+
 async def _build_runner(
     app,
     *,
@@ -894,21 +940,22 @@ async def _build_runner(
     adapters: dict = {}
     # Which CLIs the settings page has left switched on. A CLI that is off is
     # not built at all: building one writes a prepared home and an MCP config
-    # for a CLI the router and the failover chain will both skip. "claude"
-    # stays whatever the setting says — it is the default agent, and having
-    # nothing to route to is worse than ignoring the preference for one CLI.
-    allowed = set(enabled_agents()) | {"claude"}
+    # for a CLI the router and the failover chain will both skip.
+    allowed = set(enabled_agents())
     try:
         prefix = (
             [part.replace("__token__", gate_session.token) for part in container_prefix]
             if container_prefix
             else None
         )
-        adapter = build_adapter(
-            gate_session.token,
-            extra_env=secret_env,
-            workspace_dir=workspace_dir,
-            command_prefix=prefix,
+        adapter = (
+            build_adapter(
+                gate_session.token,
+                extra_env=secret_env,
+                workspace_dir=workspace_dir,
+                command_prefix=prefix,
+            )
+            if "claude" in allowed else None
         )
         codex_adapter = None
         if "codex" in allowed:
@@ -1064,17 +1111,34 @@ async def _build_runner(
             return extra
         chosen = adapters.get(agent)
         if chosen is None:
-            # A rung naming an agent this installation could not build — TAPIE
-            # without a key, so far the only one. Built on demand so the error
-            # says which variable is missing rather than KeyError('tapie').
-            chosen = adapters[agent] = build_adapter(
-                gate_session.token,
-                auth_mode="api" if agent == "tapie" else None,
-                extra_env=secret_env,
-                workspace_dir=workspace_dir,
-                model=model,
-                effort=effort,
-            )
+            # Settings can re-enable a CLI while this runner is still alive.
+            # Build the newly enabled CLI with its own adapter.
+            if agent == "codex":
+                chosen = build_codex_adapter(
+                    gate_session.token,
+                    extra_env=secret_env,
+                    workspace_dir=workspace_dir,
+                    model=model,
+                    effort=effort,
+                    command_prefix=(
+                        exec_prefix(container_spec, env={
+                            "ANA_GATE_URL": CONTAINER_GATE_URL,
+                            "ANA_GATE_TOKEN": gate_session.token,
+                            "CODEX_HOME": os.path.join(ANA_STATE_DIR, "codex_home"),
+                        }) if container_spec is not None else None
+                    ),
+                )
+            else:
+                chosen = build_adapter(
+                    gate_session.token,
+                    auth_mode="api" if agent == "tapie" else None,
+                    extra_env=secret_env,
+                    workspace_dir=workspace_dir,
+                    model=model,
+                    effort=effort,
+                    command_prefix=prefix,
+                )
+            adapters[agent] = chosen
         # Assigned even when None: the value is what this rung asked for, and
         # leaving the previous call's setting in place is how the planning
         # call's cheap effort used to leak into the answer.
@@ -1189,7 +1253,7 @@ async def _build_runner(
             "usage_tracker": app.state.usage_tracker,
             # Kept alongside "adapters" for callers/tests that still wire a
             # single adapter; graph._resolve_adapter prefers "adapters".
-            "adapter": adapters["claude"],
+            "adapter": adapters.get("codex") or next(iter(adapters.values())),
             "pool": app.state.pool,
             "embedding_model": app.state.embedding_model,
             "transcript": transcript,
@@ -1201,6 +1265,39 @@ async def _build_runner(
         }
     }
 
+    async def refresh_credentials() -> None:
+        """Apply secret changes to the next CLI turn of an existing conversation.
+
+        A runner outlives its WebSocket connections. Its adapters and MCP
+        configs used to keep the secrets from runner creation until the idle
+        sweeper retired it, even after Settings → Secrets showed a new server
+        as active. Rebuild only between turns so a running CLI keeps its own
+        stable environment and the next one sees the updated tools.
+        """
+        fresh = await load_secrets(app.state.pool, app.state.secret_cipher)
+        if {(item.scope, item.name, item.value) for item in fresh} == {
+            (item.scope, item.name, item.value) for item in registered_secrets
+        }:
+            return
+        next_env = {secret.name: secret.value for secret in fresh}
+        replacements = _replacement_lead_adapters(
+            adapters, gate_session.token, next_env, workspace_dir
+        )
+        for name, old in list(adapters.items()):
+            if name.startswith("worker/"):
+                # Every worker from the previous turn has finished by now.
+                adapters.pop(name)
+                continue
+            process = getattr(old, "_process", None)
+            if process is not None and process.returncode is None:
+                await old.terminate()
+            adapters.pop(name)
+        adapters.update(replacements)
+        secret_env.clear()
+        secret_env.update(next_env)
+        registered_secrets[:] = fresh
+        config["configurable"]["adapter"] = adapters.get("codex") or next(iter(adapters.values()))
+
     return TurnRunner(
         thread_id=thread_id,
         workspace_dir=workspace_dir,
@@ -1210,6 +1307,7 @@ async def _build_runner(
         adapters=adapters,
         config=config,
         graph=app.state.graph,
+        before_turn=refresh_credentials,
         container=bool(container_prefix),
         container_error=container_error,
     )

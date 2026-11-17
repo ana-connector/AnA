@@ -47,6 +47,14 @@ export function findLeaf(node: PaneNode, id: string): Leaf | null {
   return leaves(node).find((pane) => pane.id === id) ?? null;
 }
 
+/** Where an agent tab belongs. With two panes the second is the worker pane;
+ * with a more complex layout the pane the request came from is respected. */
+export function agentPane(node: PaneNode, focusedId: string, sourceId?: string): Leaf {
+  const all = leaves(node);
+  if (all.length === 2) return all[1];
+  return findLeaf(node, sourceId ?? focusedId) ?? findLeaf(node, focusedId) ?? all[0];
+}
+
 /** Every page on screen, in the order the panes are laid out. */
 export function shownHrefs(node: PaneNode): string[] {
   return leaves(node).map((pane) => pane.active);

@@ -120,4 +120,4 @@ def test_websocket_bare_text_frame_routes_to_the_default_agent(client_with_both_
     # "hello" matches no routing rule and the thread has no history, so the
     # table's default answers it.
     assert route_event["type"] == "route"
-    assert text_event["text"].startswith("claude:")
+    assert text_event["text"].startswith("codex:")

@@ -44,6 +44,14 @@ class ContainerSpec:
     # the server (/home/ana/.claude) would silently create an empty directory
     # on the host and the CLI comes up "Not logged in".
     auth_mounts: tuple[str, ...] = field(default=())
+    # Host toolchains the agent should find at the same path it would on the
+    # machine (Flutter, Android SDK, JDK). Empty unless compose passed the
+    # host paths in; a missing env var must not become an empty bind mount,
+    # because the daemon would create that directory on the host.
+    extra_env: tuple[tuple[str, str], ...] = field(default=())
+    extra_hosts: tuple[str, ...] = field(
+        default=("host.docker.internal:host-gateway",)
+    )
     network: Optional[str] = None
     gate_url: Optional[str] = None
     # ANA's own state (the CLI settings file carrying the PreToolUse hook, and
@@ -70,6 +78,8 @@ class ContainerSpec:
                 # paths were fixed looks identical otherwise, and keeps coming
                 # up "Not logged in".
                 "mounts": list(self.auth_mounts),
+                "env": [list(pair) for pair in self.extra_env],
+                "hosts": list(self.extra_hosts),
                 "state": self.state_volume,
             },
             sort_keys=True,
@@ -95,6 +105,86 @@ def default_auth_mounts() -> tuple[str, ...]:
         (os.environ.get("ANA_HOST_OPENCODE_CONFIG"), "/home/ana/.config/opencode"),
     )
     return tuple(f"{host}:{inside}" for host, inside in pairs if host)
+
+
+_HOST_TOOL_MOUNTS = (
+    ("ANA_HOST_FLUTTER_SDK", ""),
+    ("ANA_HOST_ANDROID_SDK", "ro"),
+    ("ANA_HOST_JAVA_HOME", "ro"),
+)
+_BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def default_tool_mounts() -> tuple[str, ...]:
+    """Host Flutter / Android / JDK trees, bind-mounted read-only at the same path.
+
+    Same-path so the toolchain's own relative lookups (and every path the
+    agent prints) match the host. Read-only so a workspace cannot rewrite
+    the machine's SDK."""
+    mounts: list[str] = []
+    for key, mode in _HOST_TOOL_MOUNTS:
+        host = (os.environ.get(key) or "").strip()
+        if not host:
+            continue
+        # Flutter writes engine.stamp / cache under its own tree; a read-only
+        # bind makes `flutter --version` fail before any project command runs.
+        suffix = f":{mode}" if mode else ""
+        mounts.append(f"{host}:{host}{suffix}")
+    return tuple(mounts)
+
+
+def default_tool_env() -> tuple[tuple[str, str], ...]:
+    """PATH and SDK location vars for a workspace container.
+
+    `ADB_SERVER_SOCKET` points at the host adb server through
+    `host.docker.internal`, because `adb` and an `ssh -R` emulator tunnel
+    both bind the host's 127.0.0.1, which is not this container's loopback.
+    A compose `adb-gateway` publishes that server on ANA_ADB_GATEWAY_PORT."""
+    flutter = (os.environ.get("ANA_HOST_FLUTTER_SDK") or "").strip()
+    android = (os.environ.get("ANA_HOST_ANDROID_SDK") or "").strip()
+    java = (os.environ.get("ANA_HOST_JAVA_HOME") or "").strip()
+    adb_port = (os.environ.get("ANA_ADB_GATEWAY_PORT") or "15037").strip() or "15037"
+    path_parts: list[str] = []
+    if flutter:
+        path_parts.append(f"{flutter}/bin")
+        path_parts.append(f"{flutter}/bin/cache/dart-sdk/bin")
+    if android:
+        path_parts.append(f"{android}/platform-tools")
+        path_parts.append(f"{android}/cmdline-tools/latest/bin")
+        path_parts.append(f"{android}/emulator")
+    if java:
+        path_parts.append(f"{java}/bin")
+    env: list[tuple[str, str]] = [
+        ("PATH", ":".join([*path_parts, _BASE_PATH])),
+        ("ADB_SERVER_SOCKET", f"tcp:host.docker.internal:{adb_port}"),
+    ]
+    if flutter:
+        env.append(("FLUTTER_ROOT", flutter))
+    if android:
+        env.append(("ANDROID_HOME", android))
+        env.append(("ANDROID_SDK_ROOT", android))
+    if java:
+        env.append(("JAVA_HOME", java))
+    return tuple(env)
+
+
+def bind_mount_args(mount: str) -> list[str]:
+    """Turn `host:inside` or `host:inside:ro` into docker `-v` argv.
+
+    The last colon-separated token is a mode only when it is `ro` or `rw`;
+    anything else is the in-container path, matching how auth mounts are
+    stored (`/host/dir:/home/ana/.claude`)."""
+    mode = None
+    rest = mount
+    if rest.endswith(":ro") or rest.endswith(":rw"):
+        rest, mode = rest.rsplit(":", 1)
+    host_path, sep, container_path = rest.rpartition(":")
+    if not sep or not host_path or not container_path:
+        return []
+    spec = f"{host_path}:{container_path}"
+    if mode:
+        spec = f"{spec}:{mode}"
+    return ["-v", spec]
 
 
 def containers_enabled() -> bool:
@@ -137,11 +227,13 @@ def run_args(spec: ContainerSpec) -> list[str]:
     if spec.state_volume:
         args += ["-v", f"{spec.state_volume}:{spec.state_path}"]
     for mount in spec.auth_mounts:
-        host_path, _, container_path = mount.rpartition(":")
-        if host_path and container_path:
-            args += ["-v", f"{host_path}:{container_path}"]
+        args += bind_mount_args(mount)
     for port in spec.ports:
         args += ["-p", f"{port.host}:{port.container}"]
+    for host in spec.extra_hosts:
+        args += ["--add-host", host]
+    for key, value in spec.extra_env:
+        args += ["-e", f"{key}={value}"]
     if spec.network:
         args += ["--network", spec.network]
     if spec.gate_url:

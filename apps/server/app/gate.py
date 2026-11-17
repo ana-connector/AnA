@@ -12,6 +12,7 @@ import time
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from packages.governance import audit
 from packages.observability.metrics import gate_wait_seconds, record_gate_decision
@@ -182,7 +183,7 @@ async def gate_subagent_event(
     task = session.native_agents.get(body.agent_id) or {
         "id": f"native:{body.agent_id}",
         "title": title or "하위 에이전트",
-        "agent": session.current_agent or "claude",
+        "agent": session.current_agent or "codex",
         "status": "running",
         "output": "",
         "tools": [],
@@ -597,7 +598,14 @@ async def gate_tool_call(
                 }
             )
 
-    verdict = load_ruleset().evaluate(body.tool_name, body.tool_input)
+    # Off the event loop: evaluate() runs regex over arbitrary tool input, and
+    # one pathological pattern against a crafted/unlucky command can pin a
+    # worker thread for a long time (see the possessive-quantifier fix in
+    # config/governance.yaml). Running it inline on the loop thread turned
+    # that into a full server outage -- every request, on every connection,
+    # blocked behind this one call. A thread pool contains the damage to the
+    # gate requests actually waiting on it.
+    verdict = await run_in_threadpool(load_ruleset().evaluate, body.tool_name, body.tool_input)
 
     # Leak check first: a call that carries a registered secret value is
     # refused whatever the rules say about the command itself, and the audit

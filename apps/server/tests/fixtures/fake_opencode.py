@@ -49,8 +49,15 @@ def main() -> None:
                 "id": "prt_3",
                 "type": "tool",
                 "tool": "read",
-                "callID": "call_1",
-                "state": {"status": "completed", "output": "hello"},
+                "callID": "call-1",
+                "state": {
+                    "status": "completed",
+                    "input": {"filePath": "note.txt"},
+                    # The whole file comes back in `output`, which is exactly
+                    # what must not end up in a transcript.
+                    "output": "<content>\n1: hello\n</content>",
+                    "metadata": {"preview": "hello"},
+                },
             },
         ),
         _event(
@@ -67,6 +74,21 @@ def main() -> None:
                     "cache": {"write": 0, "read": 50},
                 },
                 "cost": 0.01,
+            },
+        ),
+        _event(
+            "tool_use",
+            part={
+                "id": "prt_3b",
+                "type": "tool",
+                "tool": "bash",
+                "callID": "call-2",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "echo hi"},
+                    "output": "hi",
+                    "title": "echo hi",
+                },
             },
         ),
         _event(

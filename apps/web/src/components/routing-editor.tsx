@@ -591,7 +591,7 @@ function Ladder({
           onClick={() =>
             onChange([
               ...rungs,
-              { agent: vocabulary.agents[0] ?? "claude", model: "", effort: "", window: "", utilization: null },
+              { agent: vocabulary.agents[0] ?? "codex", model: "", effort: "", window: "", utilization: null },
             ])
           }
         >

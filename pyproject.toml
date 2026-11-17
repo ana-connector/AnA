@@ -2,3 +2,6 @@
 pythonpath = ["."]
 testpaths = ["apps/server/tests"]
 asyncio_mode = "auto"
+# Applied by conftest to whatever takes the Postgres fixture, so that
+# `scripts/test.sh fast` can skip the container during development.
+markers = ["db: needs the throwaway Postgres container"]

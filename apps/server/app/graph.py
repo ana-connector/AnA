@@ -102,9 +102,8 @@ class GraphState(TypedDict):
     # dollar figure and the Codex CLI reports tokens, so a thread that used
     # both has one meaningful number from each.
     total_tokens: int
-    # Which CLI runs this turn ("claude" | "codex"). Absent/unknown values
-    # normalize to the default agent, so a client that never sends one keeps
-    # the single-agent behavior this graph shipped with.
+    # Requested CLI, or "auto" for the routing ladder. Unknown values also
+    # use the ladder, whose first enabled rung is the default.
     agent: str
     # One CLI session id per agent: each CLI resumes its *own* conversation
     # (claude --resume / codex exec resume), so they cannot share the single
@@ -276,6 +275,7 @@ async def _run_worker(
     prompt: str,
     *,
     on_text=None,
+    on_tool=None,
     tracker=None,
     key: Optional[str] = None,
 ) -> WorkerRun:
@@ -285,9 +285,12 @@ async def _run_worker(
 
     `on_text` receives the worker's narration as it streams, so its card can
     show what it is saying while it works rather than only a final answer that a
-    cut-off run never produces. Every event also marks the worker as alive for
-    the idle watchdog: a CLI that streams text between tool calls is working
-    even while the gate sees nothing."""
+    cut-off run never produces. `on_tool` receives the calls a CLI reports
+    itself, which for Cursor and OpenCode is the only place they are reported:
+    the gate has no hook in those CLIs, so without this a worker on one of them
+    showed narration and nothing it did. Every event also marks the worker as
+    alive for the idle watchdog: a CLI that streams text between tool calls is
+    working even while the gate sees nothing."""
     run = WorkerRun(adapter=adapter)
     try:
         async for event in adapter.run_stream(prompt, session_id=None):
@@ -317,6 +320,11 @@ async def _run_worker(
                     run.error = event.text
             elif event.type == "usage":
                 run.tokens += _tokens_from_usage(event.usage)
+            elif event.type == "tool" and event.raw and event.raw.get("tool"):
+                if on_tool is not None:
+                    update = on_tool(event.raw["tool"])
+                    if inspect.isawaitable(update):
+                        await update
             elif event.type == "error":
                 run.failed = True
                 if not is_recoverable_failure(run.error):
@@ -371,6 +379,11 @@ async def _work_the_task(
                     if card is not None
                     else None
                 ),
+                on_tool=(
+                    (lambda tool: _worker_tool(writer, card, task, route.agent, tool))
+                    if card is not None
+                    else None
+                ),
                 tracker=tracker,
                 key=task.id,
             )
@@ -418,6 +431,39 @@ async def _work_the_task(
         )
         prompt = verification.retry_prompt(base_prompt, checked)
     return run, checked
+
+
+def _worker_tool(writer, card, task, agent: str, tool: dict) -> None:
+    """Puts a CLI-reported call on the worker's card, and sends it to the open
+    tab.
+
+    The same two places the gate writes to for a screened call: the card's
+    ordered blocks, so the panel reads like a transcript, and its `tools` list.
+    The frame carries the task id as `agent_id`, which is how the browser
+    already routes a sub-agent's calls to the right card."""
+    recorded = {**tool, "agent_id": task.id}
+    tools = card.setdefault("tools", [])
+    call_id = recorded.get("tool_use_id")
+    match = next(
+        (i for i, item in enumerate(tools)
+         if call_id and item.get("tool_use_id") == call_id),
+        None,
+    )
+    if match is None:
+        tools.append(recorded)
+    else:
+        tools[match] = recorded
+    timeline_blocks.append_tool(card.setdefault("blocks", []), recorded)
+    writer(
+        {
+            "type": "tool",
+            "text": "",
+            "session_id": None,
+            "is_error": False,
+            "agent": agent,
+            "tool": recorded,
+        }
+    )
 
 
 def _task_frame(task) -> dict:
@@ -760,6 +806,26 @@ async def _stream_turn(
                 continue
             if event.type == "error":
                 continue  # held back until the caller knows whether it retries
+
+            if event.type == "tool" and event.raw and event.raw.get("tool"):
+                # A call the CLI ran itself, for the CLIs ANA's gate cannot
+                # hook (Cursor, OpenCode). Same frame and same transcript
+                # block as a gate-screened call, with `decided_by` saying which
+                # of the two it was.
+                tool = event.raw["tool"]
+                if timeline is not None:
+                    timeline.append_tool(tool)
+                writer(
+                    {
+                        "type": "tool",
+                        "text": "",
+                        "session_id": event.session_id,
+                        "is_error": False,
+                        "agent": agent,
+                        "tool": tool,
+                    }
+                )
+                continue
 
             if event.type == "subagent" and event.raw and event.raw.get("task"):
                 task = event.raw["task"]

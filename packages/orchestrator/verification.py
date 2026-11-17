@@ -23,6 +23,8 @@ import signal
 from dataclasses import dataclass
 from typing import Optional
 
+from starlette.concurrency import run_in_threadpool
+
 from packages.governance.rules import ALLOW, load_ruleset
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
@@ -82,7 +84,10 @@ async def verify(
     if not command:
         return VerificationResult(ran=False, passed=False, reason="검증 명령 없음")
 
-    verdict = load_ruleset().evaluate("Bash", {"command": command})
+    # Off the event loop -- same reasoning as the gate endpoint in
+    # apps/server/app/gate.py: a pathological rule pattern must not be able
+    # to pin this coroutine's loop thread.
+    verdict = await run_in_threadpool(load_ruleset().evaluate, "Bash", {"command": command})
     if verdict.action != ALLOW:
         # Screened by the same rules as any agent command: the plan is
         # model-written text, and this one goes straight to a shell.

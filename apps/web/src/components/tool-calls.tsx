@@ -24,6 +24,20 @@ const VERDICT_LABEL: Record<string, string> = {
   pending: "대기",
 };
 
+/** The one line under a call's name: who decided it was allowed to run.
+ *
+ *  Cursor and OpenCode have no hook for ANA's gate, so their calls are
+ *  recorded after the fact, with `cli:<agent>` in place of a rule. Showing
+ *  that as a plain "허용" would read as a decision ANA made, which is the one
+ *  wrong thing to take from these rows. */
+function decisionLine(tool: ToolEvent): string {
+  const verdict = VERDICT_LABEL[tool.verdict] ?? tool.verdict;
+  if (tool.decided_by?.startsWith("cli:")) {
+    return `${tool.decided_by.slice(4)} CLI가 자체 실행 · ANA 게이트 미경유`;
+  }
+  return `${verdict} · ${tool.decided_by}${tool.rule_id ? ` · ${tool.rule_id}` : ""}`;
+}
+
 function commandOf(tool: ToolEvent): string {
   return toolDisplay(tool.tool_name, tool.input);
 }
@@ -180,11 +194,7 @@ export function ToolCalls({
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">{selected?.tool_name}</DialogTitle>
             <DialogDescription>
-              {selected
-                ? `${VERDICT_LABEL[selected.verdict] ?? selected.verdict} · ${selected.decided_by}${
-                    selected.rule_id ? ` · ${selected.rule_id}` : ""
-                  }`
-                : ""}
+              {selected ? decisionLine(selected) : ""}
             </DialogDescription>
           </DialogHeader>
           {selected ? (

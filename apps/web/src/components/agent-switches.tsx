@@ -29,8 +29,8 @@ const AGENT_ICON: Record<string, (props: { className?: string }) => React.ReactE
 /** What each CLI needs before it can answer anything, so "off" can be a
  *  decision rather than a workaround for a CLI that was never set up. */
 const AGENT_NOTE: Record<string, string> = {
-  claude: "Claude Pro 구독 로그인. 기본 에이전트라 끌 수 없습니다.",
-  codex: "~/.codex 로그인",
+  claude: "Claude Pro 구독 로그인",
+  codex: "~/.codex 로그인 · 기본 에이전트",
   kimi: "~/.kimi-code 로그인",
   tapie: "TAPIE_API_KEY",
   cursor: "~/.config/cursor 로그인",
@@ -131,10 +131,6 @@ export function AgentSwitches() {
       {agents.map((agent) => {
         const Icon = AGENT_ICON[agent];
         const on = !off.has(agent);
-        // claude is the default agent — where an unknown agent name and an
-        // all-disabled ladder both land — so the server refuses to store it
-        // as off and the switch says so rather than failing the save.
-        const locked = agent === "claude";
         return (
           <Field key={agent} orientation="horizontal">
             <FieldLabel htmlFor={`agent-${agent}`} className="flex items-center gap-1.5">
@@ -147,7 +143,7 @@ export function AgentSwitches() {
             <Switch
               id={`agent-${agent}`}
               checked={on}
-              disabled={locked || saving === agent}
+              disabled={saving !== null}
               onCheckedChange={(next) => void toggle(agent, next)}
             />
           </Field>
@@ -157,8 +153,7 @@ export function AgentSwitches() {
       <FieldDescription>
         끈 CLI는 라우팅 래더에서 건너뛰고, 한도에 걸렸을 때의 폴백 대상에서도 빠지고, 입력창의
         수동 선택 목록에도 나오지 않습니다. 래더의 규칙은 지워지지 않으니 다시 켜면 그대로
-        돌아옵니다. 기본 에이전트인 Claude Code는 끌 수 없습니다 — 알 수 없는 에이전트
-        이름과 래더가 전부 꺼진 경우가 모두 여기로 떨어집니다.
+        돌아옵니다. Codex와 Claude Code도 끌 수 있습니다. 최소 하나의 CLI는 켜 두어야 합니다.
       </FieldDescription>
     </FieldGroup>
   );

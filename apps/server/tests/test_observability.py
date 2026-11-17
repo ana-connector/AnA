@@ -88,7 +88,7 @@ async def test_a_turn_updates_metrics_end_to_end(db_pool):
             "transcript": Mock(),
         }
     }
-    before = _counter_value(metrics.turns_total, agent="claude", outcome="ok")
+    before = _counter_value(metrics.turns_total, agent="codex", outcome="ok")
 
     async for _ in graph.astream(
         {"prompt": "hello", "session_id": None, "response_text": ""},
@@ -97,7 +97,7 @@ async def test_a_turn_updates_metrics_end_to_end(db_pool):
     ):
         pass
 
-    assert _counter_value(metrics.turns_total, agent="claude", outcome="ok") == before + 1
+    assert _counter_value(metrics.turns_total, agent="codex", outcome="ok") == before + 1
 
 
 @pytest.mark.asyncio
@@ -243,7 +243,7 @@ async def test_cancelled_turn_is_still_counted(db_pool):
             "transcript": Mock(),
         }
     }
-    before = _counter_value(metrics.turns_total, agent="claude", outcome="cancelled")
+    before = _counter_value(metrics.turns_total, agent="codex", outcome="cancelled")
 
     async def run():
         async for _ in graph.astream(
@@ -260,5 +260,5 @@ async def test_cancelled_turn_is_still_counted(db_pool):
         await task
 
     assert (
-        _counter_value(metrics.turns_total, agent="claude", outcome="cancelled") == before + 1
+        _counter_value(metrics.turns_total, agent="codex", outcome="cancelled") == before + 1
     )

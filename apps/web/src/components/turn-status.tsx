@@ -13,6 +13,7 @@ const PHASE_LABELS: Record<TurnStatus["phase"], string> = {
   replanning: "결과를 보고 다음 작업을 정하고 있습니다",
   synthesizing: "결과를 모아 답을 쓰고 있습니다",
   answering: "답을 쓰고 있습니다",
+  cancelling: "중단 중입니다",
 };
 
 /** The line that says something is happening.

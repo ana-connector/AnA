@@ -4,7 +4,7 @@ FROM python:3.13-slim
 # not /usr/bin/docker). Used only when per-workspace containers are switched
 # on, but installing it here keeps that a runtime decision rather than an
 # image rebuild.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git docker-cli \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git docker-cli unzip zip xz-utils \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     # Pinned, not floating: a cached layer kept the image on claude 2.1.197

@@ -18,7 +18,7 @@ user's prompt.
 # its model names are `provider/model` and there are dozens of them, so the
 # ladder's model field matters more here than anywhere else.
 AGENTS = ("claude", "codex", "kimi", "tapie", "cursor", "opencode")
-DEFAULT_AGENT = "claude"
+DEFAULT_AGENT = "codex"
 
 # Bound on each past turn's prompt/response before interpolation, same
 # rationale as graph.py's _MAX_MATCH_FIELD_CHARS: turns.response is an

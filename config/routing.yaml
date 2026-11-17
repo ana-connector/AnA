@@ -20,14 +20,14 @@
 # Editing this file takes effect on the next turn — no restart.
 
 lead:
-  - agent: claude
-    model: fable
-    effort: medium
+  - agent: codex
+    model: gpt-6-astra
     until:
       window: five_hour
       utilization: 0.25
-  - agent: codex
-    model: gpt-6-astra
+  - agent: claude
+    model: fable
+    effort: medium
     until:
       window: five_hour
       utilization: 0.25

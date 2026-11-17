@@ -3,6 +3,7 @@
 import { type ReactNode } from "react";
 import { PaneHost } from "@/components/pane-host";
 import { SessionSidebar } from "@/components/session-sidebar";
+import { WorkspaceFilesSidebar } from "@/components/workspace-files-sidebar";
 import { useShellMeta } from "@/components/shell-meta";
 import { UsageBar } from "@/components/usage-bar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -37,6 +38,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           failingAgents={meta.usage?.failingAgents}
         />
       </SidebarInset>
+      <WorkspaceFilesSidebar />
     </SidebarProvider>
   );
 }

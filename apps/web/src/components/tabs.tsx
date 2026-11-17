@@ -15,6 +15,7 @@ import { usePaneMode } from "@/hooks/use-pane-mode";
 import { BROWSER_ROUTE, previewLabel, previewTarget } from "@/lib/preview";
 import {
   adoptIds,
+  agentPane,
   closeTab as closeTabIn,
   findLeaf,
   leaf,
@@ -52,6 +53,7 @@ const START: Tab = { href: START_HREF, title: "시작" };
  *  outer window. Split panes are iframe-only, so the page cannot call
  *  `setTitle` on the shell's store directly. */
 export const TAB_TITLE_MESSAGE = "ana:set-tab-title";
+export const TAB_OPEN_AGENT_MESSAGE = "ana:open-agent-tab";
 const STORAGE_KEY = "ana_tabs";
 
 /** Pages that belong to the installation rather than to a workspace. A tab
@@ -264,6 +266,9 @@ type TabsValue = {
   /** Sidebar navigation: the page opens in the focused pane, beside whatever
    *  else is open there. */
   open: (href: string, info?: TabInfo) => void;
+  /** A worker opens to the right, reuses that pane, then uses the source pane
+   * once the layout has more than two panes. */
+  openSubagent: (href: string, info?: TabInfo, sourcePaneId?: string) => void;
   /** Navigation from inside a page: the tab you are in becomes the new page,
    *  the way a start page hands its own tab over to what you picked on it. */
   openHere: (href: string, info?: TabInfo) => void;
@@ -324,6 +329,28 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       register(href, info);
       const pane = paneHolding(href) ?? findLeaf(layout, focused) ?? leaves(layout)[0];
       commit(mapNode(layout, pane.id, (found) => withTab(found as Leaf, href)), pane.id);
+      navigate(href);
+    },
+    [navigate]
+  );
+
+  const openSubagent = useCallback(
+    (href: string, info?: TabInfo, sourcePaneId?: string) => {
+      if (isPane()) {
+        window.parent.postMessage({ type: TAB_OPEN_AGENT_MESSAGE, href, info }, window.location.origin);
+        return;
+      }
+      register(href, info);
+      const source = paneHolding(href);
+      const all = leaves(layout);
+      if (all.length === 1 && !(source && all[0].tabs.length === 1)) {
+        const { layout: next, focus } = splitPaneTree(layout, all[0].id, "right", href, source?.id);
+        commit(next, focus);
+      } else {
+        const target = agentPane(layout, focused, sourcePaneId);
+        const { layout: next, focus } = splitPaneTree(layout, target.id, "center", href, source?.id);
+        commit(next, focus);
+      }
       navigate(href);
     },
     [navigate]
@@ -393,6 +420,18 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       const data = event.data;
+      if (data?.type === TAB_OPEN_AGENT_MESSAGE && typeof data.href === "string" && data.href.startsWith("/agents/")) {
+        const frame = [...document.querySelectorAll<HTMLIFrameElement>('[data-slot="pane-frame"]')]
+          .find((item) => item.contentWindow === event.source);
+        if (!frame) return;
+        const sourcePaneId = frame.closest('[data-slot="pane"]')?.getAttribute("data-pane") ?? undefined;
+        const info = data.info && typeof data.info === "object" ? {
+          title: typeof data.info.title === "string" ? data.info.title : undefined,
+          detail: typeof data.info.detail === "string" ? data.info.detail : undefined,
+        } : undefined;
+        openSubagent(data.href, info, sourcePaneId);
+        return;
+      }
       if (
         !data ||
         data.type !== TAB_TITLE_MESSAGE ||
@@ -405,7 +444,7 @@ export function TabsProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [setTitle]);
+  }, [setTitle, openSubagent]);
 
   const dropTab = useCallback(
     (paneId: string, side: DropSide, href: string, from?: string) => {
@@ -493,6 +532,7 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       tabs: openTabs,
       activeHref: pathname,
       open,
+      openSubagent,
       openHere,
       close,
       selectTab,
@@ -504,7 +544,7 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       focusPane,
       resizePane,
     }),
-    [openTabs, pathname, open, openHere, close, selectTab, setTitle, describeWorkspaces,
+    [openTabs, pathname, open, openSubagent, openHere, close, selectTab, setTitle, describeWorkspaces,
      panes, focusedPane, dropTab, focusPane, resizePane]
   );
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import {
@@ -35,6 +35,8 @@ import { Logo } from "@/components/logo";
 import { useTabs } from "@/components/tabs";
 import { WorkspaceIcon } from "@/components/workspace-icon";
 import { WorkspaceEditor } from "@/components/workspace-editor";
+import { BranchAgents } from "@/components/branch-agents";
+import { workspaceFromHref } from "@/lib/workspace-routes";
 import { cn } from "@/lib/utils";
 import {
   Sidebar,
@@ -76,15 +78,7 @@ export function SessionSidebar({
   // are in — the sidebar is how you keep two things open at once.
   const { activeHref, open: openTab, close: closeTab, describeWorkspaces } = useTabs();
   const href = (id: string) => `/${encodeURIComponent(id)}`;
-  const workspaceId = (() => {
-    const match = /^\/([^/]+)$/.exec(activeHref);
-    if (!match) return null;
-    try {
-      return decodeURIComponent(match[1]);
-    } catch {
-      return match[1];
-    }
-  })();
+  const workspaceId = workspaceFromHref(activeHref);
   /** A tab is titled by its project and detailed by its branch — never by its
    *  path, which is the same folder for every branch of a project. */
   const onOpenWorkspace = (workspace: WorkspaceSummary | null) => {
@@ -188,7 +182,7 @@ export function SessionSidebar({
     return () => { active = false; };
   }, []);
 
-  const visible = useMemo(() => {
+  const visible = (() => {
     const items = workspaces ?? [];
     const needle = filter.trim().toLowerCase();
     if (!needle) return items;
@@ -202,16 +196,13 @@ export function SessionSidebar({
     // matched comes along even when its own name did not.
     const parents = new Set(matched.map((item) => item.parent_id).filter(Boolean));
     return items.filter((item) => hit(item) || parents.has(item.id));
-  }, [workspaces, filter]);
+  })();
 
-  const projects = useMemo(
-    () => visible.filter((item) => item.parent_id === null),
-    [visible]
-  );
+  const projects = visible.filter((item) => item.parent_id === null);
   /** A project's branches, in the order the server listed them, split by the
    *  archive exactly as projects are: archiving a branch has to move it, or
    *  the control does nothing and the user has no way to tell. */
-  const branchesOf = useMemo(() => {
+  const branchesOf = (() => {
     const byParent = new Map<string, { live: WorkspaceSummary[]; filed: WorkspaceSummary[] }>();
     for (const item of visible) {
       if (!item.parent_id) continue;
@@ -220,19 +211,15 @@ export function SessionSidebar({
       (item.archived ? kin.filed : kin.live).push(item);
     }
     return byParent;
-  }, [visible]);
+  })();
 
   // The filter applies to both lists, so searching still finds something you
   // archived — it just stays under the archive heading. A project appears in
   // the archive when it is archived itself, and also when an archived branch
   // of a live project needs somewhere to be listed.
-  const active = useMemo(() => projects.filter((item) => !item.archived), [projects]);
-  const archived = useMemo(
-    () =>
-      projects.filter(
-        (item) => item.archived || (branchesOf.get(item.id)?.filed.length ?? 0) > 0
-      ),
-    [projects, branchesOf]
+  const active = projects.filter((item) => !item.archived);
+  const archived = projects.filter(
+    (item) => item.archived || (branchesOf.get(item.id)?.filed.length ?? 0) > 0
   );
 
   // Whether a project can host branches is no longer asked here. Adding one
@@ -293,9 +280,10 @@ export function SessionSidebar({
    *  already said, and the two names are the whole of what distinguishes one
    *  branch from another. */
   const row = (item: WorkspaceSummary, selectable = true) => (
-    <SidebarMenuItem key={item.id}>
+    <div key={item.id}>
+    <SidebarMenuItem>
       <SidebarMenuButton
-        isActive={selectable && href(item.id) === activeHref}
+        isActive={selectable && workspaceId === item.id}
         onClick={() => onOpenWorkspace(item)}
         className="h-auto py-1.5 pl-6"
         title={`${item.id}\n${item.path}`}
@@ -312,6 +300,8 @@ export function SessionSidebar({
         <SettingsIcon strokeWidth={1.5} />
       </SidebarMenuAction>
     </SidebarMenuItem>
+    {selectable && workspaceId === item.id && <BranchAgents workspaceId={item.id} reloadKey={reloadKey} />}
+    </div>
   );
 
   /** A project and the branches under it.
@@ -341,7 +331,7 @@ export function SessionSidebar({
     // sidebar render), so its branches are what name it; "main" is the
     // fallback for a project that has none yet, which is what ANA creates.
     const primaryLabel = kin.find((b) => b.base_branch)?.base_branch || "main";
-    const primaryActive = selectable && href(project.id) === activeHref;
+    const primaryActive = selectable && workspaceId === project.id;
     return (
       <div key={project.id} className="flex flex-col">
         <button
@@ -357,19 +347,19 @@ export function SessionSidebar({
           title={`${project.id}\n${project.path}`}
           className="group/header flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-xs font-medium text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
         >
+          <WorkspaceIcon icon={project.icon} className="size-3.5 shrink-0 text-sm" />
+          <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
+          {kin.length > 0 && (
+            <Badge variant="secondary" className="h-4 px-1.5 text-[10px] tabular-nums">
+              {kin.length}
+            </Badge>
+          )}
           <ChevronDownIcon
             className={cn(
               "size-3 shrink-0 opacity-60 transition-transform",
               folded && "-rotate-90"
             )}
           />
-          <WorkspaceIcon icon={project.icon} className="size-3.5 shrink-0 text-sm" />
-          <span className="truncate">{project.name}</span>
-          {kin.length > 0 && (
-            <Badge variant="secondary" className="ml-auto h-4 px-1.5 text-[10px] tabular-nums">
-              {kin.length}
-            </Badge>
-          )}
         </button>
 
         {!folded && (
@@ -387,11 +377,9 @@ export function SessionSidebar({
               >
                 <GitBranchIcon strokeWidth={1.5} className="size-3! shrink-0 opacity-70" />
                 <span className="truncate font-mono text-xs">{primaryLabel}</span>
-                {/* Colour on the text and the border only: a filled badge
-                    next to a filled "active" row reads as two selections. */}
                 <Badge
                   variant="outline"
-                  className="ml-auto h-4 shrink-0 border-primary px-1.5 text-[10px] text-primary"
+                  className="ml-auto h-4 shrink-0 border-border px-1.5 text-[10px] text-muted-foreground"
                 >
                   primary
                 </Badge>
@@ -404,6 +392,7 @@ export function SessionSidebar({
                 <SettingsIcon strokeWidth={1.5} />
               </SidebarMenuAction>
             </SidebarMenuItem>
+            {primaryActive && <BranchAgents workspaceId={project.id} reloadKey={reloadKey} />}
             {kin.map((branch) => row(branch, selectable))}
           </SidebarMenu>
         )}

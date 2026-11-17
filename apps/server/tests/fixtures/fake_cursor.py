@@ -35,6 +35,49 @@ def main() -> None:
             "message": {"role": "assistant", "content": [{"type": "text", "text": TEXT}]},
             "session_id": SESSION_ID,
         },
+        # The real CLI reports its own tool calls twice under one id, and the
+        # id arrives as two lines: its own and the model's.
+        {
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "call-abc-0\nfc_def_0",
+            "tool_call": {
+                "shellToolCall": {
+                    "args": {"command": "echo hi", "timeout": 30000},
+                },
+                "toolCallId": "call-abc-0\nfc_def_0",
+                "startedAtMs": "1",
+                "hookAdditionalContexts": [],
+            },
+            "session_id": SESSION_ID,
+        },
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call-abc-0\nfc_def_0",
+            "tool_call": {
+                "shellToolCall": {
+                    "args": {"command": "echo hi", "timeout": 30000},
+                    "result": {"success": {"exitCode": 0}},
+                },
+                "toolCallId": "call-abc-0\nfc_def_0",
+                "startedAtMs": "1",
+                "completedAtMs": "2",
+            },
+            "session_id": SESSION_ID,
+        },
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call-abc-1\nfc_def_1",
+            "tool_call": {
+                "editToolCall": {
+                    "args": {"path": "/w/made.txt", "streamContent": "ok\n"},
+                },
+                "toolCallId": "call-abc-1\nfc_def_1",
+            },
+            "session_id": SESSION_ID,
+        },
         {
             "type": "result",
             "subtype": "success",

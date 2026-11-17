@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import { CopyIcon, NetworkIcon } from "lucide-react";
 import {
@@ -16,6 +16,9 @@ import { QuestionCard } from "@/components/ui/question-card";
 import { Markdown } from "@/components/markdown";
 import { ToolCalls } from "@/components/tool-calls";
 import { fetchTurnDetail, type HistoryBlock, type HistoryTurn } from "@/lib/api";
+import { useTabs } from "@/components/tabs";
+import { agentHref } from "@/lib/workspace-routes";
+import { publishLiveAgents } from "@/lib/agent-live";
 // Loaded when a turn actually has a fan-out to draw: the graph brings its own
 // layout library (@xyflow) and its stylesheet, which is a large part of a
 // first load that most conversations never render.
@@ -33,12 +36,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clockTime, duration, timeExact } from "@/lib/format";
 import { notify } from "@/lib/notify";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Composer, type ComposerHandle } from "@/components/composer";
 import { Marker, MarkerContent } from "@/components/ui/marker";
 import {
@@ -49,15 +46,6 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-
-const TASK_STATUS_LABEL: Record<SubagentTask["status"], string> = {
-  running: "실행 중",
-  done: "완료",
-  error: "실패",
-  timeout: "시간 초과",
-  blocked: "대기 취소",
-  unknown: "상태 확인 불가",
-};
 
 /** What a fresh workspace can be asked for. Three concrete requests beat a
  *  blank rectangle: they say what this thing is for, and one click is faster
@@ -98,7 +86,7 @@ function findToolInput(
 /** The runs of calls in a stored turn, numbered the way the server numbers
  *  them: the turn's own blocks first, then each sub-agent's in order. A
  *  summarized run carries that number, so this is how its rows are found. */
-function toolRuns(turn: HistoryTurn): ToolEvent[][] {
+export function toolRuns(turn: HistoryTurn): ToolEvent[][] {
   const runs: ToolEvent[][] = [];
   const collect = (blocks: HistoryBlock[] | undefined) => {
     let current: ToolEvent[] = [];
@@ -151,7 +139,7 @@ function groupBlocks(blocks: MessageBlock[]): Grouped[] {
  *  inserted — in the order it happened. Used for the lead's reply and, by the
  *  sub-agent panel, for one worker's run: the same thing happened in both, so
  *  reading them should not be two different experiences. */
-function BlockList({
+export function BlockList({
   blocks,
   defaultToolsOpen,
   loadFullInput,
@@ -199,6 +187,7 @@ function BlockList({
 }
 
 export default function ChatPage({ sessionId }: { sessionId: string }) {
+  const { openSubagent } = useTabs();
   const {
     messages,
     connected,
@@ -253,15 +242,15 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
   // The draft itself lives in the composer, so typing does not re-render the
   // transcript; this only lets the starter buttons fill it.
   const composerRef = useRef<ComposerHandle>(null);
-  // The sub-agent whose own transcript is open, if any. A panel over the
-  // conversation rather than a replacement for it: the lead's reply is the
-  // context that makes a worker's output mean anything, so leaving the
-  // transcript on screen is the point.
-  const [openTask, setOpenTask] = useState<SubagentTask | null>(null);
-  // Which turn the open sub-agent came from, when it came from history: its
-  // run of calls is summarized like the lead's, and the rows live on that
-  // turn. Undefined for the turn in flight, whose calls are already here.
-  const [openTaskTurnId, setOpenTaskTurnId] = useState<number | undefined>(undefined);
+  const lastPromptAt = messages.findLast((message) => message.role === "user")?.at;
+  useEffect(() => {
+    const startedAt = lastPromptAt;
+    publishLiveAgents(sessionId, { tasks: plan?.tasks ?? [], running: streaming, startedAt });
+  }, [sessionId, plan, streaming, lastPromptAt]);
+
+  const openTask = (task: SubagentTask, turnId?: number) => {
+    openSubagent(agentHref(sessionId, task.id, turnId, lastPromptAt), { title: task.title, detail: task.agent });
+  };
 
   // Finished turns are what create and rename sessions, so the sidebar list is
   // refetched when the count of completed turns changes rather than on a timer.
@@ -270,14 +259,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
     [messages]
   );
 
-  // The live task carries the status and output the panel should show: a task
-  // opened while it was still running would otherwise stay frozen at the
-  // moment it was clicked.
-  const shownTask = useMemo(() => {
-    if (!openTask) return null;
-    const live = plan?.tasks.find((task) => task.id === openTask.id);
-    return live ?? openTask;
-  }, [openTask, plan]);
 
   // Whether the lead has started writing its answer for the turn in flight.
   // Once it has, the plan card folds itself: its canvas and task list sit below
@@ -588,10 +569,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                         {message.plan && (
                           <PlanGraph
                             plan={message.plan}
-                            onSelectTask={(task) => {
-                              setOpenTaskTurnId(message.turnId);
-                              setOpenTask(task);
-                            }}
+                            onSelectTask={(task) => openTask(task, message.turnId)}
                             defaultOpen={false}
                           />
                         )}
@@ -618,10 +596,7 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
                   <MessageScrollerItem messageId="plan">
                     <PlanGraph
                       plan={plan}
-                      onSelectTask={(task) => {
-                        setOpenTaskTurnId(undefined);
-                        setOpenTask(task);
-                      }}
+                      onSelectTask={(task) => openTask(task)}
                       autoCollapse={leadAnswering && !plan.tasks.some((task) => task.status === "running")}
                     />
                   </MessageScrollerItem>
@@ -685,96 +660,6 @@ export default function ChatPage({ sessionId }: { sessionId: string }) {
       </div>
     </PageShell>
 
-      {/* One sub-agent's own record: what it was told, what it ran, what it
-          answered. Opened from the plan it belongs to, and closed with Esc. */}
-      <Sheet
-        open={shownTask !== null}
-        onOpenChange={(open) => { if (!open) setOpenTask(null); }}
-      >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
-          <SheetHeader>
-            <SheetTitle className="pr-8">{shownTask?.title}</SheetTitle>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {shownTask && <Badge variant="outline">{shownTask.agent}</Badge>}
-              {shownTask?.model && shownTask.model !== shownTask.agent && (
-                <Badge variant="outline" className="font-mono">
-                  {shownTask.model}
-                </Badge>
-              )}
-              {shownTask && (
-                <Badge variant={shownTask.status === "error" || shownTask.status === "timeout" ? "destructive" : "secondary"}>
-                  {TASK_STATUS_LABEL[shownTask.status]}
-                </Badge>
-              )}
-              {shownTask?.scope && (
-                <Badge variant="outline" title="대장이 이 하위 에이전트에게 준 권한 범위">
-                  {shownTask.scope.mode === "read" ? "읽기 전용" : "쓰기 가능"}
-                  {shownTask.scope.paths?.length ? ` · ${shownTask.scope.paths.join(", ")}` : ""}
-                </Badge>
-              )}
-              {typeof shownTask?.tokens === "number" && (
-                <Badge variant="outline">{shownTask.tokens.toLocaleString()} tok</Badge>
-              )}
-            </div>
-          </SheetHeader>
-
-          {shownTask && (
-            // A conversation, because that is what it was: the lead sent this
-            // worker an instruction and the worker answered. Read the same way
-            // the main transcript is — the instruction as a message from the one
-            // who gave it, the worker's own words as body text, its commands
-            // where they happened — so nothing has to be learned twice.
-            <div className="flex min-w-0 flex-col gap-4 px-4 pb-4">
-              {shownTask.prompt && (
-                <div className="flex min-w-0 flex-col gap-1">
-                  <div className="text-xs tracking-wide text-muted-foreground">
-                    대장 에이전트의 지시
-                  </div>
-                  <p className="min-w-0 font-medium whitespace-pre-wrap">{shownTask.prompt}</p>
-                </div>
-              )}
-
-              <div className="flex min-w-0 flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>
-                    {shownTask.model ?? models[shownTask.agent] ?? shownTask.agent}
-                  </span>
-                </div>
-
-                {/* What the worker said and ran, interleaved. A worker ANA gave
-                    up on has no final answer, and this is the whole record of
-                    what it did get done — which is exactly the run someone
-                    opens this panel to read. */}
-                {shownTask.blocks?.length ? (
-                  <BlockList
-                    blocks={shownTask.blocks}
-                    loadFullInput={fullInputLoader(openTaskTurnId)}
-                    loadRun={runLoader(openTaskTurnId)}
-                    defaultToolsOpen={shownTask.status === "running" ? true : undefined}
-                  />
-                ) : shownTask.tools?.length ? (
-                  // Older turns recorded the calls without their ordering.
-                  <ToolCalls tools={shownTask.tools} />
-                ) : null}
-
-                {shownTask.output ? (
-                  <Markdown>{shownTask.output}</Markdown>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    {shownTask.error || "작업 결과를 기다리는 중…"}
-                  </p>
-                )}
-
-                {shownTask.output && shownTask.error ? (
-                  // Both: a worker that was cut off left work behind *and* a
-                  // reason it stopped.
-                  <p className="text-sm text-destructive">{shownTask.error}</p>
-                ) : null}
-              </div>
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
     </>
   );
 }

@@ -238,7 +238,8 @@ export type TurnStatus = {
     | "delegating"
     | "replanning"
     | "synthesizing"
-    | "answering";
+    | "answering"
+    | "cancelling";
   agent: string;
   count: number;
   /** When this phase started, for the elapsed counter. */
@@ -284,7 +285,7 @@ const HISTORY_PAGE_TURNS = 12;
 function messagesFromTurns(turns: HistoryTurn[]): ChatMessage[] {
   const restored: ChatMessage[] = [];
   for (const turn of turns) {
-    const agent: Agent = isAgentName(turn.agent) ? turn.agent : "claude";
+    const agent: Agent = isAgentName(turn.agent) ? turn.agent : "codex";
     const finishedAt = Date.parse(turn.created_at);
     restored.push({
       role: "user",
@@ -451,7 +452,7 @@ export function useChatSocket(initialThreadId: string) {
   // Which agent the in-flight turn was sent to. A "text" frame carries no
   // agent field (it's a bare content delta), so the label for a streaming
   // reply comes from the request, not the response.
-  const pendingAgentRef = useRef<Agent>("claude");
+  const pendingAgentRef = useRef<Agent>("codex");
   // Thinking can arrive before the reply it belongs to exists, so it is held
   // until there is a message to attach it to.
   const pendingReasoningRef = useRef<string>("");
@@ -654,7 +655,7 @@ export function useChatSocket(initialThreadId: string) {
         }
 
         if (event.type === "route") {
-          setRoute({ agent: event.agent ?? "claude", reason: event.text });
+          setRoute({ agent: event.agent ?? "codex", reason: event.text });
           pendingAgentRef.current = (event.agent as Agent) ?? pendingAgentRef.current;
           return;
         }
@@ -1111,6 +1112,7 @@ export function useChatSocket(initialThreadId: string) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     try {
       socket.send(JSON.stringify({ type: "cancel" }));
+      setStatus({ phase: "cancelling", agent: pendingAgentRef.current, count: 0, since: Date.now() });
     } catch {
       return false;
     }

@@ -280,10 +280,7 @@ def read_disabled_agents() -> tuple[str, ...]:
 
     Names that are not CLIs ANA knows are dropped rather than rejected: this
     list outlives the version that wrote it, and a removed agent should not
-    make the file unreadable. The default agent is dropped the same way — it
-    is what an unknown agent name and an empty ladder both fall back to, and
-    the runner builds it whatever this says, so listing it would only make the
-    UI disagree with what actually happens."""
+    make the file unreadable."""
     try:
         stored = _disabled_agents_file().read_text(encoding="utf-8")
     except OSError:
@@ -294,23 +291,24 @@ def read_disabled_agents() -> tuple[str, ...]:
         for part in raw.replace("\n", ",").split(",")
         if part.strip()
     }
-    return tuple(agent for agent in AGENTS if agent in names and agent != DEFAULT_AGENT)
+    disabled = tuple(agent for agent in AGENTS if agent in names)
+    # A malformed deployment value must not leave the router without a CLI.
+    return disabled if len(disabled) < len(AGENTS) else tuple(
+        agent for agent in disabled if agent != DEFAULT_AGENT
+    )
 
 
 def write_disabled_agents(agents) -> None:
     """Stores the switched-off CLIs.
 
-    Raises on a name that is not a CLI and on the default agent, because both
-    are a UI bug rather than a preference to honor quietly: the default agent
-    is where an unknown agent name, an all-disabled ladder and a failed
-    failover chain all land, so "off" is not a state it can be in."""
+    Raises on an unknown CLI or a list that would switch off every CLI."""
     names = [str(agent).strip().lower() for agent in (agents or []) if str(agent).strip()]
     unknown = [name for name in names if name not in AGENTS]
     if unknown:
         raise ValueError(f"unknown agent: {', '.join(sorted(unknown))}")
-    if DEFAULT_AGENT in names:
-        raise ValueError(f"{DEFAULT_AGENT} is the default agent and cannot be switched off")
     ordered = [agent for agent in AGENTS if agent in set(names)]
+    if len(ordered) == len(AGENTS):
+        raise ValueError("at least one agent must remain enabled")
     disabled_agents_path().write_text("\n".join(ordered), encoding="utf-8")
 
 
@@ -385,6 +383,17 @@ scope of that task. Report in English — the lead writes the user's answer.
 
 DEFAULT_COMMIT_CO_AUTHOR = "AnA <holy9unjinx@gmail.com>"
 
+# CLIs inject these even when the prompt forbids extra trailers. Named so
+# the model can delete the exact line, and so tests can lock the wording.
+CURSOR_VENDOR_TRAILER = "Co-authored-by: Cursor <cursoragent@cursor.com>"
+_VENDOR_TRAILER_RULE = (
+    "Strip any other Co-Authored-By / Co-authored-by line, including the "
+    f"Cursor CLI's `{CURSOR_VENDOR_TRAILER}` and the Claude CLI's "
+    "`Co-Authored-By: Claude …`. Those CLIs inject them even when this "
+    "prompt forbids extra trailers; delete the injected line so it never "
+    "lands in history."
+)
+
 
 def commit_co_author_trailer() -> str:
     """The one co-author line every agent's commits carry, or "" for none.
@@ -399,11 +408,15 @@ def commit_co_author_trailer() -> str:
 
 def _commit_rule() -> str:
     trailer = commit_co_author_trailer()
-    if not trailer:
-        return ""
+    if trailer:
+        return (
+            "When you create a git commit, end the message with this exact trailer "
+            f"line and add no other Co-Authored-By lines:\n{trailer}\n"
+            f"{_VENDOR_TRAILER_RULE}"
+        )
     return (
-        "When you create a git commit, end the message with this exact trailer "
-        f"line and add no other Co-Authored-By lines:\n{trailer}"
+        "When you create a git commit, add no Co-Authored-By lines. "
+        f"{_VENDOR_TRAILER_RULE}"
     )
 
 

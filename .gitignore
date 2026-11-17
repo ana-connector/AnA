@@ -7,3 +7,5 @@ node_modules/
 apps/web/.next/
 .agents/
 .pytest_cache/
+.claude/worktrees/
+docker-compose.yml.bak

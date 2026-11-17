@@ -7,11 +7,14 @@ but those three accept the same `hookSpecificOutput` response contract, so one
 hook script backs them (see docs/plans/2026-09-22-governance-gate.md
 and docs/plans/2026-09-23-kimi-adapter.md).
 
-Cursor Agent has no PreToolUse hook; `prepare_cursor_home` only isolates HOME
-so MCP config and the host login (`auth.json`) can be shared safely. OpenCode
-has none either, and `prepare_opencode_home` does the same job for it — with
-the twist that OpenCode's credentials live in its data directory rather than
-its config directory.
+Cursor Agent has no PreToolUse hook; `prepare_cursor_home` isolates HOME so
+MCP config and the host login (`auth.json`) can be shared safely, and writes
+a CLI config that turns off vendor commit attribution (the Cursor CLI would
+otherwise append `Co-authored-by: Cursor <cursoragent@cursor.com>` the same
+way Claude appends its own trailer). OpenCode has no hook either, and
+`prepare_opencode_home` does the same job for it — with the twist that
+OpenCode's credentials live in its data directory rather than its config
+directory.
 """
 import json
 import os
@@ -207,13 +210,49 @@ def prepare_cursor_home(
     auth_dst = config / "auth.json"
     if auth_src.is_file() and not auth_dst.exists() and not auth_dst.is_symlink():
         auth_dst.symlink_to(auth_src)
-    # Optional profile cache; missing is fine — the CLI rewrites it.
-    for name in ("cli-config.json",):
-        src = source / name
-        dst = config / name
-        if src.is_file() and not dst.exists() and not dst.is_symlink():
-            dst.symlink_to(src)
+    # cli-config is a copy, not a symlink: ANA forces vendor commit
+    # attribution off without rewriting the host's interactive settings.
+    _write_cursor_cli_config(home, source)
     return home
+
+
+def _load_json_object(path: Path) -> dict:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write_cursor_cli_config(home: Path, source: Path) -> None:
+    """Writes ANA's Cursor CLI config with agent commit attribution off.
+
+    `attribution.attributeCommitsToAgent` defaults to true, and the CLI then
+    appends `Co-authored-by: Cursor <cursoragent@cursor.com>` whatever the
+    system prompt says — the same class of injection Claude's
+    `attribution.commit` setting replaces. A symlink would either inherit
+    that default or write back into the user's real `cli-config.json`.
+    """
+    dests = (
+        home / ".cursor" / "cli-config.json",
+        home / ".config" / "cursor" / "cli-config.json",
+    )
+    payload: dict = {}
+    for path in (*dests, source / "cli-config.json"):
+        if not path.is_file():
+            continue
+        loaded = _load_json_object(path)
+        if loaded:
+            payload = loaded
+            break
+    attribution = payload.get("attribution")
+    attribution = dict(attribution) if isinstance(attribution, dict) else {}
+    attribution["attributeCommitsToAgent"] = False
+    attribution["attributePRsToAgent"] = False
+    payload["attribution"] = attribution
+    text = json.dumps(payload, indent=2) + "\n"
+    for dest in dests:
+        atomic.write_text(dest, text)
 
 
 def prepare_opencode_home(

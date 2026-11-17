@@ -129,6 +129,18 @@ def test_branch_capability_is_true_for_a_repository(client, project_in_repo):
     assert body == {"can_branch": True, "reason": ""}
 
 
+def test_uncommitted_project_files_are_not_silently_left_out_of_a_branch(client, project_in_repo):
+    project_id, folder = project_in_repo
+    (folder / "draft.txt").write_text("current project work\n", encoding="utf-8")
+
+    capability = client.get(f"/workspaces/{project_id}/branch-capability").json()
+    assert capability["can_branch"] is False
+    assert "커밋" in capability["reason"]
+    response = client.post(f"/workspaces/{project_id}/branches", json={"name": "new"})
+    assert response.status_code == 422
+    assert not (folder / ".ana" / "branches" / "new").exists()
+
+
 def test_merge_endpoint_brings_the_work_in(client, project_in_repo):
     project_id, folder = project_in_repo
     branch = client.post(

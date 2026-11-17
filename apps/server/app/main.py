@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from apps.server.app.capabilities import router as capabilities_router
+from apps.server.app.workspace_files import router as workspace_files_router
 from apps.server.app import scheduler
 from apps.server.app.runners import RunnerRegistry
 from apps.server.app.gate import router as gate_router
@@ -223,6 +224,7 @@ app = FastAPI(title="ANA Core Loop", lifespan=lifespan)
 app.include_router(chat_router)
 app.include_router(gate_router)
 app.include_router(capabilities_router)
+app.include_router(workspace_files_router)
 
 
 @app.middleware("http")
@@ -299,6 +301,29 @@ async def workspaces(request: Request, limit: int = Query(default=500, ge=1, le=
     activity. A workspace owns exactly one conversation, so its id is also the
     thread id."""
     return {"workspaces": await list_workspaces(request.app.state.pool, limit=limit)}
+
+
+@app.get("/workspaces/{workspace_id}/agents")
+async def workspace_agents(request: Request, workspace_id: str) -> dict:
+    """A branch's saved workers, without sending transcripts and tool inputs."""
+    if await get_workspace(request.app.state.pool, workspace_id) is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    async with request.app.state.pool.connection() as conn:
+        cur = await conn.execute(
+            """SELECT id, created_at, meta->'subagents' FROM turns
+               WHERE thread_id = %s AND meta ? 'subagents'
+               ORDER BY id DESC""",
+            (workspace_id,),
+        )
+        rows = await cur.fetchall()
+    agents = [
+        {"turn_id": turn_id, "created_at": created_at.isoformat(), "id": task.get("id"),
+         "title": task.get("title"), "agent": task.get("agent"),
+         "status": task.get("status")}
+        for turn_id, created_at, tasks in rows for task in (tasks or [])
+        if isinstance(task, dict) and task.get("id")
+    ]
+    return {"agents": agents}
 
 
 @app.post("/workspaces")

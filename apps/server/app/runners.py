@@ -76,6 +76,7 @@ class TurnRunner:
         adapters: dict,
         config: dict,
         graph,
+        before_turn: Optional[Callable[[], Awaitable[None]]] = None,
         container: bool = False,
         container_error: str = "",
     ) -> None:
@@ -87,6 +88,7 @@ class TurnRunner:
         self.adapters = adapters
         self.config = config
         self.graph = graph
+        self.before_turn = before_turn
         self.container = container
         self.container_error = container_error
 
@@ -252,6 +254,8 @@ class TurnRunner:
         # Session id continuity across turns comes from the checkpointed graph
         # state, not from anything held here — which is also why a turn can
         # outlive the connection that asked for it.
+        if self.before_turn is not None:
+            await self.before_turn()
         timeline = TurnTimeline()
         self.gate_session.turn_generation += 1
         self.gate_session.timeline = timeline

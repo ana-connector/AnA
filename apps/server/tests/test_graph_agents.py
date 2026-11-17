@@ -164,5 +164,5 @@ async def test_unknown_agent_falls_back_to_default(db_pool):
 
     values = await _run(graph, config, "hello", "nonexistent-agent")
 
-    assert adapters["claude"].calls, "unknown agent must normalize to the default"
-    assert values["last_agent"] == "claude"
+    assert adapters["codex"].calls, "unknown agent must use the default ladder rung"
+    assert values["last_agent"] == "codex"

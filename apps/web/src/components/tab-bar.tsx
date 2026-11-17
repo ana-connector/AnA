@@ -4,6 +4,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import {
   ClockIcon,
+  BotIcon,
   GlobeIcon,
   HomeIcon,
   LockIcon,
@@ -16,6 +17,7 @@ import {
 import { useTabs, type Tab } from "@/components/tabs";
 import { PANE_DRAG_TYPE, TAB_DRAG_TYPE } from "@/components/pane-host";
 import { WorkspaceIcon } from "@/components/workspace-icon";
+import { FileTypeIcon } from "@/components/file-type-icon";
 import { Separator } from "@/components/ui/separator";
 import { BROWSER_ROUTE } from "@/lib/preview";
 import type { Leaf } from "@/lib/panes";
@@ -33,8 +35,9 @@ const ROUTE_ICONS: Record<string, LucideIcon> = {
 
 function iconFor(tab: Tab) {
   if (tab.icon) return <WorkspaceIcon icon={tab.icon} className="self-center" />;
+  if (tab.href.startsWith("/files/")) return <FileTypeIcon name={tab.title} className="size-4 self-center" />;
   const Route =
-    ROUTE_ICONS[tab.href] ?? (tab.href.startsWith(BROWSER_ROUTE) ? GlobeIcon : undefined);
+    ROUTE_ICONS[tab.href] ?? (tab.href.startsWith(BROWSER_ROUTE) ? GlobeIcon : tab.href.startsWith("/agents/") ? BotIcon : undefined);
   return Route ? <Route className="size-4 shrink-0 self-center" strokeWidth={1.5} /> : null;
 }
 
@@ -180,19 +183,15 @@ export function TabStrip({
                 className="flex min-w-0 flex-1 items-baseline gap-1.5 py-1.5 outline-none focus-visible:underline"
               >
                 {iconFor(tab)}
-                <span data-slot="tab-title" className="min-w-0 flex-1 truncate">
+                <span data-slot="tab-title" className="min-w-0 shrink truncate">
                   {tab.title}
                 </span>
                 {tab.detail ? (
-                  // The folder used to sit at the far right of the bar,
-                  // where it belonged to whichever tab happened to be open.
-                  // It belongs to the tab: two workspaces are often called
-                  // the same thing in different trees. Capped rather than
-                  // left to shrink with the name: when both are too long,
-                  // the name is the one worth reading.
+                  // The title uses the available width first; the detail
+                  // shrinks away before a short title gets an ellipsis.
                   <span
                     data-slot="tab-detail"
-                    className="max-w-[45%] shrink-0 truncate font-mono text-[11px] text-muted-foreground"
+                    className="min-w-0 shrink-[100] truncate font-mono text-[11px] text-muted-foreground"
                   >
                     {tab.detail}
                   </span>

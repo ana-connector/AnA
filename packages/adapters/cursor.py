@@ -11,6 +11,17 @@ Event mapping (verified against agent 2026.10.16-e3cb207):
     {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
     {"type":"result","subtype":"success","result":"...","session_id":"...",
      "usage":{"inputTokens":N,"outputTokens":N,...}}
+    {"type":"tool_call","subtype":"started"|"completed","call_id":"call-...",
+     "tool_call":{"shellToolCall":{"args":{"command":"...",...}},
+                  "toolCallId":"call-...","startedAtMs":"..."}}
+
+The tool_call frames are what `--output-format stream-json` emits for the
+CLI's own work -- one `<kind>ToolCall` key per call (`readToolCall`,
+`shellToolCall`, `editToolCall`, ...), `started` then `completed` under the
+same id. They were dropped here until 2026-10-24, so a Cursor turn's file
+edits and shell commands appeared nowhere in ANA: the gate, which is where
+tool records normally come from, never sees them either (no PreToolUse hook).
+They are now recorded as what they are -- calls the CLI allowed itself.
 
 Auth is the host login session (`~/.config/cursor/auth.json`), not an API key:
 prepare_cursor_home() points HOME at an ANA directory that symlinks that file
@@ -25,7 +36,7 @@ import os
 from functools import lru_cache
 from typing import AsyncIterator, Optional
 
-from packages.adapters.base import AdapterEvent, AgentAdapter
+from packages.adapters.base import AdapterEvent, AgentAdapter, cli_tool_record
 
 
 def default_executable() -> str:
@@ -164,6 +175,47 @@ class CursorAdapter(AgentAdapter):
             )
 
     @staticmethod
+    def _tool_call(event: dict, session_id: str) -> Optional[AdapterEvent]:
+        """One `tool_call` frame as a tool record, or None when it carries no
+        call.
+
+        The payload is keyed by kind -- `{"shellToolCall": {"args": {...}}}` --
+        alongside bookkeeping (`toolCallId`, `startedAtMs`, hook contexts), so
+        the kind is found by the `ToolCall` suffix rather than by listing the
+        dozens of kinds the CLI has. `started` and `completed` carry the same
+        id, and the transcript updates that entry instead of recording the call
+        twice."""
+        payload = event.get("tool_call")
+        if not isinstance(payload, dict):
+            return None
+        kind = next(
+            (key for key, value in payload.items()
+             if key.endswith("ToolCall") and isinstance(value, dict)),
+            None,
+        )
+        if kind is None:
+            return None
+        body = payload[kind]
+        args = body.get("args")
+        # Cursor's call ids arrive as two lines, its own id and the model's
+        # ("call-...-0\nfc_...1_0"). The first is the one `completed` repeats,
+        # and a newline in an id reaches the UI as a broken line.
+        raw_id = str(event.get("call_id") or payload.get("toolCallId") or "")
+        call_id = raw_id.splitlines()[0].strip() if raw_id else None
+        return AdapterEvent(
+            type="tool",
+            session_id=session_id,
+            raw={
+                "tool": cli_tool_record(
+                    "cursor",
+                    kind[: -len("ToolCall")],
+                    args if isinstance(args, dict) else {},
+                    call_id,
+                )
+            },
+        )
+
+    @staticmethod
     def _parse_event(event: dict, session_id: str) -> Optional[AdapterEvent]:
         event_type = event.get("type")
         sid = event.get("session_id") or session_id
@@ -193,6 +245,9 @@ class CursorAdapter(AgentAdapter):
             if text:
                 return AdapterEvent(type="text", text=text, session_id=sid, raw=event)
             return None
+
+        if event_type == "tool_call":
+            return CursorAdapter._tool_call(event, sid)
 
         if event_type == "result":
             return AdapterEvent(

@@ -21,12 +21,13 @@ from packages.orchestrator.containers import (
 
 
 def _spec(tmp_path, **kwargs) -> ContainerSpec:
-    return ContainerSpec(
-        workspace_id="demo",
-        workspace_path=str(tmp_path / "demo"),
-        auth_mounts=(),
-        **kwargs,
-    )
+    values = {
+        "workspace_id": "demo",
+        "workspace_path": str(tmp_path / "demo"),
+        "auth_mounts": (),
+    }
+    values.update(kwargs)
+    return ContainerSpec(**values)
 
 
 @pytest.fixture
@@ -81,6 +82,86 @@ def test_run_args_publish_ports_and_mount_the_workspace(tmp_path):
     assert "5173:5173" in args
     # A place to exec into, not a process to supervise.
     assert args[-2:] == ["sleep", "infinity"]
+
+
+def test_default_tool_mounts_are_the_host_path_readonly(monkeypatch):
+    monkeypatch.setenv("ANA_HOST_FLUTTER_SDK", "/home/hello/development/flutter")
+    monkeypatch.setenv("ANA_HOST_ANDROID_SDK", "/home/hello/Android/sdk")
+    monkeypatch.setenv("ANA_HOST_JAVA_HOME", "/opt/java")
+    monkeypatch.delenv("ANA_HOST_MISSING", raising=False)
+
+    mounts = containers.default_tool_mounts()
+
+    assert "/home/hello/development/flutter:/home/hello/development/flutter" in mounts
+    assert "/home/hello/development/flutter:/home/hello/development/flutter:ro" not in mounts
+    assert "/home/hello/Android/sdk:/home/hello/Android/sdk:ro" in mounts
+    assert "/opt/java:/opt/java:ro" in mounts
+
+
+def test_default_tool_mounts_skip_unset_paths(monkeypatch):
+    monkeypatch.delenv("ANA_HOST_FLUTTER_SDK", raising=False)
+    monkeypatch.delenv("ANA_HOST_ANDROID_SDK", raising=False)
+    monkeypatch.delenv("ANA_HOST_JAVA_HOME", raising=False)
+
+    assert containers.default_tool_mounts() == ()
+
+
+def test_default_tool_env_puts_flutter_and_adb_on_path(monkeypatch):
+    monkeypatch.setenv("ANA_HOST_FLUTTER_SDK", "/home/hello/development/flutter")
+    monkeypatch.setenv("ANA_HOST_ANDROID_SDK", "/home/hello/Android/sdk")
+    monkeypatch.setenv("ANA_HOST_JAVA_HOME", "/opt/java")
+    monkeypatch.setenv("ANA_ADB_GATEWAY_PORT", "15037")
+
+    env = dict(containers.default_tool_env())
+
+    assert env["FLUTTER_ROOT"] == "/home/hello/development/flutter"
+    assert env["ANDROID_HOME"] == "/home/hello/Android/sdk"
+    assert env["ANDROID_SDK_ROOT"] == "/home/hello/Android/sdk"
+    assert env["JAVA_HOME"] == "/opt/java"
+    assert env["ADB_SERVER_SOCKET"] == "tcp:host.docker.internal:15037"
+    path = env["PATH"]
+    assert path.startswith("/home/hello/development/flutter/bin:")
+    assert "/home/hello/Android/sdk/platform-tools" in path
+
+
+def test_bind_mount_args_keep_readonly_mode():
+    assert containers.bind_mount_args("/sdk:/sdk:ro") == ["-v", "/sdk:/sdk:ro"]
+    assert containers.bind_mount_args("/home/ana/.claude:/home/ana/.claude") == [
+        "-v",
+        "/home/ana/.claude:/home/ana/.claude",
+    ]
+    assert containers.bind_mount_args("not-a-mount") == []
+
+
+def test_run_args_reach_the_host_loopback_and_host_sdks(tmp_path):
+    spec = _spec(
+        tmp_path,
+        auth_mounts=("/sdk:/sdk:ro",),
+        extra_env=(
+            ("PATH", "/sdk/platform-tools:/usr/bin"),
+            ("ANDROID_HOME", "/sdk"),
+            ("ADB_SERVER_SOCKET", "tcp:host.docker.internal:15037"),
+        ),
+    )
+
+    args = run_args(spec)
+
+    # ssh -R and adb bind the host's 127.0.0.1; host-gateway is the address
+    # from inside the compose network that still lands on that host.
+    assert args[args.index("--add-host") + 1] == "host.docker.internal:host-gateway"
+    assert "/sdk:/sdk:ro" in args
+    assert "ANDROID_HOME=/sdk" in args
+    assert "ADB_SERVER_SOCKET=tcp:host.docker.internal:15037" in args
+    assert "PATH=/sdk/platform-tools:/usr/bin" in args
+
+
+def test_fingerprint_changes_with_tool_env_or_hosts(tmp_path):
+    base = _spec(tmp_path)
+
+    assert base.fingerprint() != _spec(
+        tmp_path, extra_env=(("ANDROID_HOME", "/sdk"),)
+    ).fingerprint()
+    assert base.fingerprint() != _spec(tmp_path, extra_hosts=()).fingerprint()
 
 
 def test_exec_prefix_passes_env_explicitly(tmp_path):

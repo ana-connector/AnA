@@ -24,7 +24,9 @@ instructions: |
      and stop.
   3. If it is one intent, write the message in Conventional Commits form: an
      imperative one-line subject, and a body saying why. Intent: {{intent}}
-  4. Commit, and report the hash.
+  4. Commit, and report the hash. Keep only the orchestrator's Co-Authored-By
+     trailer. Delete `Co-authored-by: Cursor <cursoragent@cursor.com>` (any
+     capitalization) and any other CLI vendor trailer before the commit lands.
 
   Do not: push, change branches, rewrite history, or revert someone else's
-  uncommitted work.
+     uncommitted work.

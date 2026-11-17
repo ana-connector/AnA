@@ -340,6 +340,10 @@ the switch as unavailable otherwise rather than failing at turn time.
 | `ANA_WORKSPACE_NETWORK` | Network workspace containers join (`ana_default`) |
 | `ANA_CONTAINER_GATE_URL` | Gate URL as seen from inside a workspace container |
 | `DOCKER_GID` | Group id of the host's docker socket (the server runs as uid 1000) |
+| `ANA_HOST_FLUTTER_SDK` | Host Flutter SDK path (same path, read-only, inside the container) |
+| `ANA_HOST_ANDROID_SDK` | Host Android SDK path (includes `adb`) |
+| `ANA_HOST_JAVA_HOME` | Host JDK path |
+| `ANA_ADB_GATEWAY_PORT` | Port containers use to reach the host adb server (default 15037) |
 
 ### The agent asking you
 

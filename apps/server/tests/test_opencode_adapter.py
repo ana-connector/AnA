@@ -78,17 +78,36 @@ def test_error_message_prefers_provider_text():
 
 
 @pytest.mark.asyncio
+async def test_tool_calls_are_recorded_without_their_output(tmp_path):
+    """OpenCode has no PreToolUse hook either, so these records are the only
+    sign a turn read a file or ran a command. The arguments are kept and
+    `state.output` is not: a read's output is the whole file, and a transcript
+    that carries one copy of every file the turn looked at is the payload
+    problem the history endpoint was rebuilt to avoid."""
+    events = await _collect(_adapter(tmp_path).run_stream("ping"))
+    tools = [e.raw["tool"] for e in events if e.type == "tool"]
+
+    assert [tool["tool_name"] for tool in tools] == ["Read", "Bash"]
+    assert [tool["tool_use_id"] for tool in tools] == ["call-1", "call-2"]
+    assert tools[0]["input"] == {"filePath": "note.txt"}
+    assert tools[1]["input"] == {"command": "echo hi"}
+    assert all(tool["decided_by"] == "cli:opencode" for tool in tools)
+    assert all(tool["verdict"] == "allow" for tool in tools)
+    assert not any("output" in str(tool["input"]) for tool in tools)
+
+
+@pytest.mark.asyncio
 async def test_run_stream_sums_steps_into_one_result(tmp_path):
     adapter = _adapter(tmp_path, model="opencode/space-bunny-free")
     events = await _collect(adapter.run_stream("ping"))
 
     kinds = [e.type for e in events]
     # One model event (the stream never names the model itself), then the
-    # reasoning and text parts, then the synthesized result.
-    assert kinds == ["model", "reasoning", "text", "result"]
+    # reasoning part, the two tool calls, the text, and the synthesized result.
+    assert kinds == ["model", "reasoning", "tool", "tool", "text", "result"]
     assert events[0].model == "opencode/space-bunny-free"
     assert events[1].text == "thinking…"
-    assert events[2].text == "pong"
+    assert events[4].text == "pong"
 
     result = events[-1]
     assert result.text == "pong"

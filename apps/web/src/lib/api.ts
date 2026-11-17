@@ -327,6 +327,62 @@ export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
   return ((await response.json()) as { workspaces: WorkspaceSummary[] }).workspaces;
 }
 
+export type WorkspaceFileEntry = {
+  name: string;
+  path: string;
+  directory: boolean;
+  git_status: string | null;
+  git_ignore_rule: string | null;
+};
+
+export type WorkspaceFileListing = {
+  entries: WorkspaceFileEntry[];
+  git: boolean;
+  branch: string | null;
+  summary: { staged: number; modified: number; untracked: number; conflicts: number };
+};
+
+export type WorkspaceAgent = {
+  turn_id: number;
+  created_at: string;
+  id: string;
+  title: string;
+  agent: string;
+  status: string;
+};
+
+export async function fetchWorkspaceAgents(workspaceId: string): Promise<WorkspaceAgent[]> {
+  const result = await api<{ agents: WorkspaceAgent[] }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/agents`
+  );
+  return result.agents;
+}
+
+export async function fetchWorkspaceFiles(workspaceId: string, path = "") {
+  return api<WorkspaceFileListing>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}`
+  );
+}
+
+export async function readWorkspaceFile(workspaceId: string, path: string) {
+  return api<{ content: string; revision: string }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/files/content?path=${encodeURIComponent(path)}`
+  );
+}
+
+export function workspaceFilePreviewUrl(workspaceId: string, path: string) {
+  return `${apiBase()}/workspaces/${encodeURIComponent(workspaceId)}/files/preview?path=${encodeURIComponent(path)}`;
+}
+
+export async function saveWorkspaceFile(
+  workspaceId: string, path: string, content: string, revision: string
+) {
+  return api<{ revision: string }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/files/content?path=${encodeURIComponent(path)}`,
+    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, revision }) }
+  );
+}
+
 export async function createWorkspace(name: string, path?: string) {
   const response = await fetch(`${apiBase()}/workspaces`, {
     method: "POST",

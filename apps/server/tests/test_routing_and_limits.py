@@ -246,7 +246,7 @@ def test_legacy_routing_file_is_backed_up_and_migrated(tmp_path, monkeypatch):
 
     assert "lead:" in read_routing()
     assert (tmp_path / "routing.legacy.yaml").read_text(encoding="utf-8") == old
-    assert decide(None, role=LEAD, usage={}).model == "fable"
+    assert decide(None, role=LEAD, usage={}).model == "gpt-6-astra"
 
 
 def test_manual_usage_estimate_affects_routing_and_survives_restart(ladder, tmp_path, monkeypatch):
@@ -677,8 +677,7 @@ def test_switched_off_cli_is_not_honored_even_when_asked_for(ladder, switched_of
 
 def test_ladder_of_switched_off_clis_falls_back_to_one_that_is_on(ladder, switched_off):
     switched_off("codex", "kimi", "tapie", "cursor", "opencode")
-    # Every rung but the claude ones is off; a ladder with nothing left at all
-    # is impossible, since claude cannot be switched off.
+    # Every rung but the claude ones is off.
     decision = decide(None, role=WORKER, usage=_usage(codex=0.95))
 
     assert decision.agent == "claude"
@@ -694,11 +693,24 @@ def test_failover_chain_skips_switched_off_clis(switched_off):
     assert [rung.label for rung in chain] == ["claude", "tapie", "codex"]
 
 
-def test_default_agent_cannot_be_switched_off(switched_off):
-    from packages.orchestrator.settings import write_disabled_agents
+def test_codex_and_claude_can_be_switched_off(switched_off):
+    from packages.orchestrator.settings import read_disabled_agents
 
-    with pytest.raises(ValueError):
-        write_disabled_agents(["claude"])
+    switched_off("codex", "claude")
+    assert read_disabled_agents() == ("claude", "codex")
+
+
+def test_disabled_default_falls_back_to_an_enabled_cli(ladder, switched_off):
+    switched_off("codex", "claude")
+
+    assert decide(None, role=LEAD, usage={}).agent == "kimi"
+
+
+def test_every_agent_cannot_be_switched_off(switched_off):
+    from packages.orchestrator.handoff import AGENTS
+
+    with pytest.raises(ValueError, match="at least one"):
+        switched_off(*AGENTS)
 
 
 def test_settings_endpoint_round_trips_switched_off_clis(client, tmp_path, monkeypatch):
@@ -716,9 +728,19 @@ def test_settings_endpoint_round_trips_switched_off_clis(client, tmp_path, monke
     )
 
 
-def test_settings_endpoint_rejects_switching_off_the_default_agent(client, tmp_path, monkeypatch):
+def test_settings_endpoint_accepts_switching_off_codex(client, tmp_path, monkeypatch):
     monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path / "state"))
 
-    response = client.put("/settings", json={"disabled_agents": ["claude"]})
+    response = client.put("/settings", json={"disabled_agents": ["codex"]})
+
+    assert response.status_code == 200
+    assert response.json()["disabled_agents"] == ["codex"]
+
+
+def test_settings_endpoint_rejects_switching_off_every_agent(client, tmp_path, monkeypatch):
+    from packages.orchestrator.handoff import AGENTS
+    monkeypatch.setenv("ANA_STATE_DIR", str(tmp_path / "state"))
+
+    response = client.put("/settings", json={"disabled_agents": list(AGENTS)})
 
     assert response.status_code == 422

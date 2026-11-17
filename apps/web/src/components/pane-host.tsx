@@ -111,6 +111,7 @@ function Pane({
               src={paneSrc(href)}
               title={href}
               data-slot="pane-frame"
+              onFocus={() => focusPane(node.id)}
               className={cn(
                 "min-h-0 w-full flex-1 border-0 bg-background",
                 !showFrame && "hidden"

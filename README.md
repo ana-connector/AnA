@@ -336,6 +336,10 @@ AnA 자체 체크아웃을 마운트하면 목록에 평범한 워크스페이�
 | `ANA_WORKSPACE_NETWORK`    | 워크스페이스 컨테이너가 참여하는 네트워크 (`ana_default`) |
 | `ANA_CONTAINER_GATE_URL`   | 워크스페이스 컨테이너 안에서 본 게이트 URL                |
 | `DOCKER_GID`               | 호스트 Docker 소켓의 그룹 ID (서버는 uid 1000으로 실행)   |
+| `ANA_HOST_FLUTTER_SDK`     | 호스트 Flutter SDK 경로 (컨테이너에 같은 경로로 읽기 전용 마운트) |
+| `ANA_HOST_ANDROID_SDK`     | 호스트 Android SDK 경로 (`adb` 포함)                      |
+| `ANA_HOST_JAVA_HOME`       | 호스트 JDK 경로                                           |
+| `ANA_ADB_GATEWAY_PORT`     | 컨테이너가 호스트 adb 서버에 붙는 포트 (기본 15037)       |
 
 ### 에이전트가 사용자에게 묻기
 

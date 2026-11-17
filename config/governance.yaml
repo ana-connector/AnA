@@ -97,7 +97,12 @@ rules:
     patterns:
       # The second lookahead keeps `rm -rf .` out of it: emptying the workspace
       # itself is the one recursive delete inside it still worth a human.
-      - '^(?!.*\.\.)(?!.*(?:^|\s)\.\/?(?:\s|$))\s*rm\s+(?:-[rRf]+\s+|--recursive\s+|--force\s+)+(?:(?![-/~])[\w.@+=][\w.@+=/-]*\s*)+$'
+      # Possessive quantifiers (`*+`) on the inner repetition: without them,
+      # a command that fails this rule's trailing `$` (e.g. three-plus bare
+      # args, or a shell operator) makes the regex engine retry every way to
+      # split the matched text across repetitions before giving up -- O(2^n)
+      # in the arg count. Verified same match/no-match results, no backtrack.
+      - '^(?!.*\.\.)(?!.*(?:^|\s)\.\/?(?:\s|$))\s*rm\s+(?:-[rRf]+\s+|--recursive\s+|--force\s+)+(?:(?![-/~])[\w.@+=][\w.@+=/-]*+\s*+)+$'
   - id: fs-recursive-force-delete
     description: "재귀·강제 삭제다. 지운 파일은 되돌릴 수 없다"
     category: filesystem-destruction

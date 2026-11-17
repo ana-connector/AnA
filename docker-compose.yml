@@ -1,5 +1,6 @@
 services:
   postgres:
+    restart: unless-stopped
     image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ana_dev_password}
@@ -23,6 +24,7 @@ services:
       retries: 15
 
   server:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/server/Dockerfile
@@ -34,6 +36,12 @@ services:
       - .env
     volumes:
       - /home/hello/workspace:/home/hello/workspace
+      # Host toolchains, same path inside as on the machine. Workspace
+      # containers get the same binds via ANA_HOST_* below; mounting them
+      # here too covers workspaces that still run in this server process.
+      - ${ANA_HOST_FLUTTER_SDK:-/home/hello/development/flutter}:${ANA_HOST_FLUTTER_SDK:-/home/hello/development/flutter}
+      - ${ANA_HOST_ANDROID_SDK:-/home/hello/Android/sdk}:${ANA_HOST_ANDROID_SDK:-/home/hello/Android/sdk}:ro
+      - ${ANA_HOST_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}:${ANA_HOST_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}:ro
       # read-write: the CLI persists session state here (what --session-id
       # creates and --resume reads); read-only breaks conversation continuity
       # Mounted into the unprivileged `ana` user's home (uid 1000), not
@@ -97,6 +105,8 @@ services:
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     # The socket is root:docker on the host, and the container runs as uid
     # 1000 — without the socket's group the client gets "permission denied".
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     group_add:
       - "${DOCKER_GID:-983}"
     environment:
@@ -143,6 +153,20 @@ services:
       - ANA_HOST_CURSOR_CONFIG=${HOME}/.config/cursor
       - ANA_HOST_OPENCODE_DATA=${HOME}/.local/share/opencode
       - ANA_HOST_OPENCODE_CONFIG=${HOME}/.config/opencode
+      # Flutter / Android / JDK on the host. Workspace containers bind-mount
+      # these at the same path and put them on PATH; ADB_SERVER_SOCKET talks
+      # to the host adb server through adb-gateway (ssh -R 5555 is on the
+      # host loopback, which a container cannot reach directly).
+      - ANA_HOST_FLUTTER_SDK=${ANA_HOST_FLUTTER_SDK:-/home/hello/development/flutter}
+      - ANA_HOST_ANDROID_SDK=${ANA_HOST_ANDROID_SDK:-/home/hello/Android/sdk}
+      - ANA_HOST_JAVA_HOME=${ANA_HOST_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}
+      - ANA_ADB_GATEWAY_PORT=${ANA_ADB_GATEWAY_PORT:-15037}
+      - FLUTTER_ROOT=${ANA_HOST_FLUTTER_SDK:-/home/hello/development/flutter}
+      - ANDROID_HOME=${ANA_HOST_ANDROID_SDK:-/home/hello/Android/sdk}
+      - ANDROID_SDK_ROOT=${ANA_HOST_ANDROID_SDK:-/home/hello/Android/sdk}
+      - JAVA_HOME=${ANA_HOST_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}
+      - ADB_SERVER_SOCKET=tcp:host.docker.internal:${ANA_ADB_GATEWAY_PORT:-15037}
+      - PATH=${ANA_HOST_FLUTTER_SDK:-/home/hello/development/flutter}/bin:${ANA_HOST_ANDROID_SDK:-/home/hello/Android/sdk}/platform-tools:${ANA_HOST_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # Answering approvals and questions from a phone
       # (docs/plans/2026-09-24-discord-remote-approvals.md). Nothing is
       # published for this: the bot dials Discord *out* over the gateway, and
@@ -167,6 +191,7 @@ services:
         condition: service_started
 
   web:
+    restart: unless-stopped
     build:
       context: apps/web
       args:
@@ -188,8 +213,19 @@ services:
     depends_on:
       - server
 
+  # Host adb listens on 127.0.0.1:5037 (and the emulator reverse-tunnel on
+  # 127.0.0.1:5555). Containers reach that server through host.docker.internal
+  # on this published port; `adb connect 127.0.0.1:5555` then runs *on the
+  # host adb server*, which can see the tunnel.
+  adb-gateway:
+    image: alpine/socat:1.8.0.1
+    network_mode: host
+    restart: unless-stopped
+    command: TCP-LISTEN:${ANA_ADB_GATEWAY_PORT:-15037},fork,reuseaddr TCP:127.0.0.1:5037
+
   # --- observability (roadmap stage 4) -------------------------------------
   langfuse-postgres:
+    restart: unless-stopped
     image: postgres:16
     environment:
       - POSTGRES_PASSWORD=${LANGFUSE_DB_PASSWORD:-langfuse_dev_password}
@@ -203,6 +239,7 @@ services:
       retries: 15
 
   langfuse:
+    restart: unless-stopped
     # v2: a single container plus Postgres. v3 additionally requires
     # ClickHouse, Redis and S3-compatible storage, which is more moving parts
     # than a single-user local deployment needs.
@@ -235,6 +272,7 @@ services:
       - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
 
   prometheus:
+    restart: unless-stopped
     image: prom/prometheus:v2.55.1
     ports:
       - "127.0.0.1:9090:9090"
@@ -248,6 +286,7 @@ services:
       - --storage.tsdb.retention.size=10GB
 
   grafana:
+    restart: unless-stopped
     image: grafana/grafana:11.3.1
     depends_on:
       - prometheus

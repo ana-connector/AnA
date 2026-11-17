@@ -105,6 +105,8 @@ def client_with_fake_adapter(db_pool, postgres_dsn, monkeypatch, tmp_path):
     with patch(
         "apps.server.app.websocket.build_adapter", return_value=FakeAdapter()
     ), patch(
+        "apps.server.app.websocket.build_codex_adapter", return_value=FakeAdapter()
+    ), patch(
         "apps.server.app.websocket.build_transcript",
         return_value=TranscriptLogger(str(tmp_path)),
     ):
@@ -279,6 +281,8 @@ def test_websocket_processes_queued_prompts_in_order(db_pool, postgres_dsn, monk
     adapter = OrderTrackingAdapter()
     with patch(
         "apps.server.app.websocket.build_adapter", return_value=adapter
+    ), patch(
+        "apps.server.app.websocket.build_codex_adapter", return_value=adapter
     ), patch(
         "apps.server.app.websocket.build_transcript",
         return_value=TranscriptLogger(str(tmp_path)),

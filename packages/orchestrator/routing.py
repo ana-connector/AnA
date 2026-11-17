@@ -157,7 +157,7 @@ class ModelLadder:
             # with no model: this ladder has nothing to say about which model
             # that CLI should use.
             fallback = next(
-                (agent for agent in AGENTS if agent in allowed), DEFAULT_AGENT
+                (agent for agent in (DEFAULT_AGENT, *AGENTS) if agent in allowed), DEFAULT_AGENT
             )
             return RoutingDecision(agent=fallback, reason="래더의 CLI가 모두 꺼짐")
         for rung in rungs:
